@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterator, Sequence
 
-__all__ = ["Piece", "Run", "render", "runs_of"]
+__all__ = ["SAFE_SCHEMES", "Piece", "Run", "render", "runs_of", "safe_href"]
 
 #: Everything ``str.splitlines`` treats as a break, so a line's text never keeps
 #: one and offsets still count every byte of it.
@@ -47,6 +47,13 @@ _QUOTE = re.compile(r"^ {0,3}>[ \t]?")
 _ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(.*)$")
 _DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
 _AUTOLINK = re.compile(r"^<([a-zA-Z][a-zA-Z0-9+.-]*:[^<>\s]+)>")
+_SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*):")
+#: Schemes a link in a reviewed document may carry into the page. A document is
+#: input here, and the page it renders into holds the view's token — a
+#: ``javascript:`` href in a spec somebody was sent would be a click away from
+#: reading it. Anything relative (a sibling file, an anchor) has no scheme and is
+#: always allowed.
+SAFE_SCHEMES = frozenset({"http", "https", "mailto", "ftp", "ftps"})
 #: Backslash may escape these, and the escaped character is a run of its own.
 _PUNCT = set("\\`*_{}[]()#+-.!|~<>&\"'")
 #: Characters a ``_`` may not be flanked by, so ``data_start`` stays one word.
@@ -65,6 +72,20 @@ def escape(text: str) -> str:
 
 def _attr(value: str) -> str:
     return escape(value).replace('"', "&quot;")
+
+
+def safe_href(value: str) -> str:
+    """``value`` if a link may point there, otherwise nothing.
+
+    Dropping the target rather than the link keeps the label anchorable — the
+    text is still a run of the document, and a comment on it still lands where it
+    should. A refused link renders as text that goes nowhere, which is what it
+    should have been.
+    """
+    match = _SCHEME.match(value.strip())
+    if match is None:
+        return value
+    return value if match.group(1).lower() in SAFE_SCHEMES else ""
 
 
 @dataclass(frozen=True)
@@ -503,7 +524,7 @@ class _Renderer:
             return 0
         href = text[label + 2 : close].split()[0] if text[label + 2 : close].strip() else ""
         self.text(chunk, pending, at)
-        self.out.append(f'<a href="{_attr(href)}" rel="noreferrer">')
+        self.out.append(f'<a href="{_attr(safe_href(href))}" rel="noreferrer">')
         self._inline(chunk, at + 1, label)
         self.out.append("</a>")
         return close + 1 - at
@@ -513,7 +534,7 @@ class _Renderer:
         if match is None:
             return 0
         self.text(chunk, pending, at)
-        self.out.append(f'<a href="{_attr(match.group(1))}" rel="noreferrer">')
+        self.out.append(f'<a href="{_attr(safe_href(match.group(1)))}" rel="noreferrer">')
         self.text(chunk, match.start(1), match.end(1))
         self.out.append("</a>")
         return match.end() - at

@@ -278,3 +278,33 @@ def test_lines_of_counts_every_byte_of_a_break():
 def test_empty_document_renders_to_nothing():
     assert render("") == ""
     assert list(runs_of(render(""))) == []
+
+
+def test_a_javascript_link_loses_its_target_and_keeps_its_text():
+    """A reviewed document is input, and the page it renders into holds a token."""
+    text = "click [here](javascript:danger) now\n"
+    html = render(text)
+    assert 'href=""' in html
+    assert "javascript" not in html
+    found = exactness(text)
+    assert [r.text for r in found] == ["click ", "here", " now"]
+
+
+def test_a_data_url_is_refused_too():
+    assert 'href=""' in render("[x](data:text/html;base64,PHNjcmlwdD4=)\n")
+
+
+def test_relative_and_http_links_are_kept():
+    assert 'href="SPEC.md"' in render("[spec](SPEC.md)\n")
+    assert 'href="#section"' in render("[here](#section)\n")
+    assert 'href="https://example.com"' in render("[site](https://example.com)\n")
+    assert 'href="mailto:a@b.c"' in render("<mailto:a@b.c>\n")
+
+
+def test_an_unsafe_autolink_keeps_its_text_and_goes_nowhere():
+    """The label is document text and stays anchorable; only the target dies."""
+    text = "<javascript:danger>\n"
+    html = render(text)
+    assert 'href=""' in html
+    assert 'href="javascript' not in html
+    assert [r.text for r in exactness(text)] == ["javascript:danger"]
