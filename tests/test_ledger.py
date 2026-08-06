@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from specround.errors import InvariantError, SchemaError
+from specround.errors import InvariantError, LedgerError, SchemaError
 from specround.events import SCHEMA, canonical_json
 from specround.ledger import Ledger, utc_now
 
@@ -209,3 +209,51 @@ def test_a_rejected_append_does_not_restore_the_terminator(ledger):
             {"type": "comment.add", "author": "bob", "round": "r-nonexistent", "body": "why?"}
         )
     assert ledger.path.read_bytes() == before
+
+
+def test_appending_without_a_lock_primitive_is_refused(ledger, monkeypatch):
+    """No lock, no append — the alternative is a ledger nobody can read.
+
+    ``fcntl`` is missing on Windows, where the import at the top of the module
+    fails and leaves ``None``. Writing anyway hands two writers the same
+    ``seq``, and a reader refuses the whole file for it (I2). A platform that
+    cannot hold the lock gets a refusal, not a coin flip.
+    """
+    monkeypatch.setattr("specround.ledger.fcntl", None)
+    with pytest.raises(LedgerError, match="exclusive file lock"):
+        open_round(ledger)
+    assert ledger.exists() is False
+
+
+def test_concurrent_writers_without_a_lock_leave_the_ledger_readable(ledger, monkeypatch):
+    """The reviewer's scenario: twelve threads, no lock.
+
+    Before the fix this produced five physical lines carrying ``seq``
+    ``[0, 1, 2, 3, 3]``, and folding the result raised on the duplicate — the
+    history was gone. Now every writer is refused and the file that survives is
+    the one the last legal append left.
+    """
+    import threading
+
+    round_id = open_round(ledger)["id"]
+    monkeypatch.setattr("specround.ledger.fcntl", None)
+    failures: list[Exception] = []
+
+    def write(index: int) -> None:
+        try:
+            ledger.append(
+                {"type": "comment.add", "author": f"w{index}", "round": round_id, "body": f"b{index}"}
+            )
+        except Exception as exc:  # noqa: BLE001 - the point is that it raised
+            failures.append(exc)
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(failures) == 12
+    monkeypatch.undo()
+    assert [r["seq"] for r in ledger.read()] == [0]
+    assert ledger.state().count == 1

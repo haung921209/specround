@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from specround.errors import SchemaError
+from specround.errors import LedgerError, SchemaError
 from specround.events import (
     SCHEMA,
     canonical_json,
@@ -100,17 +100,29 @@ class Ledger:
 
         The lock spans read-then-write because ``seq`` is assigned from the
         current length: two writers without it would hand out the same seq.
+
+        Without the primitive there is no honest way to append. Two writers
+        would hand out one ``seq``, and a ledger with a repeated position is one
+        the reader refuses whole (I2) — the loss this format exists to prevent,
+        arriving through the file layer instead of the anchor layer. So the
+        write is refused and the reader keeps working: ``cat`` stays a valid
+        reader on every platform, appending needs POSIX.
         """
+        if fcntl is None:
+            raise LedgerError(
+                f"cannot append to {self.path}: this interpreter has no exclusive "
+                "file lock (fcntl is POSIX-only). Two writers without it are handed "
+                "the same seq, and a ledger with a repeated position is refused "
+                "whole — reading works here, appending needs POSIX"
+            )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+", encoding="utf-8", newline="\n")
         try:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             yield handle
         finally:
             try:
-                if fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             finally:
                 handle.close()
 
