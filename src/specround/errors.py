@@ -2,8 +2,9 @@
 
 The split matters for callers: a ``SchemaError`` means a single record is
 malformed, an ``InvariantError`` means the record is well formed but the
-history refuses it, and a ``SnapshotError`` means the object store cannot
-honour a reference the ledger makes.
+history refuses it, a ``SnapshotError`` means the object store cannot honour a
+reference the ledger makes, and a ``ConfigError`` means the store was never
+located — nothing was read or written at all.
 """
 
 
@@ -29,3 +30,7 @@ class SnapshotError(SpecroundError):
 
 class AnchorError(SpecroundError):
     """An anchor is internally inconsistent or does not match the text it claims."""
+
+
+class ConfigError(SpecroundError):
+    """A store could not be located: bad settings, or a store that says it is elsewhere."""

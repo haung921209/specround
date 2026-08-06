@@ -15,6 +15,7 @@ import specround
 from specround.anchors import Anchor
 from specround.events import EVENT_TYPES, SCHEMA, VERDICTS, validate_event
 from specround.fold import fold
+from specround.locations import CONFIG_FILENAME, MODES, ORIGIN_SCHEMA, SOURCES
 
 DOC_PATH = Path(specround.__file__).parents[2] / "docs" / "ledger-format.md"
 INVARIANT_IDS = [f"I{n}" for n in range(1, 10)]
@@ -58,6 +59,27 @@ def test_every_verdict_is_documented(verdict, doc_text):
 @pytest.mark.parametrize("invariant", INVARIANT_IDS)
 def test_every_invariant_id_is_documented(invariant, doc_text):
     assert f"| {invariant} |" in doc_text
+
+
+def test_the_config_file_and_its_modes_are_documented(doc_text):
+    # Where a store lives is now a decision the reader makes, so the names they
+    # would type belong to the contract too.
+    assert f"`{CONFIG_FILENAME}`" in doc_text
+    for mode in MODES:
+        assert f"`{mode}`" in doc_text
+
+
+def test_the_resolution_order_is_stated(doc_text):
+    assert "인자 > 설정 > 기본" in doc_text
+    korean = {"argument": "인자", "config": "설정", "default": "기본"}
+    for source in SOURCES:
+        assert korean[source] in doc_text
+
+
+def test_the_origin_record_is_documented_with_its_own_schema(doc_text):
+    assert f"`{ORIGIN_SCHEMA}`" in doc_text
+    for kind in ("document", "directory"):
+        assert f"`{kind}`" in doc_text
 
 
 def test_every_payload_field_the_code_knows_is_documented(doc_text):

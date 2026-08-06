@@ -1,9 +1,14 @@
-"""The front door — a review store beside a document (G2, G5, G7).
+"""The front door — a review store for a document (G2, G5, G7).
 
-``.specround/`` sits next to the reviewed document and holds both halves of the
-history: ``ledger.jsonl`` (what happened) and ``objects/`` (the frozen document
-snapshots rounds are measured against). One directory serves every document in
-its folder; records name their document with a path relative to that folder.
+A store is one directory holding both halves of the history: ``ledger.jsonl``
+(what happened) and ``objects/`` (the frozen document snapshots rounds are
+measured against), plus an ``origin`` line saying what it was made for.
+
+By default that directory is **not** next to the document — it is a central
+store under the user's data directory, keyed by the document's absolute path
+(see :mod:`specround.locations` for the why and the opt-ins). Records still name
+their document with a path relative to the store's origin, so a store that does
+live in a working tree keeps working after the folder is moved or cloned.
 
 Everything here is filesystem work. No git, no server, no network — a document
 that is untracked, or that lives outside any repository, gets the full loop.
@@ -29,12 +34,22 @@ from specround.events import (
 )
 from specround.fold import Comment, Round, State
 from specround.ledger import Clock, Ledger
+from specround.locations import (
+    DIRECTORY,
+    DOCUMENT,
+    ORIGIN_FILENAME,
+    STORE_DIRNAME,
+    Origin,
+    read_origin,
+    resolve_location,
+    write_origin,
+)
 from specround.reanchor import MIN_SIMILARITY, POSITION, reanchor
 from specround.snapshots import SnapshotStore
 
-#: The directory that holds a document's review history.
-STORE_DIRNAME = ".specround"
 LEDGER_FILENAME = "ledger.jsonl"
+
+__all__ = ["LEDGER_FILENAME", "STORE_DIRNAME", "ReviewStore"]
 
 
 @dataclass(frozen=True)
@@ -64,27 +79,67 @@ class ReanchorReport:
 
 
 class ReviewStore:
-    """Rounds, comments, and dispositions for the documents in one folder."""
+    """Rounds, comments, and dispositions for what one store directory serves."""
 
-    def __init__(self, root: Path, *, clock: Clock | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        origin: Origin | None = None,
+        clock: Clock | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
+        # A store that already exists says what it serves; only a fresh one is
+        # assumed to serve its parent folder, which is the in-tree layout.
+        if origin is None:
+            origin = read_origin(self.root) or Origin(DIRECTORY, self.root.parent)
+        self.origin = origin
         self.ledger = Ledger(self.root / LEDGER_FILENAME, clock=clock)
         self.snapshots = SnapshotStore(self.root)
 
     @classmethod
-    def for_document(cls, doc: Path, *, clock: Clock | None = None) -> "ReviewStore":
-        """The store that owns ``doc`` — ``.specround/`` in the document's folder."""
-        return cls(Path(doc).resolve().parent / STORE_DIRNAME, clock=clock)
+    def for_document(
+        cls,
+        doc: Path,
+        *,
+        store: Path | None = None,
+        base: Path | None = None,
+        clock: Clock | None = None,
+    ) -> "ReviewStore":
+        """The store that owns ``doc``, wherever the resolution rules put it.
+
+        ``store`` names a directory outright and wins over any configuration;
+        ``base`` says what its document keys count from when the default (the
+        store's parent) is wrong. With neither, :func:`resolve_location` decides.
+        """
+        location = resolve_location(doc, store=store, base=base)
+        return cls(location.root, origin=location.origin, clock=clock)
 
     @classmethod
     def at(cls, directory: Path, *, clock: Clock | None = None) -> "ReviewStore":
-        """The store for a folder of documents."""
+        """The in-tree store for a folder of documents — ``<directory>/.specround``."""
         return cls(Path(directory).resolve() / STORE_DIRNAME, clock=clock)
+
+    @classmethod
+    def open(cls, root: Path, *, clock: Clock | None = None) -> "ReviewStore":
+        """Open an existing store by its directory, reading what it serves.
+
+        This is the way back from a central store, whose name is a digest: the
+        directory itself is the only thing a caller has, and ``origin`` is the
+        only thing that turns it back into a document.
+        """
+        root = Path(root).resolve()
+        origin = read_origin(root)
+        if origin is None:
+            raise SpecroundError(
+                f"{root} is not a specround store: no {ORIGIN_FILENAME} record"
+            )
+        return cls(root, origin=origin, clock=clock)
 
     @property
     def base_dir(self) -> Path:
         """The folder the store serves — document keys are relative to it."""
-        return self.root.parent
+        return self.origin.base_dir
 
     # -- documents -------------------------------------------------------
 
@@ -95,6 +150,11 @@ class ReviewStore:
         renamed, or cloned somewhere else.
         """
         resolved = Path(doc).resolve()
+        if self.origin.kind == DOCUMENT and resolved != self.origin.path:
+            raise SpecroundError(
+                f"{resolved} is not the document this store holds ({self.origin.path}) — "
+                "a store keyed by document path carries one document's history"
+            )
         try:
             relative = resolved.relative_to(self.base_dir)
         except ValueError as exc:
@@ -127,6 +187,7 @@ class ReviewStore:
     # -- writing ---------------------------------------------------------
 
     def _append(self, record: Mapping[str, Any]) -> str:
+        write_origin(self.root, self.origin)
         return self.ledger.append(record)["id"]
 
     def open_round(
@@ -146,6 +207,9 @@ class ReviewStore:
         if not path.is_file():
             raise SpecroundError(f"cannot open a round on {path}: not a file")
         key = self.doc_key(path)
+        # Leave the breadcrumb before the first object, so a store never holds
+        # history it cannot name the owner of.
+        write_origin(self.root, self.origin)
         base = self.snapshots.put_file(path)
         record: dict[str, Any] = {
             "type": ROUND_OPEN,

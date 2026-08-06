@@ -247,7 +247,10 @@ def test_fold_rejects_a_gap_in_the_sequence(store, round_id):
         fold([*records, {**records[0], "id": "r-other", "seq": 7}])
 
 
-def test_multiple_rounds_can_be_open_at_once(store, doc, tmp_path):
+def test_multiple_rounds_can_be_open_at_once(doc, clock):
+    # Two documents in one ledger is what a folder store is for; the default
+    # store is keyed by document, so this property is asked of the folder one.
+    store = ReviewStore.at(doc.parent, clock=clock)
     other = doc.parent / "other.md"
     other.write_text("second document\n", encoding="utf-8")
     first = store.open_round(doc, author="alice")
@@ -270,7 +273,8 @@ def test_state_helpers_navigate_the_graph(store, doc, round_id):
     assert state.count == len(store.ledger.read())
 
 
-def test_latest_round_filters_by_document(store, doc):
+def test_latest_round_filters_by_document(doc, clock):
+    store = ReviewStore.at(doc.parent, clock=clock)
     other = doc.parent / "other.md"
     other.write_text("second document\n", encoding="utf-8")
     first = store.open_round(doc, author="alice")
