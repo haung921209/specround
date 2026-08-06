@@ -30,7 +30,9 @@ against an error object arriving where a result was expected.
 
 The verbs are deliberately few. Rounds, comments, replies, re-anchoring,
 dispositions, and closing a thread are the loop the ledger already knows how to
-enforce; suggestions are their own item and get their own verb when they land.
+enforce. ``view`` is the one verb that does not return: it prints a URL and then
+serves a browser until interrupted, which is why :func:`main` delivers a verb's
+output before running anything the verb handed back to do.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from specround import __version__
 from specround.anchors import Anchor
@@ -52,6 +54,7 @@ from specround.fold import Comment, Round, State
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import ReviewStore
+from specround.webview import DEFAULT_HOST, WebView
 from specround.wire import (
     anchor_json,
     comment_json,
@@ -808,6 +811,73 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, [f"{settled.id} {current.verdict} by {current.author} — {current.reason}"]
 
 
+def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable[[], None]]:
+    """Serve the document to a browser, three modes over one anchor space (G6).
+
+    The URL is the first line of stdout and nothing opens a browser, because the
+    first-class consumer is an embedder: a multiplexer's browser pane takes that
+    line and places the view where the reviewer already is. ``--open`` is for
+    when the caller is a person at a shell instead.
+
+    Read-only is a normal outcome here rather than a refusal. The CLI's writing
+    verbs need an open round and say so; a *view* of a document whose rounds are
+    all closed still shows the review that happened, and the payload carries the
+    reason the two commenting routes are shut. Two open rounds is the same
+    answer: the note names ``--round`` and the history is still readable.
+
+    A ``--round`` that names nothing is the exception, and it is a ``2``. The
+    others are "there is less to write than you might expect"; this one is "what
+    you asked for is not here", and serving something else under that name would
+    be the quiet wrong answer the exit codes exist to separate.
+    """
+    target = _target(args, missing_ok=True)
+    view = WebView(
+        store=target.store,
+        path=target.path,
+        author=_author(args),
+        actor=_actor(args),
+        round_hint=args.round or None,
+        host=args.host,
+        port=args.port,
+    ).bind()
+    state = target.store.fold()
+    round_, blocked = view.resolve_round(state)
+    if args.round and round_ is None:
+        assert blocked is not None
+        raise UsageError(blocked)
+    payload = {
+        **target.envelope(),
+        "url": view.url,
+        "host": view.host,
+        "port": view.port,
+        "token": view.token,
+        "round": round_json(state, round_) if round_ is not None else None,
+        "commentable": round_ is not None and round_.open,
+        "blocked": blocked,
+    }
+    # The URL first and alone: a consumer that places this view reads one line.
+    lines = [view.url]
+    if round_ is not None:
+        lines.append(
+            f"serving {target.key} — {round_.id} ({round_.status}, base {_short(round_.base)})"
+        )
+    else:
+        lines.append(f"serving {target.key}")
+    lines.append(f"store  {target.store.root}")
+    if blocked:
+        lines.append(f"note   {blocked}")
+    lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
+
+    def serve() -> None:
+        if args.open:
+            import webbrowser
+
+            webbrowser.open(view.url)
+        view.serve_forever()
+
+    return payload, lines, serve
+
+
 # -- parser --------------------------------------------------------------
 
 
@@ -979,6 +1049,27 @@ def build_parser() -> argparse.ArgumentParser:
     dispose.add_argument("--why", required=True, help="the reason — required for every verdict")
     dispose.set_defaults(handler=_dispose, verb_name="dispose")
 
+    viewing = verbs.add_parser(
+        "view",
+        parents=[common, writing],
+        help="serve the document to a browser — render, raw, and round diff",
+    )
+    viewing.add_argument("doc")
+    viewing.add_argument(
+        "--port", type=int, default=0, metavar="N", help="pin the port (default: any free one)"
+    )
+    viewing.add_argument(
+        "--host", default=DEFAULT_HOST, help=f"address to bind (default: {DEFAULT_HOST})"
+    )
+    viewing.add_argument("--round", metavar="ID", help="write to this round rather than the open one")
+    viewing.add_argument(
+        "--open",
+        action="store_true",
+        help="also open a browser (off by default: the URL goes to stdout for an embedder)",
+    )
+    _add_actor(viewing)
+    viewing.set_defaults(handler=_view, verb_name="view")
+
     return parser
 
 
@@ -1008,7 +1099,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     verb = getattr(args, "verb_name", args.verb)
     try:
-        payload, lines = args.handler(args)
+        payload, lines, *rest = args.handler(args)
     except UsageError as exc:
         return _fail(args, verb, exc, USAGE, "usage")
     except InvariantError as exc:
@@ -1021,6 +1112,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         for line in lines:
             print(line)
+
+    # A verb may hand back something to do once its output has been delivered.
+    # ``view`` serves until interrupted, and its URL is the whole point of the
+    # invocation — printing it after the server stops would make the one line a
+    # caller needs arrive when it is no longer true.
+    after = rest[0] if rest else None
+    if after is not None:
+        sys.stdout.flush()
+        try:
+            after()
+        except KeyboardInterrupt:
+            print("specround: stopped", file=sys.stderr)
     return OK
 
 
