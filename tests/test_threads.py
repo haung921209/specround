@@ -1,9 +1,11 @@
 """Threads: resolve, reopen, and what the default listing shows (G11).
 
-The records here are written straight onto the ledger rather than through the
-store's helpers. That is deliberate for this half of the feature: the rules
-belong to the format, so they are asked of the format — a hand-written line, or
-one from a writer in another language, gets the same answer as the tool's own.
+Most of the records here are written straight onto the ledger rather than
+through the store's helpers. That is deliberate: the rules belong to the format,
+so they are asked of the format — a hand-written line, or one from a writer in
+another language, gets the same answer as the tool's own. The last section then
+asks what the store adds on top, which is one thing: it declines to write a line
+that would say nothing.
 """
 
 import pytest
@@ -281,3 +283,89 @@ def test_thread_state_does_not_depend_on_timestamps(store, round_id):
     shuffled = [{**r, "ts": s} for r, s in zip(store.ledger.read(), stamps)]
     # seq is the order; a clock that runs backwards changes nothing.
     assert fold(shuffled).comments[cid].resolved is False
+
+
+# -- the store's helpers -------------------------------------------------
+
+
+def test_the_store_closes_and_reopens_a_thread(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    closed = store.resolve(cid, author="alice", actor="human", note="answered above")
+    assert closed.startswith("v-")
+    assert [c.id for c in store.fold().resolved_threads] == [cid]
+
+    opened = store.reopen(cid, author="bob", actor="human", reason="not settled")
+    assert opened.startswith("n-")
+    assert [c.id for c in store.fold().threads()] == [cid]
+
+
+def test_the_store_records_who_closed_it(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.resolve(cid, author="agent:reviewer", actor="agent")
+    resolution = store.fold().comments[cid].resolution
+    assert (resolution.author, resolution.actor) == ("agent:reviewer", "agent")
+
+
+def test_the_store_writes_nothing_for_a_redundant_resolve(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.resolve(cid, author="alice", actor="human")
+    before = store.ledger.read()
+
+    again = store.resolve(cid, author="carol", actor="human", note="also me")
+    # None means the ledger was not touched. The contract accepts a redundant
+    # line (I10); the tool just has no reason to produce one, the same way an
+    # unchanged anchor records nothing.
+    assert again is None
+    assert store.ledger.read() == before
+    assert store.fold().comments[cid].resolved is True
+
+
+def test_the_store_writes_nothing_for_a_redundant_reopen(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    before = store.ledger.read()
+    assert store.reopen(cid, author="alice", actor="human", reason="was never shut") is None
+    assert store.ledger.read() == before
+
+
+def test_closing_a_closed_thread_is_harmless_not_an_error(store, round_id):
+    """The point of idempotence: a misjudgement stays a misjudgement."""
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.resolve(cid, author="alice", actor="human")
+    for _ in range(3):
+        store.resolve(cid, author="agent:reviewer", actor="agent")
+    assert len(store.fold().comments[cid].resolutions) == 1
+
+
+def test_the_store_refuses_a_target_that_is_not_a_thread(store, round_id):
+    with pytest.raises(InvariantError, match="unknown comment"):
+        store.resolve("c-nonexistent", author="alice", actor="human")
+    with pytest.raises(InvariantError, match="is a round, not a comment"):
+        store.reopen(round_id, author="alice", actor="human", reason="wrong id")
+
+
+def test_the_store_refuses_a_reopen_with_no_reason(store, round_id):
+    from specround.errors import SchemaError
+
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.resolve(cid, author="alice", actor="human")
+    with pytest.raises(SchemaError, match="'reason' must not be empty"):
+        store.reopen(cid, author="alice", actor="human", reason="")
+    assert store.fold().comments[cid].resolved is True
+
+
+def test_the_store_refuses_an_actor_outside_the_vocabulary(store, round_id):
+    from specround.errors import SchemaError
+
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    with pytest.raises(SchemaError, match="unknown actor"):
+        store.resolve(cid, author="alice", actor="robot")
+
+
+def test_the_store_keeps_resolving_and_disposing_apart(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.resolve(cid, author="alice", actor="human")
+    comment = store.fold().comments[cid]
+    assert comment.resolved is True and comment.verdict is None
+    # Still disposable afterwards — closing the talk did not decide the comment.
+    store.dispose(cid, author="alice", verdict="applied", reason="landed in rev 2")
+    assert store.fold().comments[cid].verdict == "applied"
