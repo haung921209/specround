@@ -28,9 +28,9 @@ fix is ``--occurrence``. Success output goes to stdout and errors go to stderr,
 so ``specround comments spec.md --json | jq`` never has to defend itself
 against an error object arriving where a result was expected.
 
-The verbs are deliberately few. Rounds, comments, re-anchoring, and dispositions
-are the loop the ledger already knows how to enforce; suggestions and resolve
-are their own items and get their own verbs when they land.
+The verbs are deliberately few. Rounds, comments, replies, re-anchoring,
+dispositions, and closing a thread are the loop the ledger already knows how to
+enforce; suggestions are their own item and get their own verb when they land.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ from typing import Any, Mapping, Sequence
 from specround import __version__
 from specround.anchors import Anchor
 from specround.errors import AnchorError, InvariantError, SpecroundError
-from specround.events import ANSWERED, APPLIED, DEFERRED, REJECTED
-from specround.fold import Anchoring, Comment, Disposition, Round, State
+from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
+from specround.fold import Anchoring, Comment, Disposition, Reply, Resolution, Round, State
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import ReviewStore
@@ -73,12 +73,22 @@ VERDICT_CHOICES = (APPLIED, REJECTED, ANSWERED, DEFERRED, "held")
 
 #: Environment fallback for ``--author``.
 AUTHOR_ENV = "SPECROUND_AUTHOR"
+#: Environment fallback for ``--actor`` on the thread verbs.
+#:
+#: ``author`` says which participant, ``actor`` says which *kind* — the ledger
+#: keeps them apart because ``agent:`` in a name is a convention no reader can
+#: check. So this CLI does not infer one from the other either: it defaults to
+#: ``human`` and lets an agent harness set this once in its environment, the
+#: same shape as ``--author``.
+ACTOR_ENV = "SPECROUND_ACTOR"
 
 #: How much of a quote or body a table cell shows before it is clipped.
 _QUOTE_WIDTH = 28
 _BODY_WIDTH = 44
 #: How much of a snapshot digest human output prints.
 _REF_CHARS = 12
+#: What puts a reply under its thread root in the table.
+_REPLY_INDENT = "  └ "
 
 
 class ArgvError(SpecroundError):
@@ -200,6 +210,22 @@ def _author(args: argparse.Namespace) -> str:
     raise UsageError(f"cannot tell who you are: pass --author or set {AUTHOR_ENV}")
 
 
+def _actor(args: argparse.Namespace) -> str:
+    """Whether a person or an agent is closing this conversation (G11).
+
+    Defaulting to ``human`` rather than guessing from ``--author``: the format
+    is explicit that the ``agent:`` prefix is a convention, and a tool that read
+    it as a fact would write an unverifiable guess into a closed vocabulary.
+    """
+    chosen = getattr(args, "actor", None) or os.environ.get(ACTOR_ENV) or HUMAN
+    chosen = chosen.strip()
+    if chosen not in ACTORS:
+        raise UsageError(
+            f"unknown actor {chosen!r} (from ${ACTOR_ENV}): use {' or '.join(ACTORS)}"
+        )
+    return chosen
+
+
 def _rounds_on(state: State, key: str) -> list[Round]:
     return [r for r in state.rounds.values() if r.doc == key]
 
@@ -257,7 +283,7 @@ def _comment(state: State, key: str, wanted: str) -> Comment:
     return state.comments[matches[0]]
 
 
-def _body(args: argparse.Namespace) -> str:
+def _body(args: argparse.Namespace, what: str = "comment") -> str:
     if args.body is not None and args.body_file is not None:
         raise UsageError("--body and --body-file say the same thing twice: pick one")
     if args.body_file is not None:
@@ -275,11 +301,11 @@ def _body(args: argparse.Namespace) -> str:
         text = args.body
     else:
         raise UsageError(
-            "a comment needs a body: --body TEXT, --body-file PATH, or --body-file -"
+            f"a {what} needs a body: --body TEXT, --body-file PATH, or --body-file -"
         )
     text = text.strip()
     if not text:
-        raise UsageError("the comment body is empty")
+        raise UsageError(f"the {what} body is empty")
     return text
 
 
@@ -370,8 +396,23 @@ def _anchoring_json(anchoring: Anchoring | None) -> dict[str, Any] | None:
     }
 
 
+def _reply_json(reply: Reply) -> dict[str, Any]:
+    return {"id": reply.id, "author": reply.author, "ts": reply.ts, "body": reply.body}
+
+
+def _resolution_json(resolution: Resolution) -> dict[str, Any]:
+    return {
+        "id": resolution.id,
+        "author": resolution.author,
+        "actor": resolution.actor,
+        "ts": resolution.ts,
+        "resolved": resolution.resolved,
+        "note": resolution.note,
+    }
+
+
 def _comment_json(comment: Comment) -> dict[str, Any]:
-    """One comment, with both anchors and every disposition it has collected.
+    """One thread: the root comment, its replies, and everything decided about it.
 
     ``anchor`` is where the comment was made and never changes; ``current_anchor``
     is where it lives now after any re-anchoring. Both are here because a reader
@@ -385,6 +426,11 @@ def _comment_json(comment: Comment) -> dict[str, Any]:
     reviewer reading the list a week later is exactly the person meant. Both come
     from the last attempt that *placed* the comment, so an orphan still reports
     how it reached the anchor it is keeping.
+
+    The three axes are three separate keys, because they are three separate
+    questions and collapsing any two would make the answer unreadable:
+    ``unresolved`` (has anyone decided this?), ``orphaned`` (can it still be
+    placed on the document?), ``resolved`` (is the conversation over?).
     """
     placed = comment.current_anchoring
     return {
@@ -404,11 +450,10 @@ def _comment_json(comment: Comment) -> dict[str, Any]:
         "ext": comment.ext,
         "strategy": placed.strategy if placed else None,
         "ambiguous": placed.ambiguous if placed else False,
-        "replies": [
-            {"id": r.id, "author": r.author, "ts": r.ts, "body": r.body}
-            for r in comment.replies
-        ],
+        "resolved": comment.resolved,
+        "replies": [_reply_json(r) for r in comment.replies],
         "dispositions": [_disposition_json(d) for d in comment.dispositions],
+        "resolutions": [_resolution_json(r) for r in comment.resolutions],
         "anchorings": [_anchoring_json(a) for a in comment.anchorings],
     }
 
@@ -500,32 +545,58 @@ def _moved_marks(comment: Comment) -> list[str]:
     return marks
 
 
-def _comment_rows(comments: Sequence[Comment]) -> list[str]:
-    rows = [
-        [
-            c.id,
-            c.kind,
-            c.state,
-            c.author,
-            _anchor_cell(c),
-            _clip(c.patch or c.body, _BODY_WIDTH),
-        ]
-        for c in comments
-    ]
+def _comment_rows(comments: Sequence[Comment], *, hidden: Sequence[str] = ()) -> list[str]:
+    """The listing: one row per thread root, its replies indented beneath it.
+
+    Replies are indented rather than given their own table because a reply has
+    no state, no anchor, and no verdict of its own — it belongs to the thread
+    above it, and a flat list of ids would make the reader reconstruct that.
+
+    ``hidden`` names resolved threads left out of ``comments``. It is printed
+    even though the rows are not: hiding is a view decision, and a view that
+    hid something without saying so would read as "there is nothing else".
+    """
+    rows: list[list[str]] = []
+    for comment in comments:
+        rows.append(
+            [
+                comment.id,
+                comment.kind,
+                comment.state,
+                comment.author,
+                _anchor_cell(comment),
+                _clip(comment.patch or comment.body, _BODY_WIDTH),
+            ]
+        )
+        rows.extend(
+            [f"{_REPLY_INDENT}{reply.id}", "reply", "", reply.author, "", _clip(reply.body, _BODY_WIDTH)]
+            for reply in comment.replies
+        )
     lines = _table(["ID", "KIND", "STATE", "AUTHOR", "ANCHOR", "BODY"], rows)
-    # Footers rather than columns: both of these are rare, and widening every
-    # row for them would cost the common case to report the uncommon one.
+
+    # Footers rather than columns: each reports an uncommon case, and widening
+    # every row for it would cost the common case to describe the exception.
+    # Resolved goes above orphaned so the "and there is more" line is the last
+    # thing read when both apply.
+    footers = []
+    if hidden:
+        footers.append(f"{len(hidden)} resolved and hidden — show with --all")
+    else:
+        resolved = [c.id for c in comments if c.resolved]
+        if resolved:
+            footers.append(f"{len(resolved)} resolved: {', '.join(resolved)}")
     orphans = [c.id for c in comments if c.orphaned]
     if orphans:
-        lines.append("")
-        lines.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
+        footers.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
     moved = [(c.id, _moved_marks(c)) for c in comments if not c.orphaned]
     flagged = [f"{cid} ({', '.join(marks)})" for cid, marks in moved if marks]
     if flagged:
         # The ``reanchor`` run said this once, to whoever happened to be running
         # it. This is where the reviewer reading the list afterwards finds out.
+        footers.append(f"{len(flagged)} moved on rewritten text — worth a look: {', '.join(flagged)}")
+    if footers:
         lines.append("")
-        lines.append(f"{len(flagged)} moved on rewritten text — worth a look: {', '.join(flagged)}")
+        lines.extend(footers)
     return lines
 
 
@@ -684,6 +755,70 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, [f"{comment_id} added to {round_.id} {where}"]
 
 
+def _reply(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Answer a comment — the same verb for a person and for an agent (G4)."""
+    target = _target(args)
+    state = target.store.fold()
+    comment = _comment(state, target.key, args.comment)
+    body = _body(args, "reply")
+    reply_id = target.store.reply(comment.id, author=_author(args), body=body)
+    state = target.store.fold()
+    answered = state.comments[comment.id]
+    reply = answered.replies[-1]
+    payload = {
+        **target.envelope(),
+        "comment": _comment_json(answered),
+        "reply": _reply_json(reply),
+    }
+    return payload, [
+        f"{reply.id} replied to {answered.id} by {reply.author} "
+        f"({len(answered.replies)} in this thread)"
+    ]
+
+
+def _thread(args: argparse.Namespace, *, close: bool) -> tuple[dict[str, Any], list[str]]:
+    """Close or re-open a conversation (G11).
+
+    One function for both because they are one decision with a sign. The only
+    asymmetry is the text: closing may carry a note, re-opening must carry a
+    reason — overturning something already in the log says why.
+
+    Re-stating the state a thread is already in exits ``0`` and says nothing
+    changed. That is the ledger's rule (I10) reaching the shell: a caller who
+    resolves a resolved thread wanted it resolved and it is, and turning that
+    into a failure would make retries dangerous for the agents this is for.
+    """
+    target = _target(args)
+    state = target.store.fold()
+    comment = _comment(state, target.key, args.comment)
+    author, actor = _author(args), _actor(args)
+    if close:
+        event = target.store.resolve(comment.id, author=author, actor=actor, note=args.note or None)
+    else:
+        event = target.store.reopen(comment.id, author=author, actor=actor, reason=args.why)
+    state = target.store.fold()
+    updated = state.comments[comment.id]
+    payload = {
+        **target.envelope(),
+        "comment": _comment_json(updated),
+        "resolved": updated.resolved,
+        "changed": event is not None,
+        "event": event,
+    }
+    word = "resolved" if close else "reopened"
+    if event is None:
+        return payload, [f"{updated.id} was already {word} — nothing recorded"]
+    return payload, [f"{updated.id} {word} by {author} ({actor})"]
+
+
+def _resolve(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    return _thread(args, close=True)
+
+
+def _reopen(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    return _thread(args, close=False)
+
+
 def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     # Read-only: a document that was renamed or deleted still has history, and
     # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
@@ -697,10 +832,27 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         items = [c for c in items if c.round == args.round]
     if args.unresolved:
         items = [c for c in items if c.unresolved]
-    payload = {**target.envelope(), "comments": [_comment_json(c) for c in items]}
+    # The thread axis filters last, so --all reports against the same set the
+    # other filters produced rather than against the whole document.
+    hidden = [] if args.all else [c.id for c in items if c.resolved]
+    if hidden:
+        items = [c for c in items if not c.resolved]
+    payload = {
+        **target.envelope(),
+        "comments": [_comment_json(c) for c in items],
+        "include_resolved": bool(args.all),
+        "hidden": hidden,
+    }
     if not items:
+        if hidden:
+            # Not "no comments": there are some, this view is just not showing
+            # them. Saying "none" here would be the hiding-as-deleting failure
+            # G11 is explicit about.
+            return payload, [
+                f"no open threads on {target.key} — {len(hidden)} resolved, show with --all"
+            ]
         return payload, [f"no comments on {target.key}"]
-    return payload, _comment_rows(items)
+    return payload, _comment_rows(items, hidden=hidden)
 
 
 def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
@@ -773,6 +925,18 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 # -- parser --------------------------------------------------------------
+
+
+def _add_actor(parser: argparse.ArgumentParser) -> None:
+    """The ``--actor`` flag the thread verbs share."""
+    parser.add_argument(
+        "--actor",
+        choices=ACTORS,
+        help=(
+            f"which kind of participant is deciding this, person or agent "
+            f"(default: ${ACTOR_ENV}, else {HUMAN})"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -856,13 +1020,55 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--round", metavar="ID", help="comment on this round rather than the open one")
     comment.set_defaults(handler=_comment_add, verb_name="comment")
 
+    answer = verbs.add_parser(
+        "reply", parents=[common, writing], help="answer a comment, continuing its thread"
+    )
+    answer.add_argument("doc")
+    answer.add_argument(
+        "--comment", required=True, metavar="ID", help="comment id, or a prefix of one"
+    )
+    answer.add_argument("--body", help="the reply text")
+    answer.add_argument(
+        "--body-file", metavar="PATH", help="read the reply text from a file, or - for stdin"
+    )
+    answer.set_defaults(handler=_reply, verb_name="reply")
+
+    closing = verbs.add_parser(
+        "resolve", parents=[common, writing], help="close a thread — this conversation is over"
+    )
+    closing.add_argument("doc")
+    closing.add_argument(
+        "--comment", required=True, metavar="ID", help="thread root id, or a prefix of one"
+    )
+    closing.add_argument("--note", default="", help="a closing note")
+    _add_actor(closing)
+    closing.set_defaults(handler=_resolve, verb_name="resolve")
+
+    reopening = verbs.add_parser(
+        "reopen", parents=[common, writing], help="re-open a thread that was closed too early"
+    )
+    reopening.add_argument("doc")
+    reopening.add_argument(
+        "--comment", required=True, metavar="ID", help="thread root id, or a prefix of one"
+    )
+    reopening.add_argument(
+        "--why", required=True, help="the reason — required, this overturns a recorded decision"
+    )
+    _add_actor(reopening)
+    reopening.set_defaults(handler=_reopen, verb_name="reopen")
+
     listing = verbs.add_parser(
-        "comments", parents=[common], help="list comments with their round and disposition"
+        "comments", parents=[common], help="list threads with their replies and disposition"
     )
     listing.add_argument("doc")
     listing.add_argument("--round", metavar="ID", help="only comments in this round")
     listing.add_argument(
         "--unresolved", action="store_true", help="only comments still owed an answer"
+    )
+    listing.add_argument(
+        "--all",
+        action="store_true",
+        help="include resolved threads, which the default view hides (they are never deleted)",
     )
     listing.set_defaults(handler=_comments, verb_name="comments")
 

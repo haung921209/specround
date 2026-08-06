@@ -183,6 +183,53 @@ def test_resolving_a_reply_is_refused_because_a_reply_is_not_a_thread(store, rou
         resolve(store, reply_id)
 
 
+def test_replying_to_a_resolved_thread_is_refused(store, round_id):
+    """I11 — the one thing closing a thread actually gates."""
+    cid = store.add_comment(round_id, author="bob", body="why 30 seconds?")
+    resolve(store, cid, note="answered in chat")
+    with pytest.raises(InvariantError, match="reopen it before replying"):
+        store.reply(cid, author="alice", body="because of the proxy")
+    assert store.fold().comments[cid].replies == []
+
+
+def test_reopening_lets_the_conversation_continue(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why 30 seconds?")
+    resolve(store, cid)
+    reopen(store, cid, reason="bob asked again")
+    store.reply(cid, author="alice", body="because of the proxy")
+    assert [r.body for r in store.fold().comments[cid].replies] == ["because of the proxy"]
+
+
+def test_resolving_after_a_reply_keeps_the_reply(store, round_id):
+    """Closing is not deleting: the answers stay under the closed thread."""
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.reply(cid, author="alice", body="the proxy caps it")
+    resolve(store, cid, note="that answers it")
+    comment = store.fold().comments[cid]
+    assert comment.resolved is True
+    assert [r.body for r in comment.replies] == ["the proxy caps it"]
+
+
+def test_a_resolved_thread_still_takes_everything_else(store, round_id):
+    """Only replies are gated — dispositions and re-resolves still land."""
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    resolve(store, cid)
+    store.dispose(cid, author="alice", verdict="applied", reason="raised to 60")
+    resolve(store, cid, author="carol", note="again")
+    comment = store.fold().comments[cid]
+    assert comment.verdict == "applied"
+    assert [r.author for r in comment.resolutions] == ["alice", "carol"]
+
+
+def test_a_refused_reply_leaves_the_ledger_untouched(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    resolve(store, cid)
+    before = store.ledger.read()
+    with pytest.raises(InvariantError):
+        store.reply(cid, author="alice", body="late answer")
+    assert store.ledger.read() == before
+
+
 def test_a_refused_resolve_leaves_the_ledger_untouched(store, round_id):
     before = store.ledger.read()
     with pytest.raises(InvariantError):

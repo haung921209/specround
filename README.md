@@ -30,6 +30,16 @@ specround comment SPEC.md --body-file - <<< "the whole retry section is missing"
 specround comments SPEC.md            # a table; --json on any verb for an agent
 specround round status SPEC.md        # rounds, counts, what is still outstanding
 
+# Answer a comment — a person and an agent use the same verb, same thread.
+specround reply SPEC.md --comment c-d35c --body "the proxy caps it at 60"
+specround reply SPEC.md --comment c-d35c --body-file - --author agent:reviewer
+
+# Close the conversation once it is over. Resolved threads drop out of the
+# default listing; --all brings them back, and nothing is ever deleted.
+specround resolve SPEC.md --comment c-d35c --note "settled above"
+specround comments SPEC.md --all
+specround reopen SPEC.md --comment c-d35c --why "it came back in revision 3"
+
 # Every comment gets a verdict and a reason: applied · rejected · answered · deferred.
 specround dispose SPEC.md --comment c-d35c --as applied --why "raised to 60"
 specround round close SPEC.md --allow-unresolved --note "retries move to round 2"
@@ -39,11 +49,17 @@ specround reanchor SPEC.md
 ```
 
 `--author` (or `$SPECROUND_AUTHOR`) says who is speaking — a person or
-`agent:reviewer`, same field, same commands (G4). Exit codes are the verdict:
-`0` success · `2` fix your command (repeated quote → `--occurrence`) ·
-`3` the history refuses (no open round → `round open`) · `1` anything else.
-Success goes to stdout and errors to stderr, so `--json | jq` never receives
-an error object as a result.
+`agent:reviewer`, same field, same commands (G4). On `resolve` and `reopen`,
+`--actor human|agent` (or `$SPECROUND_ACTOR`) records which *kind* of
+participant decided; it defaults to `human` and is never guessed from the
+author's name.
+
+Exit codes are the verdict: `0` success · `2` fix your command (repeated
+quote → `--occurrence`) · `3` the history refuses (no open round →
+`round open`; a reply to a resolved thread → `reopen`) · `1` anything else.
+Resolving a thread that is already resolved is a `0` that reports no change,
+so a retry is always safe. Success goes to stdout and errors to stderr, so
+`--json | jq` never receives an error object as a result.
 
 Reading a ledger works anywhere; **appending needs POSIX**. Assigning `seq`
 spans a read and a write, so it is done under an exclusive file lock, and an
