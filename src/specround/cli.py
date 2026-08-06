@@ -310,8 +310,6 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
     """
     if not quote:
         raise UsageError("--quote must not be empty")
-    if occurrence is not None and occurrence < 0:
-        raise UsageError("--occurrence counts appearances from 0")
     text = store.base_text(round_.id)
     total = _occurrences(text, quote)
     if total == 0:

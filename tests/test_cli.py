@@ -856,3 +856,13 @@ def test_the_table_names_the_comments_a_person_should_look_at(run, doc, opened):
     assert listing.code == 0
     assert "1 re-anchored, worth a look" in listing.out
     assert comment in listing.out.splitlines()[-1]
+
+
+def test_a_negative_occurrence_is_refused_by_the_one_rule_that_owns_it(run, doc, opened):
+    """The anchor layer already says occurrences count from 0 — no second copy."""
+    result = run(
+        "comment", doc, "--author", "bob", "--body", "which one?",
+        "--quote", "30 seconds", "--occurrence", "-1",
+    )
+    assert result.code == 2
+    assert "negative" in result.err
