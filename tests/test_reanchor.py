@@ -169,6 +169,30 @@ def test_an_edited_quote_is_found_by_fuzzy_alignment():
     assert "45 seconds" in result.anchor.exact
 
 
+def test_a_fuzzy_span_is_not_allowed_to_cut_a_word_in_half():
+    """The characters that match are not the same thing as the span to show.
+
+    "30 seconds" against "60 seconds" matches on "0 seconds" — the 6 is not in
+    the quote. That is the correct alignment and the wrong anchor, so the span
+    grows back out to the word it was sitting inside.
+    """
+    revised = DOC.replace(QUOTE_TEXT, "Timeouts are 60 seconds.")
+    result = reanchor(anchored(quote="30 seconds"), revised)
+    assert result.strategy == FUZZY
+    assert result.anchor.exact == "60 seconds"
+
+
+def test_snapping_is_bounded_and_never_breaks_the_floor():
+    from specround.reanchor import SNAP_CHARS, _snap
+
+    text = "aaaa" + "b" * 200 + "cccc"
+    start, end = _snap(text, 10, 20)
+    assert 10 - start <= SNAP_CHARS
+    assert end - 20 <= SNAP_CHARS
+    # Punctuation on both sides is already a boundary: nothing to grow into.
+    assert _snap("one. two. three.", 5, 8) == (5, 8)
+
+
 def test_a_deleted_quote_is_an_orphan_not_a_wrong_guess():
     result = reanchor(anchored(), _delete_the_paragraph(DOC))
     assert result.orphaned
@@ -313,11 +337,9 @@ def test_an_empty_document_orphans_everything():
 
 def test_a_short_quote_in_a_long_document_stays_bounded():
     """The Hypothesis failure mode: a common short quote in a big file."""
-    from specround import reanchor as module
-
     text = ("the server retries the request\n" * 4000) + "the server retries the frame\n"
     anchor = Anchor(exact="the frame", start=0, end=9)
-    result = module.reanchor(anchor, text)
+    result = reanchor(anchor, text)
     assert result.found
     assert result.anchor.verify(text) is None
 

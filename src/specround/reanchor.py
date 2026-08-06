@@ -65,6 +65,8 @@ ALIGN_CANDIDATES = 3
 ALIGN_PAD = 64
 #: Cap on a verbatim occurrence scan, so a one-character quote cannot run away.
 MAX_OCCURRENCES = 1024
+#: How far a fuzzy span may grow outward to stop cutting a word in half.
+SNAP_CHARS = 16
 #: Word seeds taken from a quote to generate candidate positions.
 SEED_COUNT = 3
 #: Similarity is compared at this precision, so ties are decided by the
@@ -342,7 +344,41 @@ def _fuzzy(
         window = (start, min(len(text), start + len(quote)))
         if window[1] > window[0]:
             spans.append(window)
-    return _pick(spans, anchor, text, quote=quote, min_similarity=min_similarity)
+
+    picked = _pick(spans, anchor, text, quote=quote, min_similarity=min_similarity)
+    if picked is None:
+        return None
+    start, end, ambiguous = picked
+    snapped = _snap(text, start, end)
+    # Snapping lowers the score slightly by definition — it adds characters the
+    # quote does not have. Take it anyway when it still clears the floor: an
+    # anchor that reads "0 seconds" because the 6 of "60" did not match scores
+    # well and shows badly, and a reviewer judges the span, not the ratio.
+    if snapped != (start, end):
+        if _round(_ratio(quote, text[snapped[0] : snapped[1]])) >= min_similarity:
+            start, end = snapped
+    return start, end, ambiguous
+
+
+def _snap(text: str, start: int, end: int) -> tuple[int, int]:
+    """Grow a span outward to word boundaries, by at most :data:`SNAP_CHARS`."""
+    low = start
+    while (
+        0 < low < len(text)
+        and start - low < SNAP_CHARS
+        and text[low - 1].isalnum()
+        and text[low].isalnum()
+    ):
+        low -= 1
+    high = end
+    while (
+        high < len(text)
+        and high - end < SNAP_CHARS
+        and text[high].isalnum()
+        and text[high - 1].isalnum()
+    ):
+        high += 1
+    return low, high
 
 
 # -- choosing between spans ----------------------------------------------
