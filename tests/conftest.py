@@ -35,6 +35,12 @@ def clock():
 
 
 @pytest.fixture
+def doc_text():
+    """The text ``doc`` starts as — the baseline a revision test edits away from."""
+    return DOC_TEXT
+
+
+@pytest.fixture
 def doc(tmp_path):
     path = tmp_path / DOC_NAME
     path.write_text(DOC_TEXT, encoding="utf-8")

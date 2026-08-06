@@ -11,12 +11,15 @@ that is untracked, or that lives outside any repository, gets the full loop.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 from specround.anchors import Anchor, anchor_for_quote
 from specround.errors import InvariantError, SpecroundError
 from specround.events import (
+    ANCHOR_ORPHAN,
+    ANCHOR_REANCHOR,
     COMMENT_ADD,
     DISPOSITION,
     REPLY,
@@ -24,13 +27,40 @@ from specround.events import (
     ROUND_OPEN,
     SUGGESTION_ADD,
 )
-from specround.fold import Round, State
+from specround.fold import Comment, Round, State
 from specround.ledger import Clock, Ledger
+from specround.reanchor import MIN_SIMILARITY, POSITION, reanchor
 from specround.snapshots import SnapshotStore
 
 #: The directory that holds a document's review history.
 STORE_DIRNAME = ".specround"
 LEDGER_FILENAME = "ledger.jsonl"
+
+
+@dataclass(frozen=True)
+class ReanchorReport:
+    """What one pass over a revised document did to the comments on it.
+
+    ``unchanged`` is the quiet majority and gets no ledger event: a comment
+    whose anchor still verifies has nothing to record, and writing "still
+    fine" on every revision would bury the entries that matter under noise.
+    """
+
+    #: Snapshot of the revised document this pass ran against.
+    base: str
+    rebound: list[str] = field(default_factory=list)
+    orphaned: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    #: Comments already processed against this snapshot by an earlier pass.
+    skipped: list[str] = field(default_factory=list)
+    #: Rebound comments where more than one span fit equally well (subset of
+    #: ``rebound``) — a human should look at these before trusting the move.
+    ambiguous: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        """True when this pass appended anything."""
+        return bool(self.rebound or self.orphaned)
 
 
 class ReviewStore:
@@ -249,6 +279,90 @@ class ReviewStore:
         if note:
             record["note"] = note
         return self._append(record)
+
+    # -- re-anchoring ----------------------------------------------------
+
+    def reanchor_document(
+        self,
+        doc: Path,
+        *,
+        author: str,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> ReanchorReport:
+        """Carry every anchored comment on ``doc`` onto the document as it is now.
+
+        This is G1 doing its work: the document was revised, and each comment
+        either follows its text to the new place or is reported orphaned. The
+        original records are never touched — a move appends
+        ``anchor.reanchor``, a loss appends ``anchor.orphan``, and the history
+        of both stays readable in order (G3, append-only).
+
+        Running it twice in a row is a no-op. A comment that moved now verifies
+        where it landed, and a comment already processed against this exact
+        snapshot is skipped, so a second pass has nothing left to say.
+        """
+        path = Path(doc).resolve()
+        if not path.is_file():
+            raise SpecroundError(f"cannot re-anchor {path}: not a file")
+        key = self.doc_key(path)
+        base = self.snapshots.put_file(path)
+        text = self.snapshots.get_text(base)
+
+        state = self.fold()
+        report = ReanchorReport(base=base)
+        for comment in self._anchored_comments(state, key):
+            if comment.bound_to == base:
+                report.skipped.append(comment.id)
+                continue
+            result = reanchor(comment.current_anchor, text, min_similarity=min_similarity)
+            if result.strategy == POSITION:
+                report.unchanged.append(comment.id)
+                continue
+            if result.found:
+                result.anchor.verify(text)  # never append an anchor that does not hold
+                record: dict[str, Any] = {
+                    "type": ANCHOR_REANCHOR,
+                    "author": author,
+                    "target": comment.id,
+                    "base": base,
+                    "anchor": result.anchor.to_json(),
+                    "strategy": result.strategy,
+                }
+                if result.ambiguous:
+                    record["ambiguous"] = True
+                    report.ambiguous.append(comment.id)
+                self._append(record)
+                report.rebound.append(comment.id)
+            else:
+                self._append(
+                    {
+                        "type": ANCHOR_ORPHAN,
+                        "author": author,
+                        "target": comment.id,
+                        "base": base,
+                        "reason": result.reason,
+                    }
+                )
+                report.orphaned.append(comment.id)
+        return report
+
+    def _anchored_comments(self, state: State, key: str) -> list[Comment]:
+        """Comments on one document that have somewhere to be re-anchored."""
+        return [
+            comment
+            for comment in state.comments.values()
+            if comment.anchor is not None and state.rounds[comment.round].doc == key
+        ]
+
+    def orphans(self, doc: Path | None = None) -> list[Comment]:
+        """Comments whose text the latest re-anchor pass could not find."""
+        state = self.fold()
+        key = self.doc_key(doc) if doc is not None else None
+        return [
+            comment
+            for comment in state.orphans
+            if key is None or state.rounds[comment.round].doc == key
+        ]
 
     # -- convenience -----------------------------------------------------
 
