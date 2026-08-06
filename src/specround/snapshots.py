@@ -4,9 +4,10 @@ A round freezes the document it reviews. The frozen copy is stored by the
 sha256 of its bytes, so the same content is stored once and a reference is a
 proof of content rather than a pointer to a mutable place.
 
-There is no git here. Objects are ordinary files under ``.specround/objects/``,
-so a document that is untracked, or that lives nowhere near a repository, gets
-the same behaviour as one that is committed.
+There is no git here. Objects are ordinary files under the store's ``objects/``
+directory — wherever :mod:`specround.locations` puts that store — so a document
+that is untracked, or that lives nowhere near a repository, gets the same
+behaviour as one that is committed.
 """
 
 from __future__ import annotations

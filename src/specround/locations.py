@@ -161,6 +161,43 @@ class Origin:
         return cls.from_json(data)
 
 
+def origin_file(root: Path) -> Path:
+    """Where a store keeps its breadcrumb."""
+    return Path(root) / ORIGIN_FILENAME
+
+
+def read_origin(root: Path) -> Origin | None:
+    """The origin a store records, or ``None`` when it has none.
+
+    A store written before this record existed has none, and reading that as
+    "serves its parent folder" is what keeps those ledgers working.
+    """
+    path = origin_file(root)
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    return Origin.decode(text)
+
+
+def write_origin(root: Path, origin: Origin) -> None:
+    """Record what a store is for — once, and never again.
+
+    The line says what the store was created for, not where that thing is now.
+    Rewriting it would erase the original path, which is the one thing a later
+    re-binding (H10) would have to start from. Exclusive-create is the race
+    guard and the write-once rule in the same call.
+    """
+    Path(root).mkdir(parents=True, exist_ok=True)
+    try:
+        with origin_file(root).open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(origin.encode())
+    except FileExistsError:
+        pass
+
+
 @dataclass(frozen=True)
 class StoreLocation:
     """A resolved answer: the store directory, what it serves, and who decided."""

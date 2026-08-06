@@ -3,6 +3,7 @@
 import specround
 from specround.errors import (
     AnchorError,
+    ConfigError,
     InvariantError,
     LedgerError,
     SchemaError,
@@ -16,8 +17,18 @@ def test_version_is_exposed():
 
 
 def test_every_error_descends_from_the_base():
-    for err in (LedgerError, SchemaError, InvariantError, SnapshotError, AnchorError):
+    for err in (LedgerError, SchemaError, InvariantError, SnapshotError, AnchorError, ConfigError):
         assert issubclass(err, SpecroundError)
+
+
+def test_a_config_error_is_not_a_ledger_error():
+    # It fires before any file is touched: nothing was read, nothing rejected.
+    assert not issubclass(ConfigError, LedgerError)
+
+
+def test_the_public_names_are_importable_and_sorted():
+    assert [name for name in specround.__all__ if not hasattr(specround, name)] == []
+    assert specround.__all__ == sorted(specround.__all__)
 
 
 def test_schema_and_invariant_errors_are_ledger_errors():

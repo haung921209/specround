@@ -1,10 +1,11 @@
 """Zero git (G5, G10).
 
-The point of the ledger living next to the document is that review does not
-wait on a repository. These tests assert it structurally — the package imports
-no process-spawning module at all — and behaviourally: the full loop runs with
-every subprocess entry point booby-trapped, in a directory with no repository
-in sight.
+The point of the tool owning its own files is that review does not wait on a
+repository — and does not leave one anything to clean up. These tests assert it
+structurally (the package imports no process-spawning module at all) and
+behaviourally: the full loop runs with every subprocess entry point
+booby-trapped, in a directory with no repository in sight, and the document's
+folder is exactly as it was afterwards.
 """
 
 import ast
@@ -16,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import specround
+from specround.locations import STORE_DIRNAME, central_store_dir
 from specround.store import ReviewStore
 
 PACKAGE_DIR = Path(specround.__file__).parent
@@ -152,9 +154,10 @@ def assert_loop_landed(store: ReviewStore, doc: Path) -> None:
     assert {c.state for c in state.comments.values()} == {"applied"}
     round_ = next(iter(state.rounds.values()))
     assert store.snapshots.get_text(round_.base) == DOC
-    # Everything the loop produced lives beside the document, nowhere else.
-    assert (doc.parent / ".specround" / "ledger.jsonl").is_file()
-    assert not (doc.parent / ".git").exists()
+    # Everything the loop produced lives in the central store, and the document's
+    # folder holds exactly what it held before: the document.
+    assert (central_store_dir(doc) / "ledger.jsonl").is_file()
+    assert [p.name for p in doc.parent.iterdir()] == [doc.name]
 
 
 def test_full_loop_in_a_directory_with_no_repository(tmp_path, clock, no_subprocess, hostile_path):
@@ -188,7 +191,24 @@ def assert_loop_landed_in_repo(store: ReviewStore, doc: Path) -> None:
     state = store.fold()
     assert len(state.comments) == 2
     assert state.unresolved == []
-    assert (doc.parent / ".specround" / "ledger.jsonl").is_file()
+    assert (central_store_dir(doc) / "ledger.jsonl").is_file()
+    # The working tree gained nothing to gitignore — this is the whole reason the
+    # default moved out of the document's folder.
+    assert sorted(p.name for p in doc.parent.iterdir()) == [".git", doc.name]
+
+
+def test_an_in_tree_store_is_still_git_free(tmp_path, clock, no_subprocess, hostile_path):
+    """Opting the store back into the repository does not opt into git."""
+    workdir = tmp_path / "repo"
+    (workdir / ".git").mkdir(parents=True)
+    doc = workdir / "spec.md"
+    doc.write_text(DOC, encoding="utf-8")
+    (workdir / ".specround.json").write_text('{"store": {"mode": "beside"}}', encoding="utf-8")
+
+    store = run_full_loop(doc, clock)
+    assert (workdir / STORE_DIRNAME / "ledger.jsonl").is_file()
+    assert store.fold().unresolved == []
+    assert not hostile_path.exists(), "a git binary was invoked"
 
 
 def test_reading_history_back_needs_nothing_but_the_files(tmp_path, clock, no_subprocess):
@@ -198,12 +218,13 @@ def test_reading_history_back_needs_nothing_but_the_files(tmp_path, clock, no_su
     doc.write_text(DOC, encoding="utf-8")
     run_full_loop(doc, clock)
 
-    # A second process, a bare directory path, no clock, no repository.
-    reopened = ReviewStore.at(workdir)
-    state = reopened.fold()
+    # A second process, the document's path, no clock, no repository.
+    state = ReviewStore.for_document(doc).fold()
     assert len(state.rounds) == 1
     assert len(state.comments) == 2
     assert [c.state for c in state.comments.values()] == ["applied", "applied"]
+    # And from the store directory alone, which is all a listing would have.
+    assert ReviewStore.open(central_store_dir(doc)).fold() == state
 
 
 def test_the_ledger_is_readable_as_plain_text(tmp_path, clock, no_subprocess):
@@ -214,7 +235,7 @@ def test_the_ledger_is_readable_as_plain_text(tmp_path, clock, no_subprocess):
     store = run_full_loop(doc, clock)
 
     # G4: an agent with no library can cat the log and understand it.
-    lines = (workdir / ".specround" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = (central_store_dir(doc) / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 7
     assert '"type":"round.open"' in lines[0]
     assert lines[-1].startswith('{"author":"alice"')
