@@ -247,6 +247,154 @@ def test_round_close_records_what_it_left_open(run, doc, opened):
     assert result.json["round"]["close_note"] == "retries move to round 2"
 
 
+# -- threads: reply, resolve, reopen (G4 × G11) --------------------------
+
+
+def test_a_person_and_an_agent_answer_through_the_same_verb(run, doc, opened):
+    """G4 at the surface: one channel, two participants, one thread."""
+    comment = a_comment(run, doc)
+    first = run("reply", doc, "--comment", comment, "--author", "agent:reviewer",
+                "--body", "the proxy caps it at 60")
+    assert first.code == 0
+    second = run("reply", doc, "--comment", comment, "--author", "bob",
+                 "--body", "then say 60 in the spec", "--json")
+    assert second.code == 0
+    assert [r["author"] for r in second.json["comment"]["replies"]] == [
+        "agent:reviewer",
+        "bob",
+    ]
+    assert second.json["reply"]["body"] == "then say 60 in the spec"
+
+
+def test_a_reply_can_be_addressed_by_an_id_prefix(run, doc, opened):
+    comment = a_comment(run, doc)
+    result = run("reply", doc, "--comment", comment[:6], "--author", "alice", "--body", "ok", "--json")
+    assert result.code == 0
+    assert result.json["comment"]["id"] == comment
+
+
+def test_a_reply_body_can_come_from_stdin(run, doc, opened, monkeypatch):
+    comment = a_comment(run, doc)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("piped in from an agent\n"))
+    result = run("reply", doc, "--comment", comment, "--author", "agent:reviewer",
+                 "--body-file", "-", "--json")
+    assert result.json["reply"]["body"] == "piped in from an agent"
+
+
+def test_a_reply_needs_a_body(run, doc, opened):
+    comment = a_comment(run, doc)
+    result = run("reply", doc, "--comment", comment, "--author", "alice")
+    assert result.code == 2
+    assert "a reply needs a body" in result.err
+
+
+def test_replying_to_a_resolved_thread_is_a_state_error(run, doc, opened):
+    """3, not 2: the command is fine, the history is what refuses it."""
+    comment = a_comment(run, doc)
+    assert run("resolve", doc, "--comment", comment, "--author", "alice").code == 0
+    result = run("reply", doc, "--comment", comment, "--author", "bob", "--body", "one more thing")
+    assert result.code == 3
+    assert "reopen" in result.err
+
+
+def test_reopening_makes_the_reply_land(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("resolve", doc, "--comment", comment, "--author", "alice")
+    assert run("reopen", doc, "--comment", comment, "--author", "bob",
+               "--why", "it came back in revision 3").code == 0
+    result = run("reply", doc, "--comment", comment, "--author", "bob", "--body", "still wrong", "--json")
+    assert result.code == 0
+    assert [r["body"] for r in result.json["comment"]["replies"]] == ["still wrong"]
+
+
+def test_resolving_records_who_and_which_kind(run, doc, opened):
+    comment = a_comment(run, doc)
+    result = run("resolve", doc, "--comment", comment, "--author", "agent:reviewer",
+                 "--actor", "agent", "--note", "applied upstream", "--json")
+    assert result.code == 0
+    assert result.json["resolved"] is True
+    assert result.json["changed"] is True
+    assert result.json["event"].startswith("v-")
+    resolution = result.json["comment"]["resolutions"][-1]
+    assert (resolution["author"], resolution["actor"]) == ("agent:reviewer", "agent")
+    assert resolution["note"] == "applied upstream"
+
+
+def test_the_actor_defaults_to_human_rather_than_reading_the_author(run, doc, opened):
+    """``agent:`` in a name is a convention; the CLI does not promote it to a fact."""
+    comment = a_comment(run, doc)
+    result = run("resolve", doc, "--comment", comment, "--author", "agent:reviewer", "--json")
+    assert result.json["comment"]["resolutions"][-1]["actor"] == "human"
+
+
+def test_the_environment_can_name_the_actor(run, doc, opened, monkeypatch):
+    monkeypatch.setenv("SPECROUND_ACTOR", "agent")
+    comment = a_comment(run, doc)
+    result = run("resolve", doc, "--comment", comment, "--author", "agent:reviewer", "--json")
+    assert result.json["comment"]["resolutions"][-1]["actor"] == "agent"
+
+
+def test_a_bad_actor_in_the_environment_is_a_usage_error(run, doc, opened, monkeypatch):
+    monkeypatch.setenv("SPECROUND_ACTOR", "robot")
+    comment = a_comment(run, doc)
+    result = run("resolve", doc, "--comment", comment, "--author", "alice")
+    assert result.code == 2
+    assert "unknown actor" in result.err
+
+
+def test_resolving_an_already_resolved_thread_succeeds_and_says_nothing_changed(run, doc, opened):
+    """I10 reaching the shell: a retry is safe, so an agent can just retry."""
+    comment = a_comment(run, doc)
+    run("resolve", doc, "--comment", comment, "--author", "alice")
+    result = run("resolve", doc, "--comment", comment, "--author", "carol", "--json")
+    assert result.code == 0
+    assert result.json["changed"] is False
+    assert result.json["event"] is None
+    assert result.json["resolved"] is True
+    assert len(result.json["comment"]["resolutions"]) == 1
+
+    human = run("resolve", doc, "--comment", comment, "--author", "carol")
+    assert "already resolved" in human.out
+
+
+def test_reopening_an_open_thread_succeeds_and_says_nothing_changed(run, doc, opened):
+    comment = a_comment(run, doc)
+    result = run("reopen", doc, "--comment", comment, "--author", "alice",
+                 "--why", "was never closed", "--json")
+    assert result.code == 0
+    assert result.json["changed"] is False
+    assert result.json["resolved"] is False
+
+
+def test_reopening_requires_a_reason(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("resolve", doc, "--comment", comment, "--author", "alice")
+    assert run("reopen", doc, "--comment", comment, "--author", "bob").code == 2
+
+
+def test_resolving_leaves_the_disposition_axis_alone(run, doc, opened):
+    """Closing the talk is not deciding the comment — and round.close still counts it."""
+    comment = a_comment(run, doc)
+    run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "agreed in chat")
+    status = run("round", "status", doc, "--json").json
+    assert status["unresolved"] == [comment]
+    assert run("round", "close", doc, "--author", "alice").code == 3
+
+
+def test_a_thread_can_be_closed_after_its_round(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("dispose", doc, "--comment", comment, "--as", "answered", "--why", "see the reply",
+        "--author", "alice")
+    assert run("round", "close", doc, "--author", "alice").code == 0
+    assert run("resolve", doc, "--comment", comment, "--author", "alice").code == 0
+
+
+def test_an_unknown_thread_id_is_a_usage_error(run, doc, opened):
+    a_comment(run, doc)
+    assert run("resolve", doc, "--comment", "c-nope", "--author", "alice").code == 2
+    assert run("reply", doc, "--comment", "c-nope", "--author", "alice", "--body", "x").code == 2
+
+
 # -- the exit code contract ----------------------------------------------
 
 
@@ -425,7 +573,9 @@ def test_every_payload_names_its_schema_verb_and_subject(run, doc, opened):
 def test_the_comment_object_field_set_is_closed(run, doc, opened):
     comment = a_comment(run, doc)
     run("dispose", doc, "--comment", comment, "--as", "held", "--why", "later", "--author", "alice")
-    payload = run("comments", doc, "--json").json["comments"][0]
+    run("reply", doc, "--comment", comment, "--body", "the proxy caps it", "--author", "alice")
+    run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "settled")
+    payload = run("comments", doc, "--all", "--json").json["comments"][0]
     assert set(payload) == {
         "anchor",
         "author",
@@ -437,12 +587,67 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
         "orphaned",
         "patch",
         "replies",
+        "resolutions",
+        "resolved",
         "round",
         "state",
         "ts",
         "unresolved",
     }
     assert set(payload["dispositions"][0]) == {"author", "id", "reason", "ts", "verdict"}
+    assert set(payload["replies"][0]) == {"author", "body", "id", "ts"}
+    assert set(payload["resolutions"][0]) == {
+        "actor", "author", "id", "note", "resolved", "ts",
+    }
+
+
+def test_the_comments_payload_says_which_view_it_is_and_what_it_left_out(run, doc, opened):
+    closed = a_comment(run, doc)
+    a_comment(run, doc, quote=None, body="retries are missing")
+    run("resolve", doc, "--comment", closed, "--author", "alice")
+
+    default = run("comments", doc, "--json").json
+    assert set(default) == {
+        "comments", "doc", "hidden", "include_resolved", "path", "schema", "store", "verb",
+    }
+    assert default["include_resolved"] is False
+    assert default["hidden"] == [closed]
+    assert closed not in [c["id"] for c in default["comments"]]
+
+    every = run("comments", doc, "--all", "--json").json
+    assert every["include_resolved"] is True
+    assert every["hidden"] == []
+    assert closed in [c["id"] for c in every["comments"]]
+
+
+def test_the_json_listing_nests_replies_under_their_thread(run, doc, opened):
+    first = a_comment(run, doc)
+    second = a_comment(run, doc, quote=None, body="retries are missing")
+    run("reply", doc, "--comment", first, "--author", "alice", "--body", "the proxy caps it")
+    threads = {c["id"]: c for c in run("comments", doc, "--json").json["comments"]}
+    # Nested, not a flat list a consumer would have to re-associate by target.
+    assert [r["body"] for r in threads[first]["replies"]] == ["the proxy caps it"]
+    assert threads[second]["replies"] == []
+
+
+def test_the_thread_payload_field_set_is_closed(run, doc, opened):
+    comment = a_comment(run, doc)
+    for argv in (
+        ("resolve", doc, "--comment", comment, "--author", "alice"),
+        ("reopen", doc, "--comment", comment, "--author", "alice", "--why", "again"),
+    ):
+        payload = run(*argv, "--json").json
+        assert set(payload) == {
+            "changed", "comment", "doc", "event", "path", "resolved", "schema", "store", "verb",
+        }
+
+
+def test_the_reply_payload_field_set_is_closed(run, doc, opened):
+    comment = a_comment(run, doc)
+    payload = run("reply", doc, "--comment", comment, "--author", "alice",
+                  "--body", "because of the proxy", "--json").json
+    assert set(payload) == {"comment", "doc", "path", "reply", "schema", "store", "verb"}
+    assert payload["reply"]["id"].startswith("p-")
 
 
 def test_the_round_object_field_set_is_closed(run, doc, opened):
@@ -557,6 +762,51 @@ def test_an_empty_list_says_so_rather_than_printing_a_header(run, doc, opened):
     result = run("comments", doc)
     assert result.code == 0
     assert result.out.strip() == f"no comments on {doc.name}"
+
+
+def test_the_table_indents_replies_under_their_thread(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("reply", doc, "--comment", comment, "--author", "alice", "--body", "the proxy caps it")
+    run("reply", doc, "--comment", comment, "--author", "bob", "--body", "then say so")
+    lines = run("comments", doc).lines
+    assert lines[1].startswith(comment)  # the root is flush left
+    assert lines[2].startswith(" ") and lines[3].startswith(" ")
+
+    # A reply belongs to the thread above it: no state and no anchor of its own,
+    # so those columns are empty and the row reads as part of the one before it.
+    marker, reply_id, kind, author, *body = lines[2].split()
+    assert (marker, kind, author) == ("└", "reply", "alice")
+    assert reply_id.startswith("p-")
+    assert " ".join(body) == "the proxy caps it"
+    assert lines[3].split()[3] == "bob"
+
+
+def test_resolved_threads_are_hidden_from_the_default_listing(run, doc, opened):
+    closed = a_comment(run, doc)
+    living = a_comment(run, doc, quote=None, body="retries are missing")
+    run("resolve", doc, "--comment", closed, "--author", "alice")
+    out = run("comments", doc).out
+    assert living in out
+    assert closed not in out
+    # Hidden, and the view says so — silence would read as "there is nothing else".
+    assert "1 resolved and hidden" in out
+
+
+def test_the_all_flag_brings_resolved_threads_back(run, doc, opened):
+    closed = a_comment(run, doc)
+    a_comment(run, doc, quote=None, body="retries are missing")
+    run("resolve", doc, "--comment", closed, "--author", "alice")
+    out = run("comments", doc, "--all").out
+    assert closed in out
+    assert f"1 resolved: {closed}" in out
+
+
+def test_a_listing_with_nothing_but_resolved_threads_does_not_claim_emptiness(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("resolve", doc, "--comment", comment, "--author", "alice")
+    out = run("comments", doc).out
+    assert "no open threads" in out and "1 resolved" in out
+    assert "no comments" not in out
 
 
 def test_orphans_are_reported_under_the_table(run, doc, opened):
