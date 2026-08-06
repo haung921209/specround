@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from specround.errors import SchemaError
+from specround.errors import LedgerError, SchemaError
 from specround.events import (
     SCHEMA,
     canonical_json,
@@ -28,7 +28,7 @@ from specround.events import (
     derive_id,
     validate_event,
 )
-from specround.fold import State, fold
+from specround.fold import State, check_position, fold
 
 try:  # pragma: no cover - platform dependent
     import fcntl
@@ -84,11 +84,10 @@ class Ledger:
                 validate_event(record)
             except SchemaError as exc:
                 raise SchemaError(f"{self.path}:{index + 1}: {exc}") from exc
-            if record["seq"] != index:
-                raise SchemaError(
-                    f"{self.path}:{index + 1}: record claims seq {record['seq']} but sits at "
-                    f"position {index} — history was reordered or truncated"
-                )
+            # I2 is enforced by one function, shared with the fold — see
+            # check_position. Reading and folding used to disagree about which
+            # error this is, and a caller cannot act on two answers.
+            check_position(record.get("id", ""), record["seq"], index, where=f"{self.path}:{index + 1}")
             records.append(record)
         return records
 
@@ -100,17 +99,29 @@ class Ledger:
 
         The lock spans read-then-write because ``seq`` is assigned from the
         current length: two writers without it would hand out the same seq.
+
+        Without the primitive there is no honest way to append. Two writers
+        would hand out one ``seq``, and a ledger with a repeated position is one
+        the reader refuses whole (I2) — the loss this format exists to prevent,
+        arriving through the file layer instead of the anchor layer. So the
+        write is refused and the reader keeps working: ``cat`` stays a valid
+        reader on every platform, appending needs POSIX.
         """
+        if fcntl is None:
+            raise LedgerError(
+                f"cannot append to {self.path}: this interpreter has no exclusive "
+                "file lock (fcntl is POSIX-only). Two writers without it are handed "
+                "the same seq, and a ledger with a repeated position is refused "
+                "whole — reading works here, appending needs POSIX"
+            )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+", encoding="utf-8", newline="\n")
         try:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             yield handle
         finally:
             try:
-                if fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             finally:
                 handle.close()
 
@@ -130,7 +141,8 @@ class Ledger:
         check_event_type(record.get("type"))
         with self._exclusive() as handle:
             handle.seek(0)
-            prior = self._parse(handle.read().splitlines())
+            text = handle.read()
+            prior = self._parse(text.splitlines())
             record["seq"] = len(prior)
             record.setdefault("ts", self._clock())
             if not record.get("id"):
@@ -139,6 +151,16 @@ class Ledger:
             # The reader is the validator: folding prior + record raises on any
             # cross-record violation before this becomes durable.
             fold([*prior, record])
+            if text and not text.endswith("\n"):
+                # The last line lost its terminator — an editor stripping the
+                # final newline is the ordinary way that happens, and the
+                # reader accepts such a file because the records in it are
+                # whole. Writing here without putting the newline back would
+                # splice this record onto the end of that line, and one
+                # physical line holding two objects kills every later read.
+                # Restoring the terminator is not an update: no record's bytes
+                # change, only the line ending the last one was written with.
+                handle.write("\n")
             handle.write(canonical_json(record) + "\n")
             handle.flush()
             os.fsync(handle.fileno())

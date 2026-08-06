@@ -20,13 +20,17 @@ from specround.events import (
 
 
 def valid(kind: str, **overrides):
-    """A minimal valid record of each kind."""
+    """A minimal valid record of each kind.
+
+    The id is derived rather than written in: it has to carry this kind's
+    prefix, and a fixture that hard-codes one prefix for every kind is exactly
+    the record the format refuses.
+    """
     base = {
         "schema": SCHEMA,
         "seq": 0,
         "ts": "2020-01-01T00:00:01Z",
         "type": kind,
-        "id": "x-000000000000",
         "author": "alice",
     }
     payloads = {
@@ -54,7 +58,9 @@ def valid(kind: str, **overrides):
             "reason": "the timeout came back in revision 3",
         },
     }
-    return {**base, **payloads[kind], **overrides}
+    record = {**base, **payloads[kind], **overrides}
+    record.setdefault("id", derive_id(record))
+    return record
 
 
 @pytest.mark.parametrize("kind", EVENT_TYPES)
@@ -277,3 +283,49 @@ def test_derive_id_refuses_an_unknown_type():
         derive_id({"type": "comment.delete"})
     with pytest.raises(SchemaError, match="missing a 'type' field"):
         derive_id({"author": "alice"})
+
+
+# -- fields the format defines precisely ---------------------------------
+
+
+@pytest.mark.parametrize("kind", ["round.open", "anchor.reanchor", "anchor.orphan"])
+def test_a_base_that_is_not_a_snapshot_reference_is_rejected(kind):
+    """``base`` is ``sha256:<64 hex>``, not any non-empty string.
+
+    A round whose base cannot be resolved is a round nothing can be anchored
+    against, and the ledger used to keep accepting history on top of it: the
+    unanchored comments still landed, and only the anchored ones failed.
+    """
+    with pytest.raises(SchemaError, match="base"):
+        validate_event(valid(kind, base="not-a-digest-at-all"))
+
+
+def test_a_base_with_the_wrong_digest_length_is_rejected():
+    with pytest.raises(SchemaError, match="base"):
+        validate_event(valid("round.open", base="sha256:" + "0" * 63))
+
+
+def test_an_id_prefix_that_lies_about_the_kind_is_rejected():
+    """§3 defines the id as a kind prefix plus twelve digest characters.
+
+    An unchecked prefix makes a bare id in a log line unreadable — and it
+    inverts the fold's own diagnosis, which tells a reader that a target 'is a
+    round, not a comment' by trusting exactly this.
+    """
+    with pytest.raises(SchemaError, match="id"):
+        validate_event(valid("comment.add", id="r-deadbeef0000"))
+
+
+def test_an_id_that_is_not_a_prefix_and_a_digest_is_rejected():
+    with pytest.raises(SchemaError, match="id"):
+        validate_event(valid("comment.add", id="c-not-a-digest"))
+    with pytest.raises(SchemaError, match="id"):
+        validate_event(valid("comment.add", id="c-DEADBEEF0000"))
+
+
+def test_a_derived_id_passes_the_id_check_for_every_kind():
+    for kind in EVENT_TYPES:
+        record = valid(kind)
+        record.pop("id")
+        record["id"] = derive_id(record)
+        validate_event(record)

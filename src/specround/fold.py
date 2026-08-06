@@ -130,6 +130,9 @@ class Comment:
     anchorings: list[Anchoring] = field(default_factory=list)
     #: Resolve/reopen history for this thread, oldest first (G11).
     resolutions: list[Resolution] = field(default_factory=list)
+    #: The reserved additive object, exactly as the record carried it. The fold
+    #: does not look inside — preserving it is the whole contract (§2).
+    ext: dict[str, Any] | None = None
 
     @property
     def disposition(self) -> Disposition | None:
@@ -232,6 +235,8 @@ class Round:
     closed_ts: str | None = None
     unresolved_at_close: list[str] = field(default_factory=list)
     close_note: str = ""
+    #: The reserved additive object from ``round.open``, preserved not read.
+    ext: dict[str, Any] | None = None
 
     @property
     def open(self) -> bool:
@@ -323,6 +328,25 @@ class State:
         return self.rounds[self.comments[comment_id].round]
 
 
+def check_position(event_id: str, seq: Any, position: int, *, where: str = "") -> None:
+    """Enforce I2 — ``seq`` is the record's own position, nothing else.
+
+    The one implementation of the rule. It used to live twice: once in the
+    reader, which raised a schema error, and once here, which raised an
+    invariant error — so a hand-reordered ledger produced two different
+    diagnoses and two different exit codes depending on which path touched the
+    file first. It is an invariant either way, which is what the caller has to
+    act on: the file's history is wrong, not one record's shape.
+    """
+    if seq == position:
+        return
+    prefix = f"{where}: " if where else ""
+    raise InvariantError(
+        f"{prefix}record {event_id!r} claims seq {seq} but sits at position {position} — "
+        "history was reordered or truncated"
+    )
+
+
 def _comment_or_raise(state: State, target: str, what: str) -> Comment:
     comment = state.comments.get(target)
     if comment is None:
@@ -359,12 +383,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
 
     kind = record["type"]
     event_id = record["id"]
-    seq = record["seq"]
-    if seq != state.count:
-        raise InvariantError(
-            f"record {event_id!r} claims seq {seq} but is at position {state.count} — "
-            "the ledger has been reordered or truncated"
-        )
+    check_position(event_id, record["seq"], state.count)
     if event_id in state.seen_ids:
         raise InvariantError(f"duplicate event id {event_id!r}")
     state.seen_ids.add(event_id)
@@ -377,6 +396,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
             author=record["author"],
             ts=record["ts"],
             title=record.get("title", ""),
+            ext=dict(record["ext"]) if "ext" in record else None,
         )
 
     elif kind in COMMENT_KINDS:
@@ -391,6 +411,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
             body=record.get("body", ""),
             patch=record["patch"] if kind == SUGGESTION_ADD else None,
             anchor=Anchor.from_json(anchor) if anchor is not None else None,
+            ext=dict(record["ext"]) if "ext" in record else None,
         )
 
     elif kind == REPLY:

@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Mapping
 
 from specround.anchors import Anchor
-from specround.errors import AnchorError, SchemaError
+from specround.errors import AnchorError, SchemaError, SnapshotError
 from specround.reanchor import STRATEGIES
+from specround.snapshots import parse_ref
 
 SCHEMA_NAME = "specround.ledger"
 SCHEMA_VERSION = 0
@@ -92,6 +94,7 @@ _INDEX = "index"  # non-negative integer
 _OBJECT = "object"
 _STRING_LIST = "string-list"
 _FLAG = "flag"  # boolean
+_REF = "snapshot-ref"  # "sha256:<64 hex>"
 
 _ENVELOPE: dict[str, str] = {
     "schema": _STRING,
@@ -104,7 +107,7 @@ _ENVELOPE: dict[str, str] = {
 
 _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
     # type: (required, optional)
-    ROUND_OPEN: ({"doc": _STRING, "base": _STRING}, {"title": _TEXT}),
+    ROUND_OPEN: ({"doc": _STRING, "base": _REF}, {"title": _TEXT}),
     COMMENT_ADD: ({"round": _STRING, "body": _STRING}, {"anchor": _OBJECT}),
     SUGGESTION_ADD: (
         {"round": _STRING, "patch": _STRING},
@@ -114,10 +117,10 @@ _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
     DISPOSITION: ({"target": _STRING, "verdict": _STRING, "reason": _STRING}, {}),
     ROUND_CLOSE: ({"round": _STRING}, {"unresolved": _STRING_LIST, "note": _TEXT}),
     ANCHOR_REANCHOR: (
-        {"target": _STRING, "base": _STRING, "anchor": _OBJECT, "strategy": _STRING},
+        {"target": _STRING, "base": _REF, "anchor": _OBJECT, "strategy": _STRING},
         {"ambiguous": _FLAG},
     ),
-    ANCHOR_ORPHAN: ({"target": _STRING, "base": _STRING, "reason": _STRING}, {}),
+    ANCHOR_ORPHAN: ({"target": _STRING, "base": _REF, "reason": _STRING}, {}),
     # Resolving carries an optional note: the thread itself is the record of why
     # it ended. Re-opening carries a required reason, because it overturns a
     # decision someone already recorded — the same rule that makes ``reason``
@@ -140,6 +143,24 @@ _ID_PREFIX: dict[str, str] = {
     THREAD_REOPEN: "n",  # reope-n
 }
 _ID_HASH_CHARS = 12
+_ID_DIGEST = re.compile(f"^[0-9a-f]{{{_ID_HASH_CHARS}}}$")
+
+
+def check_id(kind: str, value: str) -> None:
+    """Enforce §3 — an id is its kind's prefix plus twelve digest characters.
+
+    The prefix is the only thing that makes a bare id in a log line readable,
+    and unchecked it is worse than absent: ``fold`` tells a reader that a
+    target "is a round, not a comment" by trusting it, so a comment carrying
+    ``r-…`` turns a careful diagnosis into a wrong one.
+    """
+    prefix = _ID_PREFIX[kind]
+    head, separator, digest = value.partition("-")
+    if not separator or head != prefix or not _ID_DIGEST.match(digest):
+        raise SchemaError(
+            f"{kind} record: id {value!r} is not a {kind} id — expected {prefix!r} "
+            f"plus {_ID_HASH_CHARS} hex digits (see the format, §3)"
+        )
 
 
 def canonical_json(payload: Mapping[str, Any]) -> str:
@@ -204,6 +225,14 @@ def _check_field(where: str, name: str, kind: str, value: Any) -> None:
     elif kind == _FLAG:
         if not isinstance(value, bool):
             raise SchemaError(f"{where}: {name!r} must be true or false")
+    elif kind == _REF:
+        # The snapshot store owns the shape, so there is one definition of what
+        # a reference is. A ``base`` that is merely non-empty names a snapshot
+        # nothing can resolve, and history kept piling up on top of it.
+        try:
+            parse_ref(value)
+        except SnapshotError as exc:
+            raise SchemaError(f"{where}: {name!r} must be a snapshot reference — {exc}") from exc
     else:  # pragma: no cover - guards a typo in the table above
         raise SchemaError(f"{where}: unknown field kind {kind!r} for {name!r}")
 
@@ -236,6 +265,8 @@ def validate_event(record: Any) -> None:
             _check_field(where, name, field_kind, record[name])
     if EXT_FIELD in record:
         _check_field(where, EXT_FIELD, _OBJECT, record[EXT_FIELD])
+
+    check_id(kind, record["id"])
 
     if kind == DISPOSITION and record["verdict"] not in VERDICTS:
         raise SchemaError(

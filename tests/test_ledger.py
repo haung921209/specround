@@ -4,8 +4,9 @@ import json
 
 import pytest
 
-from specround.errors import InvariantError, SchemaError
+from specround.errors import InvariantError, LedgerError, SchemaError
 from specround.events import SCHEMA, canonical_json
+from specround.fold import fold
 from specround.ledger import Ledger, utc_now
 
 
@@ -89,9 +90,21 @@ def test_stored_lines_are_canonical_json(ledger):
 
 
 def test_a_caller_supplied_id_is_kept(ledger):
-    record = open_round(ledger, id="r-custom")
-    assert record["id"] == "r-custom"
-    assert ledger.read()[0]["id"] == "r-custom"
+    """A hand-written id is kept — as long as it is one (§3).
+
+    The shape is the contract: this kind's prefix and twelve digest
+    characters. ``r-custom`` used to be accepted, and so did a comment
+    claiming ``r-``.
+    """
+    record = open_round(ledger, id="r-0123456789ab")
+    assert record["id"] == "r-0123456789ab"
+    assert ledger.read()[0]["id"] == "r-0123456789ab"
+
+
+def test_a_caller_supplied_id_of_the_wrong_kind_is_refused(ledger):
+    with pytest.raises(SchemaError, match="is not a round.open id"):
+        open_round(ledger, id="c-0123456789ab")
+    assert ledger.read() == []
 
 
 def test_a_caller_supplied_timestamp_is_kept(ledger):
@@ -100,12 +113,19 @@ def test_a_caller_supplied_timestamp_is_kept(ledger):
 
 
 def test_a_truncated_ledger_is_reported_not_folded(ledger):
+    """I2 is an invariant, so reading a truncated file raises one.
+
+    Not a ``SchemaError``: every record here is well formed on its own, and
+    what is wrong is the history they sit in. The fold has always said so — the
+    reader used to say something else, and the two disagreed about the exit
+    code a caller gets.
+    """
     round_id = open_round(ledger)["id"]
     ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
     lines = ledger.path.read_text(encoding="utf-8").splitlines()
     # Drop the first line by hand: every remaining seq is now off by one.
     ledger.path.write_text(lines[1] + "\n", encoding="utf-8")
-    with pytest.raises(SchemaError, match="reordered or truncated"):
+    with pytest.raises(InvariantError, match="reordered or truncated"):
         ledger.read()
 
 
@@ -114,8 +134,29 @@ def test_a_reordered_ledger_is_reported(ledger):
     ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
     lines = ledger.path.read_text(encoding="utf-8").splitlines()
     ledger.path.write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
-    with pytest.raises(SchemaError, match="reordered or truncated"):
+    with pytest.raises(InvariantError, match="reordered or truncated"):
         ledger.read()
+
+
+def test_reading_and_folding_agree_on_a_reordered_ledger(ledger):
+    """One rule, one implementation — the reader and the fold cannot drift.
+
+    Both paths raise the same class with the same sentence; only the file
+    location the reader can add is different.
+    """
+    round_id = open_round(ledger)["id"]
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+    records = ledger.read()
+    swapped = [dict(records[1]), dict(records[0])]
+
+    with pytest.raises(InvariantError) as folded:
+        fold(swapped)
+    ledger.path.write_text(
+        "\n".join(canonical_json(r) for r in swapped) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(InvariantError) as read:
+        ledger.read()
+    assert str(folded.value) in str(read.value)
 
 
 def test_a_corrupt_line_names_its_line_number(ledger):
@@ -174,3 +215,86 @@ def test_default_clock_is_utc_second_resolution():
     stamp = utc_now()
     assert stamp.endswith("Z")
     assert len(stamp) == len("2020-01-01T00:00:00Z")
+
+
+def test_a_ledger_missing_its_final_newline_is_not_spliced(ledger):
+    """An editor that strips the trailing newline must not cost the history.
+
+    The reader accepts such a file — the records in it are intact — so the
+    append has to put the terminator back before writing, or the new record
+    lands on the end of the last line and every later read fails on a physical
+    line holding two objects.
+    """
+    round_id = open_round(ledger)["id"]
+    stripped = ledger.path.read_bytes().rstrip(b"\n")
+    ledger.path.write_bytes(stripped)
+
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+
+    assert [r["seq"] for r in ledger.read()] == [0, 1]
+    assert ledger.path.read_bytes().startswith(stripped)
+    assert ledger.path.read_text(encoding="utf-8").splitlines()[0] == stripped.decode("utf-8")
+
+
+def test_a_rejected_append_does_not_restore_the_terminator(ledger):
+    """Healing the line ending is part of writing, not of trying.
+
+    A refused append leaves the file byte-identical, terminator included: the
+    caller is told no and nothing on disk moved.
+    """
+    open_round(ledger)
+    ledger.path.write_bytes(ledger.path.read_bytes().rstrip(b"\n"))
+    before = ledger.path.read_bytes()
+    with pytest.raises(InvariantError, match="unknown round"):
+        ledger.append(
+            {"type": "comment.add", "author": "bob", "round": "r-nonexistent", "body": "why?"}
+        )
+    assert ledger.path.read_bytes() == before
+
+
+def test_appending_without_a_lock_primitive_is_refused(ledger, monkeypatch):
+    """No lock, no append — the alternative is a ledger nobody can read.
+
+    ``fcntl`` is missing on Windows, where the import at the top of the module
+    fails and leaves ``None``. Writing anyway hands two writers the same
+    ``seq``, and a reader refuses the whole file for it (I2). A platform that
+    cannot hold the lock gets a refusal, not a coin flip.
+    """
+    monkeypatch.setattr("specround.ledger.fcntl", None)
+    with pytest.raises(LedgerError, match="exclusive file lock"):
+        open_round(ledger)
+    assert ledger.exists() is False
+
+
+def test_concurrent_writers_without_a_lock_leave_the_ledger_readable(ledger, monkeypatch):
+    """The reviewer's scenario: twelve threads, no lock.
+
+    Before the fix this produced five physical lines carrying ``seq``
+    ``[0, 1, 2, 3, 3]``, and folding the result raised on the duplicate — the
+    history was gone. Now every writer is refused and the file that survives is
+    the one the last legal append left.
+    """
+    import threading
+
+    round_id = open_round(ledger)["id"]
+    monkeypatch.setattr("specround.ledger.fcntl", None)
+    failures: list[Exception] = []
+
+    def write(index: int) -> None:
+        try:
+            ledger.append(
+                {"type": "comment.add", "author": f"w{index}", "round": round_id, "body": f"b{index}"}
+            )
+        except Exception as exc:  # noqa: BLE001 - the point is that it raised
+            failures.append(exc)
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(failures) == 12
+    monkeypatch.undo()
+    assert [r["seq"] for r in ledger.read()] == [0]
+    assert ledger.state().count == 1

@@ -84,16 +84,63 @@ def central_root() -> Path:
     return data_home() / APP_DIRNAME
 
 
-def path_key(path: Path) -> str:
-    """The store key for a path: the sha256 of its resolved absolute form.
+def _on_disk_name(parent: Path, name: str) -> Path:
+    """``parent / name``, spelled the way the directory spells it.
 
-    Resolving first is what makes the key deterministic — ``./spec.md``,
-    ``../docs/spec.md`` and a symlink to the same file all land on one store,
-    which is the point: one document, one history. The digest is over the path
-    text, not the contents, so a key survives every edit the document will ever
-    get.
+    An exact entry always wins, so a case-sensitive filesystem holding both
+    ``real.md`` and ``Real.md`` keeps them apart. Only when there is no exact
+    entry does a single case-insensitive match stand in — which is the
+    case-insensitive filesystem, where those two names are one file. More than
+    one match, or a directory that cannot be listed, leaves the name as typed:
+    there is nothing to learn, and inventing an answer is what this avoids.
     """
-    return hashlib.sha256(str(Path(path).resolve()).encode("utf-8")).hexdigest()
+    matches: list[str] = []
+    try:
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                if entry.name == name:
+                    return parent / name
+                if entry.name.casefold() == name.casefold():
+                    matches.append(entry.name)
+    except OSError:
+        return parent / name
+    return parent / (matches[0] if len(matches) == 1 else name)
+
+
+def canonical_path(path: Path) -> Path:
+    """The resolved path, spelled the way the filesystem spells it.
+
+    ``Path.resolve`` follows links and flattens ``..`` but never touches case,
+    so on a case-insensitive filesystem ``docs/Spec.md`` and ``docs/spec.md``
+    resolve to two different strings for one file. Keying a store off that
+    string gives one document two histories, and the emptier one answers "no
+    rounds yet" — a wrong answer that looks like a fact, which is the failure
+    this whole module is arranged around.
+
+    Taking the on-disk spelling instead is one rule that is right on both kinds
+    of filesystem, because the filesystem is the thing being asked.
+    """
+    resolved = Path(path).resolve()
+    parts = resolved.parts
+    if not parts:  # pragma: no cover - a resolved path always has a root
+        return resolved
+    current = Path(parts[0])
+    for name in parts[1:]:
+        current = _on_disk_name(current, name)
+    return current
+
+
+def path_key(path: Path) -> str:
+    """The store key for a path: the sha256 of its canonical absolute form.
+
+    Canonicalising first is what makes the key deterministic — ``./spec.md``,
+    ``../docs/spec.md``, a symlink to the same file, and (where the filesystem
+    says they are the same file) a different capitalisation all land on one
+    store, which is the point: one document, one history. The digest is over
+    the path text, not the contents, so a key survives every edit the document
+    will ever get.
+    """
+    return hashlib.sha256(str(canonical_path(path)).encode("utf-8")).hexdigest()
 
 
 def central_store_dir(doc: Path) -> Path:
@@ -228,7 +275,7 @@ def find_config(start: Path) -> Path | None:
     stops it, because a config that only sometimes applies is a config people
     have to reason about instead of read.
     """
-    current = Path(start).resolve()
+    current = canonical_path(start)
     for directory in (current, *current.parents):
         candidate = directory / CONFIG_FILENAME
         if candidate.is_file():
@@ -306,12 +353,24 @@ def resolve_location(
         The central store, keyed by the document's absolute path. Nothing is
         written anywhere near the document.
     """
-    document = Path(doc).resolve()
+    document = canonical_path(doc)
 
     if store is not None:
-        root = Path(store).resolve()
-        anchor = Path(base).resolve() if base is not None else root.parent
-        return StoreLocation(root=root, origin=Origin(DIRECTORY, anchor), source="argument")
+        root = canonical_path(store)
+        if base is not None:
+            # What the caller typed outranks what the store recorded: the tiers
+            # keep their order, and this is the tier the caller is standing in.
+            return StoreLocation(
+                root=root, origin=Origin(DIRECTORY, canonical_path(base)), source="argument"
+            )
+        # The parent is a guess, and a store that already exists does not need
+        # to be guessed at — ``origin`` is its own record of what it serves
+        # (§1.3). Guessing over it keys one document two ways: the flag reads a
+        # history it cannot see as "no rounds yet" and then writes a second one
+        # into the same ledger.
+        recorded = read_origin(root)
+        anchor = recorded if recorded is not None else Origin(DIRECTORY, root.parent)
+        return StoreLocation(root=root, origin=anchor, source="argument")
 
     config_path = find_config(document.parent)
     if config_path is not None:
@@ -336,7 +395,7 @@ def _from_config(document: Path, config_path: Path, settings: Mapping[str, Any])
         # A relative path counts from the config file, so the setting means the
         # same thing to everyone who clones the repository. An absolute one wins
         # outright — ``Path.__truediv__`` already does exactly that.
-        root = (config_dir / settings["path"]).resolve()
+        root = canonical_path(config_dir / settings["path"])
         origin = Origin(DIRECTORY, config_dir)
     else:
         root = central_store_dir(document)

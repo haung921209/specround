@@ -428,10 +428,12 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
     payload = run("comments", doc, "--json").json["comments"][0]
     assert set(payload) == {
         "anchor",
+        "anchoring",
         "author",
         "body",
         "current_anchor",
         "dispositions",
+        "ext",
         "id",
         "kind",
         "orphaned",
@@ -455,6 +457,7 @@ def test_the_round_object_field_set_is_closed(run, doc, opened):
         "closed_ts",
         "comment_count",
         "doc",
+        "ext",
         "id",
         "status",
         "title",
@@ -598,3 +601,268 @@ def test_the_store_flag_overrides_the_resolved_location(run, doc, tmp_path):
     assert (chosen / "ledger.jsonl").is_file()
     # And the default store stayed empty — the flag really decided.
     assert run("round", "status", doc, "--json").json["counts"]["rounds"] == 0
+
+
+# -- the file layer ------------------------------------------------------
+
+
+def test_a_stripped_final_newline_does_not_kill_the_ledger(run, doc, opened):
+    """The reviewer's scenario, end to end: an editor takes the last newline.
+
+    Before the fix the next comment landed on the end of that line and every
+    later verb exited 1 on a physical line holding two records — a ledger the
+    tool had no way to repair.
+    """
+    a_comment(run, doc, body="first")
+    store = ReviewStore.for_document(doc)
+    ledger = store.ledger.path
+    ledger.write_bytes(ledger.read_bytes().rstrip(b"\n"))
+    assert run("round", "status", doc).code == 0
+
+    assert run("comment", doc, "--author", "bob", "--body", "second").code == 0
+
+    result = run("round", "status", doc, "--json")
+    assert result.code == 0
+    assert result.json["counts"]["comments"] == 2
+
+
+def test_a_reordered_ledger_is_a_state_failure_not_a_crash(run, doc, opened):
+    """One rule, one exit code.
+
+    ``seq`` disagreeing with its position was checked twice — once while
+    reading (exit 1) and once while folding (exit 3) — so which code a caller
+    got depended on which path reached the file first. It is an invariant (I2),
+    and every invariant the recorded history refuses is a 3.
+    """
+    a_comment(run, doc, body="first")
+    ledger = ReviewStore.for_document(doc).ledger.path
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    ledger.write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
+
+    result = run("round", "status", doc, "--json")
+    assert result.code == 3
+    assert result.error["kind"] == "state"
+    assert "reordered or truncated" in result.error["message"]
+
+
+def test_naming_a_store_by_path_sees_the_history_it_holds(run, tmp_path):
+    """The reviewer's scenario: ``--store`` used to guess past the origin.
+
+    The store already recorded what it serves. Guessing its parent instead
+    keyed the same document a second way, reported "no rounds yet" as a fact,
+    and then opened a second round in the same ledger — one document, two
+    histories, in one file.
+    """
+    repo = tmp_path / "repo"
+    (repo / "sub" / "docs").mkdir(parents=True)
+    (repo / ".specround.json").write_text(
+        '{"store": {"mode": "path", "path": "sub/store"}}\n', encoding="utf-8"
+    )
+    doc = repo / "sub" / "docs" / "s.md"
+    doc.write_text("# S\n\nalpha beta\n", encoding="utf-8")
+    assert run("round", "open", doc, "--author", "alice", "--title", "via config").code == 0
+    store = repo / "sub" / "store"
+
+    status = run("round", "status", doc, "--store", store, "--json")
+    assert status.code == 0
+    assert status.json["counts"]["rounds"] == 1
+    assert status.json["doc"] == "sub/docs/s.md"
+
+    # And the CLI's one-open-round rule is not routed around by the flag.
+    second = run("round", "open", doc, "--author", "alice", "--store", store, "--title", "via flag")
+    assert second.code == 3
+
+
+def test_a_case_only_difference_does_not_report_an_empty_history(run, tmp_path):
+    """The failure ``_document`` was written to prevent, arriving by case."""
+    doc = tmp_path / "real.md"
+    doc.write_text("# L\n\nlinked content\n", encoding="utf-8")
+    other = tmp_path / "Real.md"
+    if not other.is_file():
+        pytest.skip("case-sensitive filesystem: the two spellings are two documents")
+    assert run("round", "open", doc, "--author", "alice", "--title", "via real").code == 0
+
+    result = run("round", "status", other, "--json")
+    assert result.code == 0
+    assert result.json["counts"]["rounds"] == 1
+
+
+# -- a document that is no longer there ----------------------------------
+
+
+def test_the_history_of_a_moved_document_is_still_readable(run, doc, opened, tmp_path):
+    """The store outlives the file, and the CLI is the way in (G7).
+
+    Renaming the document made ``specround comments <old path>`` exit 2 while
+    the ledger sat there intact — the format says the old history stays in the
+    old store and ``origin`` keeps naming it, and that was true only for
+    ``cat``.
+    """
+    comment_id = a_comment(run, doc, body="outlives the file")
+    doc.rename(tmp_path / "renamed.md")
+
+    listed = run("comments", doc, "--json")
+    assert listed.code == 0
+    assert [c["id"] for c in listed.json["comments"]] == [comment_id]
+    assert run("round", "status", doc, "--json").json["counts"]["comments"] == 1
+
+
+def test_a_mistyped_path_is_still_refused(run, tmp_path):
+    """The reason the check was there in the first place stays covered.
+
+    A path with no history behind it is a typo, and answering "no comments"
+    would be a wrong answer that looks like a fact. Only a path the store
+    already knows is addressable once the file is gone.
+    """
+    result = run("comments", tmp_path / "nope.md")
+    assert result.code == 2
+    assert "no history" in result.err
+
+
+def test_a_writing_verb_still_needs_the_document(run, doc, opened, tmp_path):
+    """Reading history is one thing; commenting on text that is gone is not."""
+    doc.rename(tmp_path / "renamed.md")
+    assert run("comment", doc, "--author", "bob", "--body", "on what?").code == 2
+
+
+# -- the invocation axis -------------------------------------------------
+
+
+def test_an_occurrence_without_a_quote_is_refused(run, doc, opened):
+    """Every other argument mistake is a 2; this one used to pass silently.
+
+    ``--occurrence`` picks between appearances of ``--quote``. Without one it
+    was dropped on the floor and the comment landed on the whole document —
+    exit 0, and a caller who thought they had anchored something.
+    """
+    result = run("comment", doc, "--author", "bob", "--body", "which one?", "--occurrence", "1")
+    assert result.code == 2
+    assert "--quote" in result.err
+
+
+def test_an_argument_error_is_structured_when_json_was_asked_for(run, doc):
+    """G4's structured output cannot stop at the argument parser.
+
+    An agent that gets plain usage text on stderr where every other failure is
+    a JSON envelope has to parse two shapes to find out what went wrong.
+    """
+    result = run("comment", doc, "--occurrence", "not-a-number", "--json")
+    assert result.code == 2
+    assert result.error == {
+        "kind": "usage",
+        "exit": 2,
+        "message": "argument --occurrence: invalid int value: 'not-a-number'",
+    }
+    # The verb is known here — the subparser is the one that refused.
+    assert json.loads(result.err)["verb"] == "comment"
+
+
+def test_an_argument_error_before_a_verb_says_so_rather_than_guessing(run):
+    result = run("--nonexistent-flag", "--json")
+    assert result.code == 2
+    assert json.loads(result.err)["verb"] is None
+    assert result.error["kind"] == "usage"
+
+
+def test_an_argument_error_without_json_still_reads_like_argparse(run, doc):
+    result = run("comment", doc, "--occurrence", "not-a-number")
+    assert result.code == 2
+    assert result.err.startswith("usage: specround comment")
+    assert "invalid int value" in result.err
+
+
+def test_help_and_version_are_not_failures(run):
+    assert run("--version").code == 0
+    assert run("--help").code == 0
+
+
+# -- what the listing carries --------------------------------------------
+
+
+def test_ext_written_by_an_agent_can_be_read_back(run, doc):
+    """``ext`` is preserved on disk and was invisible to every verb.
+
+    The field exists so an agent can carry data the schema has no place for
+    yet. One that can write it and not read it back has to parse the ledger by
+    hand, which is the thing the CLI is for (G4).
+    """
+    store = ReviewStore.for_document(doc)
+    round_id = store.open_round(doc, author="alice", ext={"harness": "probe-7"})
+    store.add_comment(round_id, author="agent:reviewer", body="a note", ext={"confidence": "low"})
+
+    assert run("round", "status", doc, "--json").json["rounds"][0]["ext"] == {"harness": "probe-7"}
+    assert run("comments", doc, "--json").json["comments"][0]["ext"] == {"confidence": "low"}
+
+
+def test_a_record_without_ext_says_so_rather_than_omitting_the_key(run, doc, opened):
+    a_comment(run, doc)
+    assert run("comments", doc, "--json").json["comments"][0]["ext"] is None
+    assert run("round", "status", doc, "--json").json["rounds"][0]["ext"] is None
+
+
+def test_the_listing_carries_the_re_anchoring_that_moved_a_comment(run, doc, opened):
+    """Which comments moved, and how, outlived the pass that moved them.
+
+    ``reanchor`` reported ``strategy`` and ``ambiguous`` in the moment and
+    nowhere else, so a reviewer reading the list later could not tell a comment
+    whose sentence was rewritten under it — the one a person is supposed to
+    look at — from one that was merely pushed down the page.
+    """
+    comment = a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+    moved = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
+
+    payload = run("comments", doc, "--json").json["comments"][0]
+    assert payload["anchoring"]["strategy"] == moved["strategies"][comment]
+    assert payload["anchoring"]["base"] == moved["base"]
+    assert payload["anchoring"]["orphaned"] is False
+    assert payload["anchoring"]["ambiguous"] is False
+
+
+def test_an_orphan_carries_the_reason_it_could_not_be_placed(run, doc, opened):
+    a_comment(run, doc)
+    doc.write_text(REWRITTEN, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+
+    anchoring = run("comments", doc, "--json").json["comments"][0]["anchoring"]
+    assert anchoring["orphaned"] is True
+    assert anchoring["reason"]
+    assert anchoring["strategy"] is None
+
+
+def test_a_comment_that_never_moved_has_no_anchoring(run, doc, opened):
+    a_comment(run, doc)
+    assert run("comments", doc, "--json").json["comments"][0]["anchoring"] is None
+
+
+def test_the_table_names_the_comments_a_person_should_look_at(run, doc, opened):
+    """The human listing keeps the signal, not the whole re-anchoring log.
+
+    ``fuzzy`` and ``ambiguous`` are the two the format says a person has to
+    check; a rebind that merely followed its quote is not news, and a footer
+    listing every move would bury the two that matter.
+    """
+    comment = a_comment(run, doc, quote="The client sends a hello frame", body="which frame?")
+    doc.write_text(
+        "# Widget protocol\n\n"
+        "The client sends a hell0 frame. The server answers with a hello frame.\n\n"
+        "Timeouts are 30 seconds. Retries are not specified yet.\n",
+        encoding="utf-8",
+    )
+    moved = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
+    assert moved["strategies"].get(comment) == "fuzzy", moved
+
+    listing = run("comments", doc)
+    assert listing.code == 0
+    assert "1 re-anchored, worth a look" in listing.out
+    assert comment in listing.out.splitlines()[-1]
+
+
+def test_a_negative_occurrence_is_refused_by_the_one_rule_that_owns_it(run, doc, opened):
+    """The anchor layer already says occurrences count from 0 — no second copy."""
+    result = run(
+        "comment", doc, "--author", "bob", "--body", "which one?",
+        "--quote", "30 seconds", "--occurrence", "-1",
+    )
+    assert result.code == 2
+    assert "negative" in result.err

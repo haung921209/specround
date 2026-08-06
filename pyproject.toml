@@ -10,6 +10,10 @@ keywords = ["review", "spec", "annotation", "ledger", "agents"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
+  # Appending needs an exclusive file lock (fcntl). Reading works anywhere;
+  # writing on a platform without the lock is refused rather than guessed at.
+  "Operating System :: POSIX",
+  "Operating System :: MacOS",
   "Programming Language :: Python :: 3",
   "Topic :: Software Development :: Documentation",
 ]

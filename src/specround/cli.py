@@ -48,7 +48,9 @@ from specround import __version__
 from specround.anchors import Anchor
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ANSWERED, APPLIED, DEFERRED, REJECTED
-from specround.fold import Comment, Disposition, Round, State
+from specround.fold import Anchoring, Comment, Disposition, Round, State
+from specround.locations import canonical_path
+from specround.reanchor import FUZZY
 from specround.store import ReviewStore
 
 #: Exit codes. See the module docstring — these are the contract, not the prose.
@@ -79,6 +81,44 @@ _BODY_WIDTH = 44
 _REF_CHARS = 12
 
 
+class ArgvError(SpecroundError):
+    """argparse refused the command line, before any verb ran.
+
+    Carried rather than printed so the failure leaves through the one exit
+    that knows about ``--json``. argparse writes plain text to stderr and
+    exits, which put the argument axis outside the structured output G4 asks
+    for: an agent got a JSON envelope for every failure except this one.
+    """
+
+    def __init__(self, message: str, *, usage: str, prog: str) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.prog = prog
+
+    @property
+    def verb(self) -> str | None:
+        """The verb argparse had resolved, or ``None`` if it never got one.
+
+        ``prog`` is "specround round open" by the time a subparser refuses, and
+        plain "specround" when the top level does. Null is the honest answer
+        for the second case — guessing a verb into the envelope would be a
+        field a consumer cannot trust.
+        """
+        parts = self.prog.split()[1:]
+        return ".".join(parts) if parts else None
+
+
+class _Parser(argparse.ArgumentParser):
+    """An ``ArgumentParser`` that raises instead of exiting.
+
+    ``add_subparsers`` hands this class down, so every subparser refuses the
+    same way and the whole surface has one exit path.
+    """
+
+    def error(self, message: str) -> "None":  # type: ignore[override]
+        raise ArgvError(message, usage=self.format_usage(), prog=self.prog)
+
+
 class UsageError(SpecroundError):
     """The invocation cannot be carried out as typed.
 
@@ -105,24 +145,44 @@ class Target:
         return {"doc": self.key, "path": str(self.path), "store": str(self.store.root)}
 
 
-def _document(value: str) -> Path:
+def _document(value: str, *, must_exist: bool = True) -> Path:
     """Resolve the document argument, refusing a path that is not there.
 
     Every verb names a document, including the read-only ones, and a mistyped
     path that quietly reports "no comments" is worse than an error: the store is
     keyed by path, so a typo addresses a different (empty) history and the answer
     looks like a fact.
+
+    ``must_exist=False`` is for the read-only verbs, where the missing file is
+    not necessarily a typo — a document can be renamed or deleted while its
+    history stays exactly where it was. :func:`_target` finishes that check
+    against the store, because the thing that separates a rename from a typo is
+    whether there is any history behind the path.
     """
     path = Path(value).expanduser()
-    if not path.is_file():
+    if must_exist and not path.is_file():
         raise UsageError(f"{path}: not a file — every verb names the document under review")
-    return path.resolve()
+    return canonical_path(path)
 
 
-def _target(args: argparse.Namespace) -> Target:
-    path = _document(args.doc)
+def _target(args: argparse.Namespace, *, missing_ok: bool = False) -> Target:
+    path = _document(args.doc, must_exist=not missing_ok)
     store = ReviewStore.for_document(path, store=Path(args.store) if args.store else None)
-    return Target(store=store, path=path, key=store.doc_key(path))
+    key = store.doc_key(path)
+    if missing_ok and not path.is_file() and not _has_history(store, key):
+        # The file is gone. That is a rename when the store holds history for
+        # this key and a typo otherwise — one answer comes from a record, the
+        # other would come from a store that was never anything.
+        raise UsageError(
+            f"{path}: not a file, and no history for it in {store.root} — "
+            "check the path (a moved document keeps its old store)"
+        )
+    return Target(store=store, path=path, key=key)
+
+
+def _has_history(store: ReviewStore, key: str) -> bool:
+    """True when this store already holds a round for ``key``."""
+    return store.ledger.exists() and bool(_rounds_on(store.fold(), key))
 
 
 def _author(args: argparse.Namespace) -> str:
@@ -287,6 +347,28 @@ def _disposition_json(disposition: Disposition | None) -> dict[str, Any] | None:
     }
 
 
+def _anchoring_json(anchoring: Anchoring | None) -> dict[str, Any] | None:
+    """The latest attempt to carry a comment onto a revision, or ``None``.
+
+    ``reanchor`` reports this in the moment and the listing did not carry it at
+    all, so a reviewer reading the list afterwards could not tell which
+    comments had moved — least of all which ones moved on the ``fuzzy`` rung,
+    the ones the format says a person is supposed to look at.
+    """
+    if anchoring is None:
+        return None
+    return {
+        "id": anchoring.id,
+        "author": anchoring.author,
+        "ts": anchoring.ts,
+        "base": anchoring.base,
+        "strategy": anchoring.strategy,
+        "ambiguous": anchoring.ambiguous,
+        "reason": anchoring.reason,
+        "orphaned": anchoring.orphaned,
+    }
+
+
 def _comment_json(comment: Comment) -> dict[str, Any]:
     """One comment, with both anchors and every disposition it has collected.
 
@@ -308,6 +390,8 @@ def _comment_json(comment: Comment) -> dict[str, Any]:
         "state": comment.state,
         "unresolved": comment.unresolved,
         "orphaned": comment.orphaned,
+        "anchoring": _anchoring_json(comment.anchoring),
+        "ext": comment.ext,
         "replies": [
             {"id": r.id, "author": r.author, "ts": r.ts, "body": r.body}
             for r in comment.replies
@@ -330,6 +414,7 @@ def _round_json(state: State, round_: Round) -> dict[str, Any]:
         "closed_ts": round_.closed_ts,
         "close_note": round_.close_note,
         "unresolved_at_close": list(round_.unresolved_at_close),
+        "ext": round_.ext,
         "comment_count": len(comments),
         "unresolved_count": sum(1 for c in comments if c.unresolved),
     }
@@ -400,7 +485,31 @@ def _comment_rows(comments: Sequence[Comment]) -> list[str]:
         # row for it would cost the common case to report the uncommon one.
         lines.append("")
         lines.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
+    moved = [f"{c.id} ({_moved_how(c)})" for c in comments if _moved_how(c)]
+    if moved:
+        # Only the ones the format says a person has to check — a comment whose
+        # sentence was rewritten under it, or one that moved on a tie. A rebind
+        # that followed its own quote is not news, and listing every move would
+        # bury these two. The full history is in ``--json``.
+        lines.append("")
+        lines.append(f"{len(moved)} re-anchored, worth a look: {', '.join(moved)}")
     return lines
+
+
+def _moved_how(comment: Comment) -> str:
+    """Why this comment's last move needs a human, or ``""`` if it does not."""
+    anchoring = comment.anchoring
+    if anchoring is None or anchoring.orphaned:
+        return ""
+    marks = [
+        mark
+        for mark in (
+            anchoring.strategy if anchoring.strategy == FUZZY else "",
+            "ambiguous" if anchoring.ambiguous else "",
+        )
+        if mark
+    ]
+    return ", ".join(marks)
 
 
 # -- verbs ---------------------------------------------------------------
@@ -467,7 +576,9 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    target = _target(args)
+    # Read-only: a document that was renamed or deleted still has history, and
+    # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
+    target = _target(args, missing_ok=True)
     state = target.store.fold()
     rounds = _rounds_on(state, target.key)
     comments = _comments_on(state, target.key)
@@ -523,6 +634,12 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     state = target.store.fold()
     round_ = _live_round(state, target.key, args.round, verb="comment on")
     body = _body(args)
+    if args.occurrence is not None and not args.quote:
+        # Dropping it silently makes a comment on the whole document look like
+        # an anchored one to the caller who typed it — exit 0 and no anchor.
+        raise UsageError(
+            "--occurrence picks between appearances of --quote: give a --quote, or drop it"
+        )
     anchor = _anchor(target.store, round_, args.quote, args.occurrence) if args.quote else None
     comment_id = target.store.add_comment(
         round_.id, author=_author(args), body=body, anchor=anchor
@@ -535,7 +652,9 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    target = _target(args)
+    # Read-only: a document that was renamed or deleted still has history, and
+    # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
+    target = _target(args, missing_ok=True)
     state = target.store.fold()
     items = _comments_on(state, target.key)
     if args.round:
@@ -646,7 +765,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"who is recording this, person or agent (default: ${AUTHOR_ENV}, else the login name)",
     )
 
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="specround",
         description="Spec review rounds for humans and agents — anchored comments, "
         "an append-only ledger, no server and no git.",
@@ -753,6 +872,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+    except ArgvError as exc:
+        return _refuse_argv(argv, exc)
     except SystemExit as exc:
         # argparse already printed the diagnosis; returning the code instead of
         # letting it escape keeps main() callable as a function. --help and
@@ -778,6 +899,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in lines:
             print(line)
     return OK
+
+
+def _refuse_argv(argv: Sequence[str] | None, exc: ArgvError) -> int:
+    """Report a command line argparse would not take, in the asked-for shape.
+
+    ``--json`` is read off the raw argv because parsing is what just failed —
+    there is no namespace to ask. Without it the output is what argparse would
+    have printed, so a shell user sees no change.
+    """
+    words = list(argv) if argv is not None else sys.argv[1:]
+    if "--json" in words:
+        message = _dump(
+            {
+                "schema": CLI_SCHEMA,
+                "verb": exc.verb,
+                "error": {"kind": "usage", "exit": USAGE, "message": str(exc)},
+            }
+        )
+    else:
+        message = f"{exc.usage}{exc.prog}: error: {exc}"
+    print(message, file=sys.stderr)
+    return USAGE
 
 
 def _fail(args: argparse.Namespace, verb: str, exc: Exception, code: int, kind: str) -> int:

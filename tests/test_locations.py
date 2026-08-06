@@ -27,6 +27,7 @@ from specround.locations import (
     path_key,
     read_config,
     resolve_location,
+    write_origin,
 )
 
 #: A path that exists nowhere, so ``resolve()`` has no symlink to follow and the
@@ -70,6 +71,35 @@ def test_the_key_does_not_depend_on_how_the_path_was_spelled(document, monkeypat
     monkeypatch.chdir(document.parent)
     assert path_key(Path("spec.md")) == path_key(document)
     assert path_key(Path("./sub/../spec.md")) == path_key(document)
+
+
+def spelled_differently(directory, name: str, other: str):
+    """``other`` as a second spelling of ``name``, or a skip.
+
+    Case folding is a property of the filesystem, not of the code under test:
+    where ``real.md`` and ``Real.md`` are two files there is nothing to
+    converge, and asserting otherwise would fail for the right reason on Linux.
+    """
+    written = directory / name
+    written.write_text("linked content\n", encoding="utf-8")
+    candidate = directory / other
+    if not candidate.is_file():
+        pytest.skip("case-sensitive filesystem: the two spellings are two documents")
+    return written, candidate
+
+
+def test_two_spellings_of_one_file_are_one_document(tmp_path):
+    """One document, one history — including the spelling the shell completed.
+
+    ``Path.resolve`` normalises links and ``..`` but never case, so on a
+    case-insensitive filesystem the key was taken from how the path was typed.
+    A tab completion or a paste with a different case opened an empty history
+    and the CLI reported it as a fact.
+    """
+    real, other = spelled_differently(tmp_path, "real.md", "Real.md")
+    assert other.samefile(real)
+    assert path_key(other) == path_key(real)
+    assert central_store_dir(other) == central_store_dir(real)
 
 
 def test_a_symlink_and_its_target_are_one_document(tmp_path, document):
@@ -233,6 +263,28 @@ def test_an_explicit_store_counts_keys_from_its_parent(workdir, document):
 
 def test_an_explicit_base_overrides_the_parent(tmp_path, workdir, document):
     location = resolve_location(document, store=tmp_path / "far" / "store", base=workdir)
+    assert location.origin == Origin(DIRECTORY, workdir.resolve())
+
+
+def test_an_existing_store_is_asked_what_it_serves(tmp_path, document):
+    """The parent is a guess; ``origin`` is the store's own record (§1.3).
+
+    Guessing over a store that already said what it serves keys the same
+    document twice, and the second key reports an empty history as a fact.
+    """
+    root = tmp_path / "repo" / "sub" / "store"
+    root.mkdir(parents=True)
+    recorded = Origin(DIRECTORY, (tmp_path / "repo").resolve())
+    write_origin(root, recorded)
+    assert resolve_location(document, store=root).origin == recorded
+
+
+def test_an_explicit_base_still_beats_a_recorded_origin(tmp_path, workdir, document):
+    """The tiers keep their order: what the caller typed wins over a record."""
+    root = tmp_path / "store"
+    root.mkdir(parents=True)
+    write_origin(root, Origin(DIRECTORY, (tmp_path / "elsewhere").resolve()))
+    location = resolve_location(document, store=root, base=workdir)
     assert location.origin == Origin(DIRECTORY, workdir.resolve())
 
 
