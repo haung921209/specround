@@ -48,10 +48,19 @@ from specround import __version__
 from specround.anchors import Anchor
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
-from specround.fold import Anchoring, Comment, Disposition, Reply, Resolution, Round, State
+from specround.fold import Comment, Round, State
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import ReviewStore
+from specround.wire import (
+    anchor_json,
+    comment_json,
+    comments_on,
+    disposition_json,
+    reply_json,
+    round_json,
+    rounds_on,
+)
 
 #: Exit codes. See the module docstring — these are the contract, not the prose.
 OK = 0
@@ -192,7 +201,7 @@ def _target(args: argparse.Namespace, *, missing_ok: bool = False) -> Target:
 
 def _has_history(store: ReviewStore, key: str) -> bool:
     """True when this store already holds a round for ``key``."""
-    return store.ledger.exists() and bool(_rounds_on(store.fold(), key))
+    return store.ledger.exists() and bool(rounds_on(store.fold(), key))
 
 
 def _author(args: argparse.Namespace) -> str:
@@ -226,14 +235,6 @@ def _actor(args: argparse.Namespace) -> str:
     return chosen
 
 
-def _rounds_on(state: State, key: str) -> list[Round]:
-    return [r for r in state.rounds.values() if r.doc == key]
-
-
-def _comments_on(state: State, key: str) -> list[Comment]:
-    return [c for c in state.comments.values() if state.rounds[c.round].doc == key]
-
-
 def _live_round(state: State, key: str, wanted: str | None, *, verb: str) -> Round:
     """The round a writing verb applies to.
 
@@ -250,7 +251,7 @@ def _live_round(state: State, key: str, wanted: str | None, *, verb: str) -> Rou
                 f"round {wanted!r} is closed — open a new round to {verb}"
             )
         return chosen
-    live = [r for r in _rounds_on(state, key) if r.open]
+    live = [r for r in rounds_on(state, key) if r.open]
     if not live:
         raise InvariantError(
             f"no open round on {key} — open one with 'specround round open' first"
@@ -269,7 +270,7 @@ def _comment(state: State, key: str, wanted: str) -> Comment:
     document: ``<doc>`` names the review, and a comment from a different one is
     not addressable through it.
     """
-    scoped = {c.id for c in _comments_on(state, key)}
+    scoped = {c.id for c in comments_on(state, key)}
     if wanted in scoped:
         return state.comments[wanted]
     matches = sorted(cid for cid in scoped if cid.startswith(wanted))
@@ -355,127 +356,10 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
 
 
 # -- serialisation -------------------------------------------------------
-
-
-def _anchor_json(anchor: Anchor | None) -> dict[str, Any] | None:
-    return anchor.to_json() if anchor is not None else None
-
-
-def _disposition_json(disposition: Disposition | None) -> dict[str, Any] | None:
-    if disposition is None:
-        return None
-    return {
-        "id": disposition.id,
-        "author": disposition.author,
-        "ts": disposition.ts,
-        "verdict": disposition.verdict,
-        "reason": disposition.reason,
-    }
-
-
-def _anchoring_json(anchoring: Anchoring | None) -> dict[str, Any] | None:
-    """The latest attempt to carry a comment onto a revision, or ``None``.
-
-    ``reanchor`` reports this in the moment and the listing did not carry it at
-    all, so a reviewer reading the list afterwards could not tell which
-    comments had moved — least of all which ones moved on the ``fuzzy`` rung,
-    the ones the format says a person is supposed to look at.
-    """
-    if anchoring is None:
-        return None
-    return {
-        "id": anchoring.id,
-        "author": anchoring.author,
-        "ts": anchoring.ts,
-        "base": anchoring.base,
-        "anchor": _anchor_json(anchoring.anchor),
-        "strategy": anchoring.strategy,
-        "ambiguous": anchoring.ambiguous,
-        "reason": anchoring.reason,
-        "orphaned": anchoring.orphaned,
-    }
-
-
-def _reply_json(reply: Reply) -> dict[str, Any]:
-    return {"id": reply.id, "author": reply.author, "ts": reply.ts, "body": reply.body}
-
-
-def _resolution_json(resolution: Resolution) -> dict[str, Any]:
-    return {
-        "id": resolution.id,
-        "author": resolution.author,
-        "actor": resolution.actor,
-        "ts": resolution.ts,
-        "resolved": resolution.resolved,
-        "note": resolution.note,
-    }
-
-
-def _comment_json(comment: Comment) -> dict[str, Any]:
-    """One thread: the root comment, its replies, and everything decided about it.
-
-    ``anchor`` is where the comment was made and never changes; ``current_anchor``
-    is where it lives now after any re-anchoring. Both are here because a reader
-    that only had the second could not tell a comment that moved from one that
-    never did.
-
-    ``strategy`` and ``ambiguous`` say *how* it got there, and they are on the
-    comment rather than only in the output of the ``reanchor`` run that moved it.
-    That distinction is the whole point of the closed strategy vocabulary (§4):
-    ``fuzzy`` means the quoted text was rewritten and a person should look, and a
-    reviewer reading the list a week later is exactly the person meant. Both come
-    from the last attempt that *placed* the comment, so an orphan still reports
-    how it reached the anchor it is keeping.
-
-    The three axes are three separate keys, because they are three separate
-    questions and collapsing any two would make the answer unreadable:
-    ``unresolved`` (has anyone decided this?), ``orphaned`` (can it still be
-    placed on the document?), ``resolved`` (is the conversation over?).
-    """
-    placed = comment.current_anchoring
-    return {
-        "id": comment.id,
-        "round": comment.round,
-        "kind": comment.kind,
-        "author": comment.author,
-        "ts": comment.ts,
-        "body": comment.body,
-        "patch": comment.patch,
-        "anchor": _anchor_json(comment.anchor),
-        "current_anchor": _anchor_json(comment.current_anchor),
-        "state": comment.state,
-        "unresolved": comment.unresolved,
-        "orphaned": comment.orphaned,
-        "anchoring": _anchoring_json(comment.anchoring),
-        "ext": comment.ext,
-        "strategy": placed.strategy if placed else None,
-        "ambiguous": placed.ambiguous if placed else False,
-        "resolved": comment.resolved,
-        "replies": [_reply_json(r) for r in comment.replies],
-        "dispositions": [_disposition_json(d) for d in comment.dispositions],
-        "resolutions": [_resolution_json(r) for r in comment.resolutions],
-        "anchorings": [_anchoring_json(a) for a in comment.anchorings],
-    }
-
-
-def _round_json(state: State, round_: Round) -> dict[str, Any]:
-    comments = state.comments_in(round_.id)
-    return {
-        "id": round_.id,
-        "doc": round_.doc,
-        "base": round_.base,
-        "author": round_.author,
-        "ts": round_.ts,
-        "title": round_.title,
-        "status": round_.status,
-        "closed_by": round_.closed_by,
-        "closed_ts": round_.closed_ts,
-        "close_note": round_.close_note,
-        "unresolved_at_close": list(round_.unresolved_at_close),
-        "ext": round_.ext,
-        "comment_count": len(comments),
-        "unresolved_count": sum(1 for c in comments if c.unresolved),
-    }
+#
+# The shapes live in :mod:`specround.wire`, because the web view answers the
+# same questions about the same state and a second copy of the projection
+# would drift from this one silently.
 
 
 # -- human output --------------------------------------------------------
@@ -622,7 +506,7 @@ def _moved_how(comment: Comment) -> str:
 def _round_open(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     state = target.store.fold()
-    live = [r for r in _rounds_on(state, target.key) if r.open]
+    live = [r for r in rounds_on(state, target.key) if r.open]
     if live:
         raise InvariantError(
             f"round {live[0].id!r} is already open on {target.key}: close it first. "
@@ -634,7 +518,7 @@ def _round_open(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     )
     state = target.store.fold()
     round_ = state.rounds[round_id]
-    payload = {**target.envelope(), "round": _round_json(state, round_)}
+    payload = {**target.envelope(), "round": round_json(state, round_)}
     lines = [f"opened {round_id} on {target.key} (base {_short(round_.base)})"]
     if round_.title:
         lines.append(f"title  {round_.title}")
@@ -666,7 +550,7 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     closed = state.rounds[round_.id]
     payload = {
         **target.envelope(),
-        "round": _round_json(state, closed),
+        "round": round_json(state, closed),
         "close": close_id,
         "unresolved": list(closed.unresolved_at_close),
     }
@@ -684,14 +568,14 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
     target = _target(args, missing_ok=True)
     state = target.store.fold()
-    rounds = _rounds_on(state, target.key)
-    comments = _comments_on(state, target.key)
+    rounds = rounds_on(state, target.key)
+    comments = comments_on(state, target.key)
     unresolved = [c.id for c in comments if c.unresolved]
     orphans = [c.id for c in comments if c.orphaned]
     open_ids = [r.id for r in rounds if r.open]
     payload = {
         **target.envelope(),
-        "rounds": [_round_json(state, r) for r in rounds],
+        "rounds": [round_json(state, r) for r in rounds],
         "open": open_ids,
         "unresolved": unresolved,
         "orphans": orphans,
@@ -750,7 +634,7 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     )
     state = target.store.fold()
     comment = state.comments[comment_id]
-    payload = {**target.envelope(), "comment": _comment_json(comment)}
+    payload = {**target.envelope(), "comment": comment_json(comment)}
     where = f'on "{_clip(anchor.exact, _QUOTE_WIDTH)}"' if anchor else "on the document"
     return payload, [f"{comment_id} added to {round_.id} {where}"]
 
@@ -767,8 +651,8 @@ def _reply(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     reply = answered.replies[-1]
     payload = {
         **target.envelope(),
-        "comment": _comment_json(answered),
-        "reply": _reply_json(reply),
+        "comment": comment_json(answered),
+        "reply": reply_json(reply),
     }
     return payload, [
         f"{reply.id} replied to {answered.id} by {reply.author} "
@@ -800,7 +684,7 @@ def _thread(args: argparse.Namespace, *, close: bool) -> tuple[dict[str, Any], l
     updated = state.comments[comment.id]
     payload = {
         **target.envelope(),
-        "comment": _comment_json(updated),
+        "comment": comment_json(updated),
         "resolved": updated.resolved,
         "changed": event is not None,
         "event": event,
@@ -824,7 +708,7 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
     target = _target(args, missing_ok=True)
     state = target.store.fold()
-    items = _comments_on(state, target.key)
+    items = comments_on(state, target.key)
     if args.round:
         chosen = state.rounds.get(args.round)
         if chosen is None or chosen.doc != target.key:
@@ -839,7 +723,7 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         items = [c for c in items if not c.resolved]
     payload = {
         **target.envelope(),
-        "comments": [_comment_json(c) for c in items],
+        "comments": [comment_json(c) for c in items],
         "include_resolved": bool(args.all),
         "hidden": hidden,
     }
@@ -916,8 +800,8 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     settled = state.comments[comment.id]
     payload = {
         **target.envelope(),
-        "comment": _comment_json(settled),
-        "disposition": _disposition_json(settled.disposition),
+        "comment": comment_json(settled),
+        "disposition": disposition_json(settled.disposition),
     }
     current = settled.disposition
     assert current is not None  # just appended
