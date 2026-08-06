@@ -4,19 +4,20 @@ Spec review rounds for humans and AI agents — comments that survive revisions,
 edits that become suggestion diffs, and every disposition recorded in an
 append-only ledger the tool keeps for you. No server, no git required.
 
-사람과 에이전트가 스펙 문서를 사이에 두고 리뷰를 도는 도구. 코멘트는 개정을 넘어
-살아남고(앵커), 편집은 제안 diff 로 접수되고, 모든 처분이 append-only 원장에 남는다.
-원장은 **홈 중앙 스토어**에 문서 경로 키로 사는 게 기본이라 리뷰가 문서 폴더에 아무것도
-남기지 않는다. 팀이 이력을 공유하려면 `.specround.json` 으로 repo 안에 되돌린다.
-원장을 커밋하는 것은 공유·내구의 선택층이지 동작 전제가 아니다.
+The ledger lives in a **central home store**, keyed by document path, so a
+review leaves nothing behind in the document's folder — no untracked noise,
+no gitignore homework. A team that wants shared history can opt the store back
+into the repo with `.specround.json`. Committing the ledger is an optional
+layer for sharing and durability, never a precondition for the tool to work.
 
-**status: 원장 코어 + CLI 착지 · 웹뷰 미착수.** 계약은 [SPEC.md](SPEC.md)(보장 G1~G11),
-원장 포맷·스토어 위치는 [docs/ledger-format.md](docs/ledger-format.md).
-이 도구의 첫 고객은 이 도구 자신의 스펙 리뷰다.
+**Status: ledger core + CLI landed · web view not started.** The contract is
+[SPEC.md](SPEC.md) (guarantees G1–G11); the ledger format and store location
+live in [docs/ledger-format.md](docs/ledger-format.md). This tool's first
+customer is the review of its own spec.
 
-## 한 라운드
+## One round
 
-이 repo 안에서는 `uv run specround …`, 설치했으면 `specround …`.
+Inside this repo use `uv run specround …`; once installed, plain `specround …`.
 
 ```bash
 # Freeze the document as this round's base. Nothing is staged, nothing is committed.
@@ -38,11 +39,15 @@ specround reanchor SPEC.md
 ```
 
 `--author` (or `$SPECROUND_AUTHOR`) says who is speaking — a person or
-`agent:reviewer`, same field, same commands (G4). 그래서 **판정은 종료코드로 한다**:
-`0` 성공 · `2` 명령을 고쳐라(반복 인용 → `--occurrence`) · `3` 이력이 거부한다(열린
-라운드 없음 → `round open`) · `1` 그 외. 성공 출력은 stdout, 오류는 stderr 라
-`--json | jq` 가 오류 객체를 결과로 받지 않는다.
+`agent:reviewer`, same field, same commands (G4). Exit codes are the verdict:
+`0` success · `2` fix your command (repeated quote → `--occurrence`) ·
+`3` the history refuses (no open round → `round open`) · `1` anything else.
+Success goes to stdout and errors to stderr, so `--json | jq` never receives
+an error object as a result.
 
 ```bash
 uv run pytest
 ```
+
+Docs default to English; Korean guides may appear later as separate `-ko`
+files. The spec itself is being migrated.
