@@ -214,6 +214,18 @@ def test_an_explicit_store_overrides_the_config(document, workdir, tmp_path, clo
 # -- what stays open -----------------------------------------------------
 
 
+def test_opting_in_later_does_not_carry_the_history_over(document, workdir, clock):
+    a_round(ReviewStore.for_document(document, clock=clock), document)
+    (workdir / CONFIG_FILENAME).write_text('{"store": {"mode": "beside"}}', encoding="utf-8")
+
+    # Changing the setting changes where the next line goes, not where the old
+    # ones are. Moving history is the same open question as H10.
+    opted_in = ReviewStore.for_document(document, clock=clock)
+    assert opted_in.root == workdir / STORE_DIRNAME
+    assert opted_in.fold().count == 0
+    assert ReviewStore.open(central_store_dir(document)).fold().count == 2
+
+
 def test_a_renamed_document_starts_fresh_and_the_old_store_still_names_it(document, clock):
     a_round(ReviewStore.for_document(document, clock=clock), document)
     old_root = central_store_dir(document)
