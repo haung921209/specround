@@ -720,3 +720,54 @@ def test_a_writing_verb_still_needs_the_document(run, doc, opened, tmp_path):
     """Reading history is one thing; commenting on text that is gone is not."""
     doc.rename(tmp_path / "renamed.md")
     assert run("comment", doc, "--author", "bob", "--body", "on what?").code == 2
+
+
+# -- the invocation axis -------------------------------------------------
+
+
+def test_an_occurrence_without_a_quote_is_refused(run, doc, opened):
+    """Every other argument mistake is a 2; this one used to pass silently.
+
+    ``--occurrence`` picks between appearances of ``--quote``. Without one it
+    was dropped on the floor and the comment landed on the whole document —
+    exit 0, and a caller who thought they had anchored something.
+    """
+    result = run("comment", doc, "--author", "bob", "--body", "which one?", "--occurrence", "1")
+    assert result.code == 2
+    assert "--quote" in result.err
+
+
+def test_an_argument_error_is_structured_when_json_was_asked_for(run, doc):
+    """G4's structured output cannot stop at the argument parser.
+
+    An agent that gets plain usage text on stderr where every other failure is
+    a JSON envelope has to parse two shapes to find out what went wrong.
+    """
+    result = run("comment", doc, "--occurrence", "not-a-number", "--json")
+    assert result.code == 2
+    assert result.error == {
+        "kind": "usage",
+        "exit": 2,
+        "message": "argument --occurrence: invalid int value: 'not-a-number'",
+    }
+    # The verb is known here — the subparser is the one that refused.
+    assert json.loads(result.err)["verb"] == "comment"
+
+
+def test_an_argument_error_before_a_verb_says_so_rather_than_guessing(run):
+    result = run("--nonexistent-flag", "--json")
+    assert result.code == 2
+    assert json.loads(result.err)["verb"] is None
+    assert result.error["kind"] == "usage"
+
+
+def test_an_argument_error_without_json_still_reads_like_argparse(run, doc):
+    result = run("comment", doc, "--occurrence", "not-a-number")
+    assert result.code == 2
+    assert result.err.startswith("usage: specround comment")
+    assert "invalid int value" in result.err
+
+
+def test_help_and_version_are_not_failures(run):
+    assert run("--version").code == 0
+    assert run("--help").code == 0

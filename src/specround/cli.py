@@ -80,6 +80,44 @@ _BODY_WIDTH = 44
 _REF_CHARS = 12
 
 
+class ArgvError(SpecroundError):
+    """argparse refused the command line, before any verb ran.
+
+    Carried rather than printed so the failure leaves through the one exit
+    that knows about ``--json``. argparse writes plain text to stderr and
+    exits, which put the argument axis outside the structured output G4 asks
+    for: an agent got a JSON envelope for every failure except this one.
+    """
+
+    def __init__(self, message: str, *, usage: str, prog: str) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.prog = prog
+
+    @property
+    def verb(self) -> str | None:
+        """The verb argparse had resolved, or ``None`` if it never got one.
+
+        ``prog`` is "specround round open" by the time a subparser refuses, and
+        plain "specround" when the top level does. Null is the honest answer
+        for the second case — guessing a verb into the envelope would be a
+        field a consumer cannot trust.
+        """
+        parts = self.prog.split()[1:]
+        return ".".join(parts) if parts else None
+
+
+class _Parser(argparse.ArgumentParser):
+    """An ``ArgumentParser`` that raises instead of exiting.
+
+    ``add_subparsers`` hands this class down, so every subparser refuses the
+    same way and the whole surface has one exit path.
+    """
+
+    def error(self, message: str) -> "None":  # type: ignore[override]
+        raise ArgvError(message, usage=self.format_usage(), prog=self.prog)
+
+
 class UsageError(SpecroundError):
     """The invocation cannot be carried out as typed.
 
@@ -271,6 +309,8 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
     """
     if not quote:
         raise UsageError("--quote must not be empty")
+    if occurrence is not None and occurrence < 0:
+        raise UsageError("--occurrence counts appearances from 0")
     text = store.base_text(round_.id)
     total = _occurrences(text, quote)
     if total == 0:
@@ -546,6 +586,12 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     state = target.store.fold()
     round_ = _live_round(state, target.key, args.round, verb="comment on")
     body = _body(args)
+    if args.occurrence is not None and not args.quote:
+        # Dropping it silently makes a comment on the whole document look like
+        # an anchored one to the caller who typed it — exit 0 and no anchor.
+        raise UsageError(
+            "--occurrence picks between appearances of --quote: give a --quote, or drop it"
+        )
     anchor = _anchor(target.store, round_, args.quote, args.occurrence) if args.quote else None
     comment_id = target.store.add_comment(
         round_.id, author=_author(args), body=body, anchor=anchor
@@ -671,7 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"who is recording this, person or agent (default: ${AUTHOR_ENV}, else the login name)",
     )
 
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="specround",
         description="Spec review rounds for humans and agents — anchored comments, "
         "an append-only ledger, no server and no git.",
@@ -778,6 +824,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+    except ArgvError as exc:
+        return _refuse_argv(argv, exc)
     except SystemExit as exc:
         # argparse already printed the diagnosis; returning the code instead of
         # letting it escape keeps main() callable as a function. --help and
@@ -803,6 +851,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in lines:
             print(line)
     return OK
+
+
+def _refuse_argv(argv: Sequence[str] | None, exc: ArgvError) -> int:
+    """Report a command line argparse would not take, in the asked-for shape.
+
+    ``--json`` is read off the raw argv because parsing is what just failed —
+    there is no namespace to ask. Without it the output is what argparse would
+    have printed, so a shell user sees no change.
+    """
+    words = list(argv) if argv is not None else sys.argv[1:]
+    if "--json" in words:
+        message = _dump(
+            {
+                "schema": CLI_SCHEMA,
+                "verb": exc.verb,
+                "error": {"kind": "usage", "exit": USAGE, "message": str(exc)},
+            }
+        )
+    else:
+        message = f"{exc.usage}{exc.prog}: error: {exc}"
+    print(message, file=sys.stderr)
+    return USAGE
 
 
 def _fail(args: argparse.Namespace, verb: str, exc: Exception, code: int, kind: str) -> int:
