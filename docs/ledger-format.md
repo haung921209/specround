@@ -424,7 +424,7 @@ offset 이 바이트가 아니라 **문자**이고 스냅숏은 정규화 없이
 
 아래는 도구가 실제로 낸 출력이다(손으로 쓴 예가 아니다). 라운드 하나에서 코멘트 ·
 제안 · 회신 · 반영 · 보류 · 기각 · 미처분 1건을 남기고 닫은 뒤, 개정 두 번을 건너간다 —
-2차 개정에서 재앵커, 3차 개정에서 고아.
+2차 개정에서 재앵커, 3차 개정에서 고아. 마지막으로 대화 둘을 닫고 그중 하나를 다시 연다.
 
 ```jsonl
 {"author":"alice","base":"sha256:35c081dd8b8aea1c491c9b6e76eb6ae8e7675e7cfceb679fc5ca2652ba8ff8e5","doc":"protocol.md","id":"r-59add8920c91","schema":"specround.ledger/v0","seq":0,"title":"round 1","ts":"2026-02-01T09:00:00Z","type":"round.open"}
@@ -440,15 +440,25 @@ offset 이 바이트가 아니라 **문자**이고 스냅숏은 정규화 없이
 {"anchor":{"end":42,"exact":"60 seconds","prefix":"# Widget protocol\n\nTimeouts are ","start":32,"suffix":". Retries are not specified yet."},"author":"agent:reanchor","base":"sha256:3c4fa2b65eaa07b84f7d1892bd487159215dd7bfd89171c8b3f0e518bd3dc7c9","id":"a-03e8060eff2c","schema":"specround.ledger/v0","seq":10,"strategy":"fuzzy","target":"s-086c5beb81f0","ts":"2026-02-01T09:30:00Z","type":"anchor.reanchor"}
 {"author":"agent:reanchor","base":"sha256:934db591c7f03e4dd37fca8750eb99403e89debcc09730413c7e7aba38e1f80e","id":"o-7762e917b458","reason":"quote '60 seconds' is not in the revised text, and no span reaches 0.70 similarity","schema":"specround.ledger/v0","seq":11,"target":"c-d35c1ebd2b14","ts":"2026-02-01T10:00:00Z","type":"anchor.orphan"}
 {"author":"agent:reanchor","base":"sha256:934db591c7f03e4dd37fca8750eb99403e89debcc09730413c7e7aba38e1f80e","id":"o-c0c577e2d9db","reason":"quote '60 seconds' is not in the revised text, and no span reaches 0.70 similarity","schema":"specround.ledger/v0","seq":12,"target":"s-086c5beb81f0","ts":"2026-02-01T10:00:00Z","type":"anchor.orphan"}
+{"actor":"agent","author":"agent:reviewer","id":"v-08bdcb2d3b60","note":"raised to 60 in revision 2, nothing left to discuss","schema":"specround.ledger/v0","seq":13,"target":"c-d35c1ebd2b14","ts":"2026-02-01T10:05:00Z","type":"thread.resolve"}
+{"actor":"human","author":"alice","id":"v-6e5c72132f69","schema":"specround.ledger/v0","seq":14,"target":"s-086c5beb81f0","ts":"2026-02-01T10:06:00Z","type":"thread.resolve"}
+{"actor":"human","author":"bob","id":"n-58caec7c2b7b","reason":"the patch still reads on the new wording","schema":"specround.ledger/v0","seq":15,"target":"s-086c5beb81f0","ts":"2026-02-01T10:07:00Z","type":"thread.reopen"}
 ```
 
 이 원장을 fold 하면: 열린 라운드 0개, 미처분 1건(`c-7863abd8f91e`, `deferred`),
-고아 2건(`c-d35c1ebd2b14`·`s-086c5beb81f0`). 보류한 코멘트가 라운드를 넘어 살아남고,
-본문이 사라진 코멘트가 조용히 없어지는 대신 고아로 남는 것이 G3 이 말하는 유실 0 이다.
+고아 2건(`c-d35c1ebd2b14`·`s-086c5beb81f0`), 닫힌 스레드 1건(`c-d35c1ebd2b14`).
+보류한 코멘트가 라운드를 넘어 살아남고, 본문이 사라진 코멘트가 조용히 없어지는 대신
+고아로 남는 것이 G3 이 말하는 유실 0 이다.
 
-두 축이 따로 논다는 것도 이 예시에 있다: `c-d35c1ebd2b14` 는 `applied` 로 **종결**됐지만
-3차 개정에서 **고아**다(반영하면서 그 문장을 지웠으니 당연하다). 처분이 끝난 것과
-문서 위에 놓을 수 있는 것은 다른 질문이다.
+세 축이 따로 논다는 것도 이 예시에 있다. `c-d35c1ebd2b14` 는 `applied` 로 **종결**됐고
+3차 개정에서 **고아**이며(반영하면서 그 문장을 지웠으니 당연하다) 대화도 **닫혔다** —
+세 축이 우연히 같은 방향으로 간 경우다. `s-086c5beb81f0` 은 `rejected` 로 종결됐고
+고아인데 대화는 **열려 있다**(닫았다가 bob 이 다시 열었다). `c-7863abd8f91e` 는
+미처분이고 앵커가 없고 대화도 열려 있다. 기본 목록에 나오는 것은 뒤의 둘이다.
+
+닫는 주체가 갈리는 것도 여기 있다: `v-08bdcb2d3b60` 은 에이전트가 닫았고
+(`actor: agent`) `v-6e5c72132f69` 는 사람이 닫았다. `author` 만 보면 `agent:reviewer`
+라는 이름일 뿐이라 구별이 안 된다.
 
 seq 9·10 의 `strategy` 가 `fuzzy` 인 것도 읽을 거리다 — "30 seconds" 가 "60 seconds" 로
 바뀌었으니 인용이 그대로 있는 것이 아니라 **본문이 고쳐진** 경우이고, 사람이 한 번 볼

@@ -116,9 +116,25 @@ def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
     closed = next(iter(state.rounds.values()))
     assert closed.unresolved_at_close == ["c-7863abd8f91e"]
     # And: two orphans after the third revision, one of them already settled —
-    # the prose makes a point of the two axes being independent.
+    # the prose makes a point of the axes being independent.
     assert [c.id for c in state.orphans] == ["c-d35c1ebd2b14", "s-086c5beb81f0"]
     assert state.comments["c-d35c1ebd2b14"].state == "applied"
+    # The thread axis is the third one: one conversation closed, one closed and
+    # re-opened, so the default listing shows two of the three comments.
+    assert [c.id for c in state.resolved_threads] == ["c-d35c1ebd2b14"]
+    assert [c.id for c in state.threads()] == ["s-086c5beb81f0", "c-7863abd8f91e"]
+    assert [c.id for c in state.threads(include_resolved=True)] == list(state.comments)
+    assert [r.actor for r in state.comments["s-086c5beb81f0"].resolutions] == [
+        "human",
+        "human",
+    ]
+    assert state.comments["c-d35c1ebd2b14"].resolution.actor == "agent"
+
+
+def test_the_worked_example_shows_every_event_type(doc_text):
+    """The example is the doc's only executable part — it should cover the format."""
+    records = [json.loads(line) for line in jsonl_blocks(doc_text)[0]]
+    assert {r["type"] for r in records} == set(EVENT_TYPES)
 
 
 def test_the_worked_example_anchors_hold_against_the_snapshots_it_names(doc_text):
