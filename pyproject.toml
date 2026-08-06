@@ -15,6 +15,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+specround = "specround.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/specround/specround"
 
