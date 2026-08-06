@@ -174,3 +174,38 @@ def test_default_clock_is_utc_second_resolution():
     stamp = utc_now()
     assert stamp.endswith("Z")
     assert len(stamp) == len("2020-01-01T00:00:00Z")
+
+
+def test_a_ledger_missing_its_final_newline_is_not_spliced(ledger):
+    """An editor that strips the trailing newline must not cost the history.
+
+    The reader accepts such a file — the records in it are intact — so the
+    append has to put the terminator back before writing, or the new record
+    lands on the end of the last line and every later read fails on a physical
+    line holding two objects.
+    """
+    round_id = open_round(ledger)["id"]
+    stripped = ledger.path.read_bytes().rstrip(b"\n")
+    ledger.path.write_bytes(stripped)
+
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+
+    assert [r["seq"] for r in ledger.read()] == [0, 1]
+    assert ledger.path.read_bytes().startswith(stripped)
+    assert ledger.path.read_text(encoding="utf-8").splitlines()[0] == stripped.decode("utf-8")
+
+
+def test_a_rejected_append_does_not_restore_the_terminator(ledger):
+    """Healing the line ending is part of writing, not of trying.
+
+    A refused append leaves the file byte-identical, terminator included: the
+    caller is told no and nothing on disk moved.
+    """
+    open_round(ledger)
+    ledger.path.write_bytes(ledger.path.read_bytes().rstrip(b"\n"))
+    before = ledger.path.read_bytes()
+    with pytest.raises(InvariantError, match="unknown round"):
+        ledger.append(
+            {"type": "comment.add", "author": "bob", "round": "r-nonexistent", "body": "why?"}
+        )
+    assert ledger.path.read_bytes() == before

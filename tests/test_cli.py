@@ -598,3 +598,26 @@ def test_the_store_flag_overrides_the_resolved_location(run, doc, tmp_path):
     assert (chosen / "ledger.jsonl").is_file()
     # And the default store stayed empty — the flag really decided.
     assert run("round", "status", doc, "--json").json["counts"]["rounds"] == 0
+
+
+# -- the file layer ------------------------------------------------------
+
+
+def test_a_stripped_final_newline_does_not_kill_the_ledger(run, doc, opened):
+    """The reviewer's scenario, end to end: an editor takes the last newline.
+
+    Before the fix the next comment landed on the end of that line and every
+    later verb exited 1 on a physical line holding two records — a ledger the
+    tool had no way to repair.
+    """
+    a_comment(run, doc, body="first")
+    store = ReviewStore.for_document(doc)
+    ledger = store.ledger.path
+    ledger.write_bytes(ledger.read_bytes().rstrip(b"\n"))
+    assert run("round", "status", doc).code == 0
+
+    assert run("comment", doc, "--author", "bob", "--body", "second").code == 0
+
+    result = run("round", "status", doc, "--json")
+    assert result.code == 0
+    assert result.json["counts"]["comments"] == 2

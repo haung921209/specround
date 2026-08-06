@@ -130,7 +130,8 @@ class Ledger:
         check_event_type(record.get("type"))
         with self._exclusive() as handle:
             handle.seek(0)
-            prior = self._parse(handle.read().splitlines())
+            text = handle.read()
+            prior = self._parse(text.splitlines())
             record["seq"] = len(prior)
             record.setdefault("ts", self._clock())
             if not record.get("id"):
@@ -139,6 +140,16 @@ class Ledger:
             # The reader is the validator: folding prior + record raises on any
             # cross-record violation before this becomes durable.
             fold([*prior, record])
+            if text and not text.endswith("\n"):
+                # The last line lost its terminator — an editor stripping the
+                # final newline is the ordinary way that happens, and the
+                # reader accepts such a file because the records in it are
+                # whole. Writing here without putting the newline back would
+                # splice this record onto the end of that line, and one
+                # physical line holding two objects kills every later read.
+                # Restoring the terminator is not an update: no record's bytes
+                # change, only the line ending the last one was written with.
+                handle.write("\n")
             handle.write(canonical_json(record) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
