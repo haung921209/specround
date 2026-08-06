@@ -427,7 +427,9 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
     run("dispose", doc, "--comment", comment, "--as", "held", "--why", "later", "--author", "alice")
     payload = run("comments", doc, "--json").json["comments"][0]
     assert set(payload) == {
+        "ambiguous",
         "anchor",
+        "anchorings",
         "author",
         "body",
         "current_anchor",
@@ -439,10 +441,97 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
         "replies",
         "round",
         "state",
+        "strategy",
         "ts",
         "unresolved",
     }
     assert set(payload["dispositions"][0]) == {"author", "id", "reason", "ts", "verdict"}
+
+
+def test_the_anchoring_object_field_set_is_closed(run, doc, opened):
+    a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+    payload = run("comments", doc, "--json").json["comments"][0]["anchorings"][0]
+    assert set(payload) == {
+        "ambiguous",
+        "anchor",
+        "author",
+        "base",
+        "id",
+        "reason",
+        "strategy",
+        "ts",
+    }
+
+
+# -- how a comment got where it is, after the fact ------------------------
+
+
+def test_a_comment_carries_how_it_was_re_anchored(run, doc, opened):
+    """The strategy has to outlive the ``reanchor`` run that produced it.
+
+    ``fuzzy`` is the ledger's word for "the quoted text was rewritten, a person
+    should look" (§4). If it only ever appears in the output of the run that
+    moved the comment, the reviewer who reads the list afterwards — the person it
+    was written for — never sees it.
+    """
+    comment = a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+
+    payload = run("comments", doc, "--json").json["comments"][0]
+    assert payload["id"] == comment
+    assert payload["strategy"] == "fuzzy"  # 30 seconds became 60 seconds
+    assert payload["ambiguous"] is False
+    assert payload["orphaned"] is False
+    assert [a["strategy"] for a in payload["anchorings"]] == ["fuzzy"]
+
+
+def test_a_comment_that_never_moved_says_so(run, doc, opened):
+    a_comment(run, doc)
+    payload = run("comments", doc, "--json").json["comments"][0]
+    assert payload["strategy"] is None
+    assert payload["ambiguous"] is False
+    assert payload["anchorings"] == []
+
+
+def test_an_orphan_still_reports_how_it_reached_the_anchor_it_keeps(run, doc, opened):
+    """Orphaning does not erase the history that placed it — nor should the view."""
+    a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+    doc.write_text(REWRITTEN, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+
+    payload = run("comments", doc, "--json").json["comments"][0]
+    assert payload["orphaned"] is True
+    assert payload["strategy"] == "fuzzy"  # how it got to the anchor it is keeping
+    assert [a["strategy"] for a in payload["anchorings"]] == ["fuzzy", None]
+    assert payload["anchorings"][-1]["reason"]
+
+
+def test_the_listing_flags_a_comment_that_moved_onto_rewritten_text(run, doc, opened):
+    comment = a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+
+    result = run("comments", doc)
+    assert result.code == 0
+    assert any("worth a look" in line and comment in line for line in result.lines)
+    assert any("fuzzy" in line for line in result.lines)
+
+
+def test_the_listing_stays_quiet_about_an_ordinary_move(run, doc, opened, doc_text):
+    """A comment pushed down the page matched verbatim. Nobody needs telling."""
+    comment = a_comment(run, doc)
+    doc.write_text("> Draft, do not circulate.\n\n" + doc_text, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+
+    result = run("comments", doc)
+    assert run("comments", doc, "--json").json["comments"][0]["strategy"] == "quote"
+    assert not any("worth a look" in line for line in result.lines)
+    assert any(comment in line for line in result.lines)
 
 
 def test_the_round_object_field_set_is_closed(run, doc, opened):
