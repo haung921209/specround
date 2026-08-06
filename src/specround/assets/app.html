@@ -168,7 +168,7 @@
 "use strict";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (id) => document.getElementById(id);
-const state = { data: null, mode: "render", pending: null, focused: null, editing: false };
+const state = { data: null, mode: "render", focused: null, editing: false };
 
 // -- transport ------------------------------------------------------------
 
@@ -236,6 +236,7 @@ function offsetIn(holder, node, offset) {
 }
 
 function selectedSpan() {
+  if (!state.data) return null;
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
   const range = selection.getRangeAt(0);
@@ -483,7 +484,6 @@ function button(label, onClick, primary) {
 
 function clearComposer() {
   $("composer").textContent = "";
-  state.pending = null;
 }
 
 function panel(title) {
@@ -640,6 +640,8 @@ function setMode(mode) {
 }
 
 function renderControls() {
+  // A mode button is clickable before the first state has arrived.
+  if (!state.data) return;
   const host = $("doc");
   const existing = $("modebar");
   if (existing) existing.remove();
@@ -683,7 +685,7 @@ function renderControls() {
 function placeFloat() {
   const span = selectedSpan();
   const floater = $("float");
-  if (!span || !state.data.commentable) { floater.classList.remove("show"); return; }
+  if (!span || !state.data || !state.data.commentable) { floater.classList.remove("show"); return; }
   const rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
   floater.style.top = (window.scrollY + rect.bottom + 6) + "px";
   floater.style.left = (window.scrollX + rect.left) + "px";

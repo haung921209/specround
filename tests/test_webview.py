@@ -12,13 +12,16 @@ would make the fold itself raise (I7).
 """
 
 import json
+import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 
 import pytest
 
 from specround import markdown
-from specround.webview import VIEW_SCHEMA, WebView
+from specround.webview import _GETS, _POSTS, VIEW_SCHEMA, WebView, page
 
 REVISED_QUOTE = "Timeouts are 45 seconds."
 
@@ -553,3 +556,53 @@ def test_a_bound_view_that_never_served_still_lets_go(store, doc):
 def test_shutting_down_twice_is_harmless(view):
     view.shutdown()
     view.shutdown()
+
+
+# -- the page and the routes stay one thing ------------------------------
+
+
+def test_the_page_calls_exactly_the_routes_the_server_serves():
+    """Neither half may drift: a dead button and a dead route look the same.
+
+    A page calling a route that is gone is a control that silently does nothing;
+    a route no page calls is either dead code or an undocumented surface. Both
+    show up here as an inequality.
+    """
+    html = page().decode("utf-8")
+    called = set(re.findall(r'"(/api/[a-z]+)"', html))
+    served = set(_GETS) | set(_POSTS)
+    assert called == served - {"/"}
+
+
+def test_the_pages_script_parses(tmp_path):
+    """Nothing else here would notice a syntax error in the one script.
+
+    Best effort by nature — it needs a JavaScript engine, which this package
+    does not depend on and will not grow a dependency for. When one is around,
+    a broken page fails a test instead of failing in a browser.
+    """
+    engine = shutil.which("node") or shutil.which("bun")
+    if engine is None:
+        pytest.skip("no javascript engine on this machine")
+    html = page().decode("utf-8")
+    script = re.search(r"<script>(.*)</script>", html, re.DOTALL)
+    assert script is not None, "the page should carry exactly one inline script"
+    source = tmp_path / "app.js"
+    source.write_text(script.group(1), encoding="utf-8")
+    finished = subprocess.run(
+        [engine, "--check", str(source)], capture_output=True, text=True, timeout=60
+    )
+    assert finished.returncode == 0, finished.stderr
+
+
+def test_every_state_field_the_page_reads_is_a_field_the_server_sends(opened):
+    """The other half of the drift the route test catches.
+
+    A page reading ``data.rows`` when the server sends ``data.diff.rows`` fails
+    silently — undefined renders as nothing, and nothing looks like an empty
+    review. Comparing the names is cheap and catches the whole class.
+    """
+    html = page().decode("utf-8")
+    read = set(re.findall(r"\bdata\.([a-z_]+)\b", html))
+    assert read, "the page should read the state payload"
+    assert read <= set(state(opened)), sorted(read - set(state(opened)))
