@@ -1,0 +1,176 @@
+"""The log: append-only, self-describing positions, and refusals."""
+
+import json
+
+import pytest
+
+from specround.errors import InvariantError, SchemaError
+from specround.events import SCHEMA, canonical_json
+from specround.ledger import Ledger, utc_now
+
+
+@pytest.fixture
+def ledger(tmp_path, clock):
+    return Ledger(tmp_path / ".specround" / "ledger.jsonl", clock=clock)
+
+
+def open_round(ledger, **overrides):
+    return ledger.append(
+        {
+            "type": "round.open",
+            "author": "alice",
+            "doc": "spec.md",
+            "base": "sha256:" + "1" * 64,
+            **overrides,
+        }
+    )
+
+
+def test_a_missing_ledger_reads_as_empty(ledger):
+    assert ledger.exists() is False
+    assert ledger.read() == []
+    assert ledger.count() == 0
+    assert ledger.state().rounds == {}
+
+
+def test_append_creates_the_directory_and_the_file(ledger):
+    open_round(ledger)
+    assert ledger.path.is_file()
+    assert ledger.path.parent.is_dir()
+
+
+def test_append_fills_in_the_envelope(ledger):
+    record = open_round(ledger)
+    assert record["schema"] == SCHEMA
+    assert record["seq"] == 0
+    assert record["ts"] == "2020-01-01T00:00:01Z"
+    assert record["id"].startswith("r-")
+
+
+def test_seq_counts_up_from_zero(ledger):
+    round_id = open_round(ledger)["id"]
+    second = ledger.append(
+        {"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"}
+    )
+    third = ledger.append({"type": "reply", "author": "alice", "target": second["id"], "body": "because"})
+    assert [r["seq"] for r in (second, third)] == [1, 2]
+    assert [r["seq"] for r in ledger.read()] == [0, 1, 2]
+
+
+def test_earlier_lines_are_never_rewritten(ledger):
+    open_round(ledger)
+    before = ledger.path.read_bytes()
+    round_id = ledger.read()[0]["id"]
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+    after = ledger.path.read_bytes()
+    # Append-only in the literal sense: the old bytes are a prefix of the new.
+    assert after.startswith(before)
+
+
+def test_each_record_is_exactly_one_line(ledger):
+    round_id = open_round(ledger)["id"]
+    ledger.append(
+        {
+            "type": "comment.add",
+            "author": "bob",
+            "round": round_id,
+            "body": "first line\nsecond line\n",
+        }
+    )
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1])["body"] == "first line\nsecond line\n"
+
+
+def test_stored_lines_are_canonical_json(ledger):
+    record = open_round(ledger)
+    first_line = ledger.path.read_text(encoding="utf-8").splitlines()[0]
+    assert first_line == canonical_json(record)
+
+
+def test_a_caller_supplied_id_is_kept(ledger):
+    record = open_round(ledger, id="r-custom")
+    assert record["id"] == "r-custom"
+    assert ledger.read()[0]["id"] == "r-custom"
+
+
+def test_a_caller_supplied_timestamp_is_kept(ledger):
+    record = open_round(ledger, ts="1999-12-31T23:59:59Z")
+    assert record["ts"] == "1999-12-31T23:59:59Z"
+
+
+def test_a_truncated_ledger_is_reported_not_folded(ledger):
+    round_id = open_round(ledger)["id"]
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    # Drop the first line by hand: every remaining seq is now off by one.
+    ledger.path.write_text(lines[1] + "\n", encoding="utf-8")
+    with pytest.raises(SchemaError, match="reordered or truncated"):
+        ledger.read()
+
+
+def test_a_reordered_ledger_is_reported(ledger):
+    round_id = open_round(ledger)["id"]
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    ledger.path.write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
+    with pytest.raises(SchemaError, match="reordered or truncated"):
+        ledger.read()
+
+
+def test_a_corrupt_line_names_its_line_number(ledger):
+    open_round(ledger)
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+    with pytest.raises(SchemaError, match=r":2: not valid JSON"):
+        ledger.read()
+
+
+def test_a_blank_line_is_corruption(ledger):
+    open_round(ledger)
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write("\n")
+    with pytest.raises(SchemaError, match=r":2: blank line"):
+        ledger.read()
+
+
+def test_an_invalid_record_names_its_line_number(ledger):
+    open_round(ledger)
+    with ledger.path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"schema": SCHEMA, "seq": 1, "type": "reply"}) + "\n")
+    with pytest.raises(SchemaError, match=r":2: reply record: missing required field"):
+        ledger.read()
+
+
+def test_a_rejected_append_leaves_the_file_untouched(ledger):
+    open_round(ledger)
+    before = ledger.path.read_bytes()
+    with pytest.raises(InvariantError, match="unknown round"):
+        ledger.append(
+            {"type": "comment.add", "author": "bob", "round": "r-nonexistent", "body": "why?"}
+        )
+    assert ledger.path.read_bytes() == before
+
+
+def test_a_schema_violation_is_refused_before_writing(ledger):
+    with pytest.raises(SchemaError, match="unknown event type"):
+        ledger.append({"type": "comment.delete", "author": "bob", "round": "r-1"})
+    assert ledger.read() == []
+
+
+def test_two_handles_on_one_file_keep_the_sequence_contiguous(tmp_path, clock):
+    path = tmp_path / ".specround" / "ledger.jsonl"
+    first = Ledger(path, clock=clock)
+    second = Ledger(path, clock=clock)
+    round_id = open_round(first)["id"]
+    second.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "a"})
+    first.append({"type": "comment.add", "author": "carol", "round": round_id, "body": "b"})
+    # Each writer reads the current length under the lock, so nothing collides.
+    assert [r["seq"] for r in first.read()] == [0, 1, 2]
+    assert len(second.state().comments) == 2
+
+
+def test_default_clock_is_utc_second_resolution():
+    stamp = utc_now()
+    assert stamp.endswith("Z")
+    assert len(stamp) == len("2020-01-01T00:00:00Z")
