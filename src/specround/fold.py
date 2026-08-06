@@ -24,6 +24,7 @@ from typing import Any, Iterable, Mapping
 from specround.anchors import Anchor
 from specround.errors import InvariantError
 from specround.events import (
+    ANCHOR_KINDS,
     COMMENT_ADD,
     COMMENT_KINDS,
     DEFERRED,
@@ -62,6 +63,30 @@ class Disposition:
 
 
 @dataclass
+class Anchoring:
+    """One attempt to carry a comment's anchor onto a snapshot (G1, H4).
+
+    ``anchor`` is ``None`` when the attempt failed — the comment is orphaned
+    against that snapshot and ``reason`` says why. Failure is recorded, never
+    silent: an anchor that cannot be found must still be visible to whoever
+    owns the comment (G3).
+    """
+
+    id: str
+    author: str
+    ts: str
+    base: str
+    anchor: Anchor | None = None
+    strategy: str | None = None
+    ambiguous: bool = False
+    reason: str = ""
+
+    @property
+    def orphaned(self) -> bool:
+        return self.anchor is None
+
+
+@dataclass
 class Comment:
     """A comment or a suggestion, with everything that happened to it."""
 
@@ -75,11 +100,45 @@ class Comment:
     anchor: Anchor | None = None
     replies: list[Reply] = field(default_factory=list)
     dispositions: list[Disposition] = field(default_factory=list)
+    #: Re-anchoring history, oldest first. ``anchor`` above stays as written —
+    #: it is where the comment was made, against its round's base.
+    anchorings: list[Anchoring] = field(default_factory=list)
 
     @property
     def disposition(self) -> Disposition | None:
         """The current disposition — the last one recorded."""
         return self.dispositions[-1] if self.dispositions else None
+
+    @property
+    def anchoring(self) -> Anchoring | None:
+        """The most recent re-anchoring attempt, if there has been one."""
+        return self.anchorings[-1] if self.anchorings else None
+
+    @property
+    def orphaned(self) -> bool:
+        """True when the last attempt failed to place this comment."""
+        latest = self.anchoring
+        return latest is not None and latest.orphaned
+
+    @property
+    def current_anchor(self) -> Anchor | None:
+        """Where this comment lives now — the last anchor that was bound.
+
+        An orphan keeps its last good anchor rather than losing it. Orphaning
+        is a report that a revision hid the text, not a decision to forget
+        where it used to be: a later revision that restores the text can bind
+        the comment again from here.
+        """
+        for attempt in reversed(self.anchorings):
+            if attempt.anchor is not None:
+                return attempt.anchor
+        return self.anchor
+
+    @property
+    def bound_to(self) -> str | None:
+        """The snapshot the latest attempt ran against, orphaned or not."""
+        latest = self.anchoring
+        return latest.base if latest else None
 
     @property
     def verdict(self) -> str | None:
@@ -146,6 +205,16 @@ class State:
     def unresolved(self) -> list[Comment]:
         """Comments still owed an answer, in the order they were made."""
         return [c for c in self.comments.values() if c.unresolved]
+
+    @property
+    def orphans(self) -> list[Comment]:
+        """Comments whose anchor was not found in the revision it was tried on.
+
+        Separate axis from :attr:`unresolved`: that one is about whether anyone
+        answered the comment, this one is about whether the tool can still show
+        it where it belongs. A comment can be both, either, or neither.
+        """
+        return [c for c in self.comments.values() if c.orphaned]
 
     def comments_in(self, round_id: str) -> list[Comment]:
         return [c for c in self.comments.values() if c.round == round_id]
@@ -245,6 +314,29 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
                 ts=record["ts"],
                 verdict=record["verdict"],
                 reason=record["reason"],
+            )
+        )
+
+    elif kind in ANCHOR_KINDS:
+        comment = _comment_or_raise(state, record["target"], f"{kind} {event_id!r}")
+        if comment.anchor is None:
+            raise InvariantError(
+                f"{kind} {event_id!r} targets comment {comment.id!r}, which has no anchor "
+                "— a comment on the whole document has nothing to re-anchor"
+            )
+        # No round check on purpose: a comment outlives its round, and the
+        # revision that moved its text usually lands after the round closed.
+        payload = record.get("anchor")
+        comment.anchorings.append(
+            Anchoring(
+                id=event_id,
+                author=record["author"],
+                ts=record["ts"],
+                base=record["base"],
+                anchor=Anchor.from_json(payload) if payload is not None else None,
+                strategy=record.get("strategy"),
+                ambiguous=bool(record.get("ambiguous", False)),
+                reason=record.get("reason", ""),
             )
         )
 

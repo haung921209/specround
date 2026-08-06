@@ -12,11 +12,12 @@ from pathlib import Path
 import pytest
 
 import specround
+from specround.anchors import Anchor
 from specround.events import EVENT_TYPES, SCHEMA, VERDICTS, validate_event
 from specround.fold import fold
 
 DOC_PATH = Path(specround.__file__).parents[2] / "docs" / "ledger-format.md"
-INVARIANT_IDS = [f"I{n}" for n in range(1, 9)]
+INVARIANT_IDS = [f"I{n}" for n in range(1, 10)]
 
 
 @pytest.fixture(scope="module")
@@ -92,6 +93,39 @@ def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
     ]
     closed = next(iter(state.rounds.values()))
     assert closed.unresolved_at_close == ["c-7863abd8f91e"]
+    # And: two orphans after the third revision, one of them already settled —
+    # the prose makes a point of the two axes being independent.
+    assert [c.id for c in state.orphans] == ["c-d35c1ebd2b14", "s-086c5beb81f0"]
+    assert state.comments["c-d35c1ebd2b14"].state == "applied"
+
+
+def test_the_worked_example_anchors_hold_against_the_snapshots_it_names(doc_text):
+    """Every anchor in the example is consistent with the text it claims.
+
+    The example is generated, not hand written, and this is what keeps it that
+    way: a snapshot digest edited by hand stops matching its anchor here.
+    """
+    from specround.snapshots import digest_text
+
+    revisions = {
+        digest_text(text): text
+        for text in (
+            "# Widget protocol\n\nTimeouts are 30 seconds. Retries are not specified yet.\n",
+            "# Widget protocol\n\nTimeouts are 60 seconds. Retries are not specified yet.\n",
+            "# Widget protocol\n\nRetries are not specified yet.\n",
+        )
+    }
+    records = [json.loads(line) for line in jsonl_blocks(doc_text)[0]]
+    rounds = {r["id"]: r["base"] for r in records if r["type"] == "round.open"}
+    checked = 0
+    for record in records:
+        if "anchor" not in record:
+            continue
+        base = record.get("base") or rounds[record["round"]]
+        assert base in revisions, f"{record['id']} names a snapshot the example never shows"
+        Anchor.from_json(record["anchor"]).verify(revisions[base])
+        checked += 1
+    assert checked == 4  # two originals, two re-anchored
 
 
 def test_the_worked_example_lines_are_canonical(doc_text):

@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 from specround.anchors import Anchor
 from specround.errors import AnchorError, SchemaError
+from specround.reanchor import STRATEGIES
 
 SCHEMA_NAME = "specround.ledger"
 SCHEMA_VERSION = 0
@@ -32,6 +33,8 @@ SUGGESTION_ADD = "suggestion.add"
 REPLY = "reply"
 DISPOSITION = "disposition"
 ROUND_CLOSE = "round.close"
+ANCHOR_REANCHOR = "anchor.reanchor"
+ANCHOR_ORPHAN = "anchor.orphan"
 
 EVENT_TYPES = (
     ROUND_OPEN,
@@ -40,7 +43,15 @@ EVENT_TYPES = (
     REPLY,
     DISPOSITION,
     ROUND_CLOSE,
+    ANCHOR_REANCHOR,
+    ANCHOR_ORPHAN,
 )
+
+#: Events that rebind (or fail to rebind) a comment's anchor to a new snapshot.
+#: They never rewrite the record that carried the original anchor — where a
+#: comment lives now is the latest of these, and the whole path is still in the
+#: log (G1 across revisions, G3 loss 0).
+ANCHOR_KINDS = (ANCHOR_REANCHOR, ANCHOR_ORPHAN)
 
 #: Disposition vocabulary (G3). Korean reading: 반영 / 기각 / 답변 / 보류.
 APPLIED = "applied"
@@ -62,6 +73,7 @@ _STRING = "string"  # non-empty string
 _INDEX = "index"  # non-negative integer
 _OBJECT = "object"
 _STRING_LIST = "string-list"
+_FLAG = "flag"  # boolean
 
 _ENVELOPE: dict[str, str] = {
     "schema": _STRING,
@@ -83,6 +95,11 @@ _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
     REPLY: ({"target": _STRING, "body": _STRING}, {}),
     DISPOSITION: ({"target": _STRING, "verdict": _STRING, "reason": _STRING}, {}),
     ROUND_CLOSE: ({"round": _STRING}, {"unresolved": _STRING_LIST, "note": _TEXT}),
+    ANCHOR_REANCHOR: (
+        {"target": _STRING, "base": _STRING, "anchor": _OBJECT, "strategy": _STRING},
+        {"ambiguous": _FLAG},
+    ),
+    ANCHOR_ORPHAN: ({"target": _STRING, "base": _STRING, "reason": _STRING}, {}),
 }
 
 #: Event ids are prefixed by kind so a bare id in a log line is readable.
@@ -93,6 +110,8 @@ _ID_PREFIX: dict[str, str] = {
     REPLY: "p",
     DISPOSITION: "d",
     ROUND_CLOSE: "x",
+    ANCHOR_REANCHOR: "a",
+    ANCHOR_ORPHAN: "o",
 }
 _ID_HASH_CHARS = 12
 
@@ -156,6 +175,9 @@ def _check_field(where: str, name: str, kind: str, value: Any) -> None:
     elif kind == _STRING_LIST:
         if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
             raise SchemaError(f"{where}: {name!r} must be a list of non-empty strings")
+    elif kind == _FLAG:
+        if not isinstance(value, bool):
+            raise SchemaError(f"{where}: {name!r} must be true or false")
     else:  # pragma: no cover - guards a typo in the table above
         raise SchemaError(f"{where}: unknown field kind {kind!r} for {name!r}")
 
@@ -193,6 +215,13 @@ def validate_event(record: Any) -> None:
         raise SchemaError(
             f"{where}: unknown verdict {record['verdict']!r}; "
             f"known verdicts: {', '.join(VERDICTS)}"
+        )
+    if kind == ANCHOR_REANCHOR and record["strategy"] not in STRATEGIES:
+        # Closed like the verdicts: a reader has to be able to tell a comment
+        # that merely moved from one whose text was rewritten under it.
+        raise SchemaError(
+            f"{where}: unknown strategy {record['strategy']!r}; "
+            f"known strategies: {', '.join(STRATEGIES)}"
         )
     if "anchor" in record:
         try:

@@ -36,6 +36,17 @@ def valid(kind: str, **overrides):
         "reply": {"target": "c-1", "body": "because of the proxy"},
         "disposition": {"target": "c-1", "verdict": "applied", "reason": "agreed"},
         "round.close": {"round": "r-1"},
+        "anchor.reanchor": {
+            "target": "c-1",
+            "base": "sha256:" + "1" * 64,
+            "anchor": {"exact": "30 seconds", "start": 10, "end": 20},
+            "strategy": "quote",
+        },
+        "anchor.orphan": {
+            "target": "c-1",
+            "base": "sha256:" + "1" * 64,
+            "reason": "the quoted text is not in this revision",
+        },
     }
     return {**base, **payloads[kind], **overrides}
 
@@ -128,6 +139,46 @@ def test_deferred_is_the_only_non_terminal_verdict():
     assert set(VERDICTS) - set(TERMINAL_VERDICTS) == {"deferred"}
 
 
+def test_strategy_vocabulary_is_closed():
+    from specround.reanchor import STRATEGIES
+
+    for strategy in STRATEGIES:
+        validate_event(valid("anchor.reanchor", strategy=strategy))
+    with pytest.raises(SchemaError, match="unknown strategy"):
+        validate_event(valid("anchor.reanchor", strategy="vibes"))
+
+
+def test_ambiguous_is_a_flag_not_a_string():
+    validate_event(valid("anchor.reanchor", ambiguous=True))
+    validate_event(valid("anchor.reanchor", ambiguous=False))
+    with pytest.raises(SchemaError, match="'ambiguous' must be true or false"):
+        validate_event(valid("anchor.reanchor", ambiguous="yes"))
+
+
+def test_a_reanchor_carries_an_anchor_and_an_orphan_does_not():
+    with pytest.raises(SchemaError, match="missing required field 'anchor'"):
+        validate_event({k: v for k, v in valid("anchor.reanchor").items() if k != "anchor"})
+    with pytest.raises(SchemaError, match="unknown field"):
+        validate_event(valid("anchor.orphan", anchor={"exact": "x", "start": 0, "end": 1}))
+    with pytest.raises(SchemaError, match="'reason' must not be empty"):
+        validate_event(valid("anchor.orphan", reason=""))
+
+
+def test_the_ledger_records_no_floating_point_score():
+    """Scores stay out of the wire format on purpose.
+
+    Canonical lines have to be the same bytes everywhere for ids to derive and
+    files to compare; float formatting is the classic way that stops being true
+    across languages. The rung that matched is recorded instead, and anything
+    finer belongs in ``ext``.
+    """
+    from specround.events import _PAYLOAD
+
+    for required, optional in _PAYLOAD.values():
+        for name in {**required, **optional}:
+            assert "score" not in name and "ratio" not in name
+
+
 def test_anchor_is_validated_as_part_of_the_record():
     good = {"exact": "30 seconds", "start": 10, "end": 20}
     validate_event(valid("comment.add", anchor=good))
@@ -156,6 +207,8 @@ def test_derived_ids_are_prefixed_by_kind_and_stable():
         ("reply", "p-"),
         ("disposition", "d-"),
         ("round.close", "x-"),
+        ("anchor.reanchor", "a-"),
+        ("anchor.orphan", "o-"),
     ]:
         record = {k: v for k, v in valid(kind).items() if k != "id"}
         derived = derive_id(record)
