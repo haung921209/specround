@@ -1,8 +1,14 @@
 """Fold — read the ledger, compute the present (G3).
 
 ``fold`` is the only place that answers "what is true now": which rounds are
-open, which comments are still waiting on someone. Nothing else caches that
-state, so there is no second copy to fall out of sync with the log.
+open, which comments are still waiting on someone, which conversations are
+over. Nothing else caches that state, so there is no second copy to fall out of
+sync with the log.
+
+Three axes run independently and are easy to confuse, so they are named apart:
+*disposition* (was this decided? — ``unresolved``), *anchor* (can we still put
+it on the document? — ``orphans``), and *thread* (is the conversation over? —
+``resolved_threads``). A comment can sit anywhere in that cube.
 
 Two properties are load bearing:
 
@@ -34,6 +40,8 @@ from specround.events import (
     ROUND_OPEN,
     SUGGESTION_ADD,
     TERMINAL_VERDICTS,
+    THREAD_KINDS,
+    THREAD_RESOLVE,
     validate_event,
 )
 
@@ -60,6 +68,23 @@ class Disposition:
     ts: str
     verdict: str
     reason: str
+
+
+@dataclass
+class Resolution:
+    """One assertion that a thread is over — or that it is not (G11).
+
+    ``resolved`` is what the event said: ``True`` for ``thread.resolve``,
+    ``False`` for ``thread.reopen``. ``note`` carries whichever text the event
+    had — an optional note when resolving, the required reason when re-opening.
+    """
+
+    id: str
+    author: str
+    actor: str
+    ts: str
+    resolved: bool
+    note: str = ""
 
 
 @dataclass
@@ -103,6 +128,8 @@ class Comment:
     #: Re-anchoring history, oldest first. ``anchor`` above stays as written —
     #: it is where the comment was made, against its round's base.
     anchorings: list[Anchoring] = field(default_factory=list)
+    #: Resolve/reopen history for this thread, oldest first (G11).
+    resolutions: list[Resolution] = field(default_factory=list)
 
     @property
     def disposition(self) -> Disposition | None:
@@ -141,6 +168,25 @@ class Comment:
         return latest.base if latest else None
 
     @property
+    def resolution(self) -> Resolution | None:
+        """The assertion in force about this thread — the last one recorded."""
+        return self.resolutions[-1] if self.resolutions else None
+
+    @property
+    def resolved(self) -> bool:
+        """True when this conversation has been closed and not re-opened (G11).
+
+        A third axis, independent of the other two. :attr:`unresolved` asks
+        whether anyone decided what to do about the comment; :attr:`orphaned`
+        asks whether the tool can still place it on the document; this asks
+        whether the discussion is over. A thread can be resolved with no
+        disposition (people simply agreed) and settled with the thread still
+        open (the fix landed, the argument continues).
+        """
+        current = self.resolution
+        return current is not None and current.resolved
+
+    @property
     def verdict(self) -> str | None:
         current = self.disposition
         return current.verdict if current else None
@@ -157,6 +203,11 @@ class Comment:
         ``deferred`` is the one verdict that does not settle a comment — that is
         the whole point of having it. A deferred comment keeps showing up until
         someone applies, rejects, or answers it.
+
+        Not the opposite of :attr:`resolved`, despite the words. This one is the
+        disposition axis and it is what ``round.close`` has to account for (I6);
+        closing a thread never changes it, or resolving would become a way to
+        walk away from an undisposed comment quietly.
         """
         return not self.settled
 
@@ -203,7 +254,11 @@ class State:
 
     @property
     def unresolved(self) -> list[Comment]:
-        """Comments still owed an answer, in the order they were made."""
+        """Comments still owed an answer, in the order they were made.
+
+        The disposition axis — see :attr:`Comment.unresolved`. Not the
+        complement of :attr:`resolved_threads`.
+        """
         return [c for c in self.comments.values() if c.unresolved]
 
     @property
@@ -216,10 +271,52 @@ class State:
         """
         return [c for c in self.comments.values() if c.orphaned]
 
+    @property
+    def active_threads(self) -> list[Comment]:
+        """Conversations still going — the default listing (G11).
+
+        This is what "resolved is hidden by default" means at this layer.
+        Hiding is a view decision, not a deletion: the records are all still in
+        the ledger and :attr:`comments` still holds every one of them.
+        """
+        return [c for c in self.comments.values() if not c.resolved]
+
+    @property
+    def resolved_threads(self) -> list[Comment]:
+        """Conversations someone closed — the separate list the toggle shows."""
+        return [c for c in self.comments.values() if c.resolved]
+
+    def threads(
+        self, round_id: str | None = None, *, include_resolved: bool = False
+    ) -> list[Comment]:
+        """Threads, newest last, resolved ones left out unless asked for.
+
+        The name says *thread* rather than *comment* because the axis it
+        filters on is the thread's: a resolved thread drops out of this list
+        while staying exactly where it was in :meth:`comments_in`.
+        """
+        return [
+            c
+            for c in self.comments.values()
+            if (round_id is None or c.round == round_id)
+            and (include_resolved or not c.resolved)
+        ]
+
     def comments_in(self, round_id: str) -> list[Comment]:
+        """Every comment in a round, resolved or not — the raw index.
+
+        Deliberately unfiltered. Callers that want the default view ask
+        :meth:`threads`; this one is for anybody who has to see all of it.
+        """
         return [c for c in self.comments.values() if c.round == round_id]
 
     def unresolved_in(self, round_id: str) -> list[Comment]:
+        """Comments in a round still owed a disposition — resolved or not.
+
+        Unfiltered on purpose: this feeds ``round.close`` (I6), and a resolved
+        thread whose comment nobody disposed is still something the close has
+        to declare.
+        """
         return [c for c in self.comments_in(round_id) if c.unresolved]
 
     def round_of(self, comment_id: str) -> Round:
@@ -232,6 +329,14 @@ def _comment_or_raise(state: State, target: str, what: str) -> Comment:
         if target in state.rounds:
             raise InvariantError(
                 f"{what} targets {target!r}, which is a round, not a comment"
+            )
+        if target in state.seen_ids:
+            # A reply, a disposition, a re-anchor — a real event, but not
+            # something anything can hang off. Saying so beats "unknown", which
+            # sends the reader looking for a typo that is not there.
+            raise InvariantError(
+                f"{what} targets {target!r}, which is an event but not a comment "
+                "or suggestion"
             )
         raise InvariantError(f"{what} targets unknown comment {target!r}")
     return comment
@@ -337,6 +442,27 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
                 strategy=record.get("strategy"),
                 ambiguous=bool(record.get("ambiguous", False)),
                 reason=record.get("reason", ""),
+            )
+        )
+
+    elif kind in THREAD_KINDS:
+        comment = _comment_or_raise(state, record["target"], f"{kind} {event_id!r}")
+        # No round check, and no refusal of a redundant assertion: a thread
+        # outlives its round, and re-stating a state the thread is already in
+        # is agreement, not contradiction. That is the whole difference from a
+        # disposition, where a second verdict would overwrite a decision — here
+        # a second resolve just says the same thing twice, and the record of who
+        # said it is worth keeping. Idempotence is deliberate (I10): a caller
+        # that closes an already-closed thread has made a harmless mistake, and
+        # a tool that raised on it would turn that into an incident.
+        comment.resolutions.append(
+            Resolution(
+                id=event_id,
+                author=record["author"],
+                actor=record["actor"],
+                ts=record["ts"],
+                resolved=kind == THREAD_RESOLVE,
+                note=record.get("note", record.get("reason", "")),
             )
         )
 

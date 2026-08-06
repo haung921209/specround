@@ -31,6 +31,8 @@ from specround.events import (
     ROUND_CLOSE,
     ROUND_OPEN,
     SUGGESTION_ADD,
+    THREAD_REOPEN,
+    THREAD_RESOLVE,
 )
 from specround.fold import Comment, Round, State
 from specround.ledger import Clock, Ledger
@@ -307,6 +309,67 @@ class ReviewStore:
                 "reason": reason,
             }
         )
+
+    # -- threads ---------------------------------------------------------
+
+    def resolve(
+        self, target: str, *, author: str, actor: str, note: str | None = None
+    ) -> str | None:
+        """Close a thread — this conversation is over (G11).
+
+        Returns the id of the appended event, or ``None`` when the thread was
+        already resolved and nothing was written. Closing a closed thread is a
+        no-op rather than an error: the caller wanted it closed and it is
+        closed. Writing the redundant line instead would put "still fine" noise
+        in the log, the same reason an unchanged anchor records nothing.
+
+        Independent of :meth:`dispose`. Resolving does not settle the comment,
+        and a resolved thread whose comment nobody disposed still has to be
+        declared by ``round.close``.
+        """
+        return self._assert_thread(
+            THREAD_RESOLVE, target, author=author, actor=actor, text=note, resolved=True
+        )
+
+    def reopen(self, target: str, *, author: str, actor: str, reason: str) -> str | None:
+        """Re-open a thread that was closed too early.
+
+        Returns ``None`` when the thread was already open. ``reason`` is
+        required — re-opening overturns a decision that is already in the log,
+        and everything in this format that overturns or refuses something says
+        why.
+        """
+        return self._assert_thread(
+            THREAD_REOPEN, target, author=author, actor=actor, text=reason, resolved=False
+        )
+
+    def _assert_thread(
+        self,
+        kind: str,
+        target: str,
+        *,
+        author: str,
+        actor: str,
+        text: str | None,
+        resolved: bool,
+    ) -> str | None:
+        comment = self.fold().comments.get(target)
+        if comment is not None and comment.resolved == resolved:
+            return None
+        record: dict[str, Any] = {
+            "type": kind,
+            "author": author,
+            "actor": actor,
+            "target": target,
+        }
+        if kind == THREAD_REOPEN:
+            record["reason"] = text or ""
+        elif text:
+            record["note"] = text
+        # An unknown target falls through to the append, where folding the
+        # prospective history refuses it (I8) — one oracle, not a second copy of
+        # the rule here.
+        return self._append(record)
 
     def close_round(
         self,
