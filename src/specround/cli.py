@@ -422,14 +422,12 @@ def _moved_marks(comment: Comment) -> list[str]:
     placed = comment.current_anchoring
     if placed is None:
         return []
-    return [
-        mark
-        for mark in (
-            placed.strategy if placed.strategy == FUZZY else "",
-            "ambiguous" if placed.ambiguous else "",
-        )
-        if mark
-    ]
+    marks = []
+    if placed.strategy == FUZZY:
+        marks.append(FUZZY)
+    if placed.ambiguous:
+        marks.append("ambiguous")
+    return marks
 
 
 def _comment_rows(comments: Sequence[Comment]) -> list[str]:

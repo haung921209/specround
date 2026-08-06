@@ -200,12 +200,14 @@ class ReviewStore:
         return state
 
     def _snapshot_text(self, base: str) -> str:
-        """The text of a snapshot, remembered for the rest of this fold.
+        """The text of a snapshot, remembered for the life of this store object.
 
-        Objects are content addressed and immutable, so caching one is caching a
-        fact. Without it a fold would re-read and re-hash the same base once per
-        anchored comment, and appending is a fold — the cost would land on every
-        write in the store.
+        Objects are content addressed and immutable, so this caches a fact, not
+        state — the thing §8 says not to cache is the folded present, and that is
+        still recomputed every time. Without it a fold would re-read and re-hash
+        the same base once per anchored comment, and appending is a fold, so the
+        cost would land on every write. It grows with the number of distinct
+        snapshots a caller touches, which is revisions, not comments.
         """
         cached = self._texts.get(base)
         if cached is None:
@@ -315,7 +317,9 @@ class ReviewStore:
         if anchor is None:
             return None
         resolved = anchor if isinstance(anchor, Anchor) else Anchor.from_json(anchor)
-        self._check_anchor(resolved, self.round_base(round_id), "the anchor given here")
+        self._check_anchor(
+            resolved, self.round_base(round_id), f"the anchor given for round {round_id!r}"
+        )
         return resolved.to_json()
 
     def add_comment(
