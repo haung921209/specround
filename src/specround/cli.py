@@ -49,6 +49,7 @@ from specround.anchors import Anchor
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ANSWERED, APPLIED, DEFERRED, REJECTED
 from specround.fold import Comment, Disposition, Round, State
+from specround.locations import canonical_path
 from specround.store import ReviewStore
 
 #: Exit codes. See the module docstring — these are the contract, not the prose.
@@ -116,7 +117,7 @@ def _document(value: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_file():
         raise UsageError(f"{path}: not a file — every verb names the document under review")
-    return path.resolve()
+    return canonical_path(path)
 
 
 def _target(args: argparse.Namespace) -> Target:

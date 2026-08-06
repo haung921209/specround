@@ -668,3 +668,17 @@ def test_naming_a_store_by_path_sees_the_history_it_holds(run, tmp_path):
     # And the CLI's one-open-round rule is not routed around by the flag.
     second = run("round", "open", doc, "--author", "alice", "--store", store, "--title", "via flag")
     assert second.code == 3
+
+
+def test_a_case_only_difference_does_not_report_an_empty_history(run, tmp_path):
+    """The failure ``_document`` was written to prevent, arriving by case."""
+    doc = tmp_path / "real.md"
+    doc.write_text("# L\n\nlinked content\n", encoding="utf-8")
+    other = tmp_path / "Real.md"
+    if not other.is_file():
+        pytest.skip("case-sensitive filesystem: the two spellings are two documents")
+    assert run("round", "open", doc, "--author", "alice", "--title", "via real").code == 0
+
+    result = run("round", "status", other, "--json")
+    assert result.code == 0
+    assert result.json["counts"]["rounds"] == 1

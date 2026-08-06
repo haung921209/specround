@@ -73,6 +73,35 @@ def test_the_key_does_not_depend_on_how_the_path_was_spelled(document, monkeypat
     assert path_key(Path("./sub/../spec.md")) == path_key(document)
 
 
+def spelled_differently(directory, name: str, other: str):
+    """``other`` as a second spelling of ``name``, or a skip.
+
+    Case folding is a property of the filesystem, not of the code under test:
+    where ``real.md`` and ``Real.md`` are two files there is nothing to
+    converge, and asserting otherwise would fail for the right reason on Linux.
+    """
+    written = directory / name
+    written.write_text("linked content\n", encoding="utf-8")
+    candidate = directory / other
+    if not candidate.is_file():
+        pytest.skip("case-sensitive filesystem: the two spellings are two documents")
+    return written, candidate
+
+
+def test_two_spellings_of_one_file_are_one_document(tmp_path):
+    """One document, one history — including the spelling the shell completed.
+
+    ``Path.resolve`` normalises links and ``..`` but never case, so on a
+    case-insensitive filesystem the key was taken from how the path was typed.
+    A tab completion or a paste with a different case opened an empty history
+    and the CLI reported it as a fact.
+    """
+    real, other = spelled_differently(tmp_path, "real.md", "Real.md")
+    assert other.samefile(real)
+    assert path_key(other) == path_key(real)
+    assert central_store_dir(other) == central_store_dir(real)
+
+
 def test_a_symlink_and_its_target_are_one_document(tmp_path, document):
     link = tmp_path / "alias.md"
     link.symlink_to(document)

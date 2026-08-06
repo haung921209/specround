@@ -42,6 +42,7 @@ from specround.locations import (
     ORIGIN_FILENAME,
     STORE_DIRNAME,
     Origin,
+    canonical_path,
     read_origin,
     resolve_location,
     write_origin,
@@ -90,7 +91,7 @@ class ReviewStore:
         origin: Origin | None = None,
         clock: Clock | None = None,
     ) -> None:
-        self.root = Path(root).resolve()
+        self.root = canonical_path(root)
         # A store that already exists says what it serves; only a fresh one is
         # assumed to serve its parent folder, which is the in-tree layout.
         if origin is None:
@@ -120,7 +121,7 @@ class ReviewStore:
     @classmethod
     def at(cls, directory: Path, *, clock: Clock | None = None) -> "ReviewStore":
         """The in-tree store for a folder of documents — ``<directory>/.specround``."""
-        return cls(Path(directory).resolve() / STORE_DIRNAME, clock=clock)
+        return cls(canonical_path(directory) / STORE_DIRNAME, clock=clock)
 
     @classmethod
     def open(cls, root: Path, *, clock: Clock | None = None) -> "ReviewStore":
@@ -130,7 +131,7 @@ class ReviewStore:
         directory itself is the only thing a caller has, and ``origin`` is the
         only thing that turns it back into a document.
         """
-        root = Path(root).resolve()
+        root = canonical_path(root)
         origin = read_origin(root)
         if origin is None:
             raise SpecroundError(
@@ -151,7 +152,7 @@ class ReviewStore:
         Keys are relative so a ledger stays valid when the folder is moved,
         renamed, or cloned somewhere else.
         """
-        resolved = Path(doc).resolve()
+        resolved = canonical_path(doc)
         if self.origin.kind == DOCUMENT and resolved != self.origin.path:
             raise SpecroundError(
                 f"{resolved} is not the document this store holds ({self.origin.path}) — "
@@ -205,7 +206,7 @@ class ReviewStore:
         The snapshot is the round's base, not a commit: nothing is staged and
         nothing is committed to open a review (G10).
         """
-        path = Path(doc).resolve()
+        path = canonical_path(doc)
         if not path.is_file():
             raise SpecroundError(f"cannot open a round on {path}: not a file")
         key = self.doc_key(path)
@@ -428,7 +429,7 @@ class ReviewStore:
         where it landed, and a comment already processed against this exact
         snapshot is skipped, so a second pass has nothing left to say.
         """
-        path = Path(doc).resolve()
+        path = canonical_path(doc)
         if not path.is_file():
             raise SpecroundError(f"cannot re-anchor {path}: not a file")
         key = self.doc_key(path)
