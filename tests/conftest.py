@@ -3,6 +3,10 @@
 The clock is injected everywhere so records are reproducible: a test that
 appends the same events twice gets the same bytes, which is what lets the
 determinism tests compare states instead of eyeballing them.
+
+The data home is redirected for every test, without asking. The default store
+is central, so a test that opens a round writes under ``$XDG_DATA_HOME`` — and a
+suite that forgets to say so writes into the history of whoever ran it.
 """
 
 import pytest
@@ -27,6 +31,21 @@ class FixedClock:
     def __call__(self) -> str:
         self.calls += 1
         return f"2020-01-01T00:00:{self.calls:02d}Z"
+
+
+@pytest.fixture(autouse=True)
+def isolated_data_home(tmp_path_factory, monkeypatch):
+    """Point every store at a throwaway data home.
+
+    Autouse on purpose: "remember to redirect this" is not a guarantee, and the
+    failure it prevents is silent — a passing suite that quietly appended to the
+    developer's own review history.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    return home
 
 
 @pytest.fixture
