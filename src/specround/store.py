@@ -61,6 +61,12 @@ class ReanchorReport:
     ``unchanged`` is the quiet majority and gets no ledger event: a comment
     whose anchor still verifies has nothing to record, and writing "still
     fine" on every revision would bury the entries that matter under noise.
+
+    The test for that is the comment's state, not the matcher's rung. An orphan
+    whose text came back to the very offset it left from also matches on rung 1,
+    and there "nothing changed" is only true of the anchor — the comment went
+    from unplaceable to placed, which is the change worth a line. It lands in
+    ``rebound``.
     """
 
     #: Snapshot of the revised document this pass ran against.
@@ -442,7 +448,7 @@ class ReviewStore:
                 report.skipped.append(comment.id)
                 continue
             result = reanchor(comment.current_anchor, text, min_similarity=min_similarity)
-            if result.strategy == POSITION:
+            if result.strategy == POSITION and not comment.orphaned:
                 report.unchanged.append(comment.id)
                 continue
             if result.found:

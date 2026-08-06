@@ -9,7 +9,7 @@ import pytest
 
 from specround.errors import InvariantError, SpecroundError
 from specround.events import ANCHOR_ORPHAN, ANCHOR_REANCHOR
-from specround.reanchor import FUZZY, QUOTE
+from specround.reanchor import FUZZY, POSITION, QUOTE
 from specround.store import ReviewStore
 
 QUOTE_TEXT = "Timeouts are 30 seconds."
@@ -112,6 +112,61 @@ def test_an_orphan_is_bound_again_when_the_text_comes_back(store, doc, anchored_
     assert store.fold().orphans == []
     # The whole path is still in the log: orphaned, then found again.
     assert [step.orphaned for step in comment.anchorings] == [True, False]
+
+
+def test_an_orphan_is_bound_again_when_the_text_comes_back_to_the_same_place(
+    store, doc, anchored_comment, doc_text
+):
+    """A revert is the same event as any other restoration, and reads as one.
+
+    The sibling test above restores the text somewhere else, so a rung past the
+    first answers and appends. Put it back byte for byte — a ``git revert``, an
+    undo, a paragraph pasted back where it came from — and rung 1 answers
+    instead. "Nothing changed" is true of the anchor and false of the comment:
+    it was orphaned a moment ago and it is placed now, and that is exactly the
+    difference the ledger has to carry.
+    """
+    revise(doc, QUOTE_TEXT, "")
+    store.reanchor_document(doc, author="agent:reanchor")
+    assert store.fold().comments[anchored_comment].orphaned is True
+
+    doc.write_text(doc_text, encoding="utf-8")  # byte-identical to the round base
+    report = store.reanchor_document(doc, author="agent:reanchor")
+
+    assert report.rebound == [anchored_comment]
+    assert report.unchanged == []
+    assert kinds(store)[-1] == ANCHOR_REANCHOR
+    comment = store.fold().comments[anchored_comment]
+    assert comment.orphaned is False
+    assert comment.anchoring.strategy == POSITION
+    assert store.fold().orphans == []
+    assert store.orphans(doc) == []
+
+
+def test_a_restored_comment_is_not_re_reported_on_the_next_pass(
+    store, doc, anchored_comment, doc_text
+):
+    """Recording the restoration must not turn into recording it every pass."""
+    revise(doc, QUOTE_TEXT, "")
+    store.reanchor_document(doc, author="agent:reanchor")
+    doc.write_text(doc_text, encoding="utf-8")
+    store.reanchor_document(doc, author="agent:reanchor")
+    count = store.ledger.count()
+
+    again = store.reanchor_document(doc, author="agent:reanchor")
+    assert again.changed is False
+    assert store.ledger.count() == count
+
+
+def test_a_placed_comment_at_its_old_offset_still_writes_nothing(
+    store, doc, anchored_comment, doc_text
+):
+    """The quiet majority stays quiet: only a comment that *was* lost is news."""
+    doc.write_text(doc_text, encoding="utf-8")
+    report = store.reanchor_document(doc, author="agent:reanchor")
+    assert report.unchanged == [anchored_comment]
+    assert report.changed is False
+    assert kinds(store) == ["round.open", "comment.add"]
 
 
 def test_an_orphan_is_not_re_reported_on_the_same_revision(store, doc, anchored_comment):
