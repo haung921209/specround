@@ -90,9 +90,21 @@ def test_stored_lines_are_canonical_json(ledger):
 
 
 def test_a_caller_supplied_id_is_kept(ledger):
-    record = open_round(ledger, id="r-custom")
-    assert record["id"] == "r-custom"
-    assert ledger.read()[0]["id"] == "r-custom"
+    """A hand-written id is kept — as long as it is one (§3).
+
+    The shape is the contract: this kind's prefix and twelve digest
+    characters. ``r-custom`` used to be accepted, and so did a comment
+    claiming ``r-``.
+    """
+    record = open_round(ledger, id="r-0123456789ab")
+    assert record["id"] == "r-0123456789ab"
+    assert ledger.read()[0]["id"] == "r-0123456789ab"
+
+
+def test_a_caller_supplied_id_of_the_wrong_kind_is_refused(ledger):
+    with pytest.raises(SchemaError, match="is not a round.open id"):
+        open_round(ledger, id="c-0123456789ab")
+    assert ledger.read() == []
 
 
 def test_a_caller_supplied_timestamp_is_kept(ledger):

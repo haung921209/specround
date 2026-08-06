@@ -210,7 +210,7 @@ def test_a_hand_written_close_cannot_hide_open_comments(store, round_id):
         "seq": len(records),
         "ts": "2020-01-01T00:00:09Z",
         "type": "round.close",
-        "id": "x-forged",
+        "id": "x-f0f0f0f0f0f0",  # hand written, but shaped like a close id
         "author": "alice",
         "round": round_id,
     }
@@ -244,7 +244,7 @@ def test_duplicate_event_ids_are_refused(store, round_id):
 def test_fold_rejects_a_gap_in_the_sequence(store, round_id):
     records = store.ledger.read()
     with pytest.raises(InvariantError, match="reordered or truncated"):
-        fold([*records, {**records[0], "id": "r-other", "seq": 7}])
+        fold([*records, {**records[0], "id": "r-aaaaaaaaaaaa", "seq": 7}])
 
 
 def test_multiple_rounds_can_be_open_at_once(doc, clock):
