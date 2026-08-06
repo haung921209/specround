@@ -223,6 +223,24 @@ def _body(args: argparse.Namespace) -> str:
     return text
 
 
+def _occurrences(text: str, quote: str) -> int:
+    """How many appearances of ``quote`` ``--occurrence`` can address.
+
+    Stepping by one character rather than by the length of the quote, because
+    that is exactly how :func:`~specround.anchors.anchor_for_quote` walks them:
+    ``str.count`` skips overlaps, so ``"aa"`` in ``"aaa"`` would read as unique
+    here and still be addressable as occurrence 1 there. A count that disagrees
+    with the indexer is a count that lets the ambiguity check wave through the
+    one case it exists to catch.
+    """
+    total = 0
+    at = text.find(quote)
+    while at != -1:
+        total += 1
+        at = text.find(quote, at + 1)
+    return total
+
+
 def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | None) -> Anchor:
     """Cut an anchor out of the round's base — the text the reviewer read.
 
@@ -233,7 +251,7 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
     if not quote:
         raise UsageError("--quote must not be empty")
     text = store.base_text(round_.id)
-    total = text.count(quote)
+    total = _occurrences(text, quote)
     if total == 0:
         raise UsageError(
             f"--quote {quote!r} is not in the snapshot round {round_.id} froze "
@@ -737,8 +755,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         # argparse already printed the diagnosis; returning the code instead of
-        # letting it escape keeps main() callable as a function.
-        return int(exc.code or OK)
+        # letting it escape keeps main() callable as a function. --help and
+        # --version leave None (success); anything argparse refuses is a 2, and a
+        # non-integer code would only ever be a message, which is not a verdict.
+        if exc.code is None:
+            return OK
+        return exc.code if isinstance(exc.code, int) else USAGE
 
     verb = getattr(args, "verb_name", args.verb)
     try:

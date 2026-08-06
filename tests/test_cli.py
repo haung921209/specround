@@ -17,7 +17,9 @@ vanish without anyone noticing, and the consumers of this output are programs.
 """
 
 import getpass
+import io
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -256,6 +258,13 @@ def test_no_verb_at_all_is_a_usage_error(run):
     assert run().code == 2
 
 
+def test_help_and_version_are_not_failures(run):
+    # They leave through the same SystemExit path argparse's errors do, and a
+    # code of None there has to read as success rather than as a falsy 2.
+    assert run("--version").code == 0
+    assert run("--help").code == 0
+
+
 def test_a_missing_document_is_a_usage_error(run, tmp_path):
     # Not an empty listing: the store is keyed by path, so a typo would address
     # a different (empty) history and the answer would read as a fact.
@@ -285,6 +294,17 @@ def test_a_repeated_quote_refuses_to_pick(run, doc, opened):
     result = run("comment", doc, "--author", "bob", "--quote", "hello frame", "--body", "x")
     assert result.code == 2
     assert "--occurrence" in result.err
+
+
+def test_an_overlapping_repeat_still_refuses_to_pick(run, doc, tmp_path):
+    # str.count would call this unique and let the tool pick silently, while
+    # the anchor indexer walks overlaps and can address both.
+    overlapping = tmp_path / "aaa.md"
+    overlapping.write_text("aaa\n", encoding="utf-8")
+    assert run("round", "open", overlapping, "--author", "alice").code == 0
+    result = run("comment", overlapping, "--author", "bob", "--quote", "aa", "--body", "x")
+    assert result.code == 2
+    assert "--occurrence 0..1" in result.err
 
 
 def test_an_occurrence_resolves_the_repeat(run, doc, opened):
@@ -548,15 +568,16 @@ def test_orphans_are_reported_under_the_table(run, doc, opened):
     assert comment in out
 
 
-def test_the_body_can_come_from_stdin(run, doc, opened, monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin", (tmp_path / "in.txt").open("w+", encoding="utf-8"))
-    import sys
-
-    sys.stdin.write("piped in from an agent\n")
-    sys.stdin.seek(0)
+def test_the_body_can_come_from_stdin(run, doc, opened, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("piped in from an agent\n"))
     result = run("comment", doc, "--author", "agent:reviewer", "--body-file", "-", "--json")
     assert result.code == 0
     assert result.json["comment"]["body"] == "piped in from an agent"
+
+
+def test_an_empty_stdin_body_is_a_usage_error(run, doc, opened, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("   \n"))
+    assert run("comment", doc, "--author", "agent:reviewer", "--body-file", "-").code == 2
 
 
 def test_the_body_can_come_from_a_file(run, doc, opened, tmp_path):
