@@ -640,3 +640,31 @@ def test_a_reordered_ledger_is_a_state_failure_not_a_crash(run, doc, opened):
     assert result.code == 3
     assert result.error["kind"] == "state"
     assert "reordered or truncated" in result.error["message"]
+
+
+def test_naming_a_store_by_path_sees_the_history_it_holds(run, tmp_path):
+    """The reviewer's scenario: ``--store`` used to guess past the origin.
+
+    The store already recorded what it serves. Guessing its parent instead
+    keyed the same document a second way, reported "no rounds yet" as a fact,
+    and then opened a second round in the same ledger — one document, two
+    histories, in one file.
+    """
+    repo = tmp_path / "repo"
+    (repo / "sub" / "docs").mkdir(parents=True)
+    (repo / ".specround.json").write_text(
+        '{"store": {"mode": "path", "path": "sub/store"}}\n', encoding="utf-8"
+    )
+    doc = repo / "sub" / "docs" / "s.md"
+    doc.write_text("# S\n\nalpha beta\n", encoding="utf-8")
+    assert run("round", "open", doc, "--author", "alice", "--title", "via config").code == 0
+    store = repo / "sub" / "store"
+
+    status = run("round", "status", doc, "--store", store, "--json")
+    assert status.code == 0
+    assert status.json["counts"]["rounds"] == 1
+    assert status.json["doc"] == "sub/docs/s.md"
+
+    # And the CLI's one-open-round rule is not routed around by the flag.
+    second = run("round", "open", doc, "--author", "alice", "--store", store, "--title", "via flag")
+    assert second.code == 3

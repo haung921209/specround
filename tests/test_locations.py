@@ -27,6 +27,7 @@ from specround.locations import (
     path_key,
     read_config,
     resolve_location,
+    write_origin,
 )
 
 #: A path that exists nowhere, so ``resolve()`` has no symlink to follow and the
@@ -233,6 +234,28 @@ def test_an_explicit_store_counts_keys_from_its_parent(workdir, document):
 
 def test_an_explicit_base_overrides_the_parent(tmp_path, workdir, document):
     location = resolve_location(document, store=tmp_path / "far" / "store", base=workdir)
+    assert location.origin == Origin(DIRECTORY, workdir.resolve())
+
+
+def test_an_existing_store_is_asked_what_it_serves(tmp_path, document):
+    """The parent is a guess; ``origin`` is the store's own record (§1.3).
+
+    Guessing over a store that already said what it serves keys the same
+    document twice, and the second key reports an empty history as a fact.
+    """
+    root = tmp_path / "repo" / "sub" / "store"
+    root.mkdir(parents=True)
+    recorded = Origin(DIRECTORY, (tmp_path / "repo").resolve())
+    write_origin(root, recorded)
+    assert resolve_location(document, store=root).origin == recorded
+
+
+def test_an_explicit_base_still_beats_a_recorded_origin(tmp_path, workdir, document):
+    """The tiers keep their order: what the caller typed wins over a record."""
+    root = tmp_path / "store"
+    root.mkdir(parents=True)
+    write_origin(root, Origin(DIRECTORY, (tmp_path / "elsewhere").resolve()))
+    location = resolve_location(document, store=root, base=workdir)
     assert location.origin == Origin(DIRECTORY, workdir.resolve())
 
 

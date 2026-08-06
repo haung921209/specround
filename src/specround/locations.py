@@ -310,8 +310,20 @@ def resolve_location(
 
     if store is not None:
         root = Path(store).resolve()
-        anchor = Path(base).resolve() if base is not None else root.parent
-        return StoreLocation(root=root, origin=Origin(DIRECTORY, anchor), source="argument")
+        if base is not None:
+            # What the caller typed outranks what the store recorded: the tiers
+            # keep their order, and this is the tier the caller is standing in.
+            return StoreLocation(
+                root=root, origin=Origin(DIRECTORY, Path(base).resolve()), source="argument"
+            )
+        # The parent is a guess, and a store that already exists does not need
+        # to be guessed at — ``origin`` is its own record of what it serves
+        # (§1.3). Guessing over it keys one document two ways: the flag reads a
+        # history it cannot see as "no rounds yet" and then writes a second one
+        # into the same ledger.
+        recorded = read_origin(root)
+        anchor = recorded if recorded is not None else Origin(DIRECTORY, root.parent)
+        return StoreLocation(root=root, origin=anchor, source="argument")
 
     config_path = find_config(document.parent)
     if config_path is not None:
