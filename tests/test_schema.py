@@ -47,6 +47,12 @@ def valid(kind: str, **overrides):
             "base": "sha256:" + "1" * 64,
             "reason": "the quoted text is not in this revision",
         },
+        "thread.resolve": {"target": "c-1", "actor": "human"},
+        "thread.reopen": {
+            "target": "c-1",
+            "actor": "agent",
+            "reason": "the timeout came back in revision 3",
+        },
     }
     return {**base, **payloads[kind], **overrides}
 
@@ -139,6 +145,40 @@ def test_deferred_is_the_only_non_terminal_verdict():
     assert set(VERDICTS) - set(TERMINAL_VERDICTS) == {"deferred"}
 
 
+def test_actor_vocabulary_is_closed():
+    from specround.events import ACTORS
+
+    for actor in ACTORS:
+        validate_event(valid("thread.resolve", actor=actor))
+        validate_event(valid("thread.reopen", actor=actor))
+    with pytest.raises(SchemaError, match="unknown actor"):
+        validate_event(valid("thread.resolve", actor="agent:reviewer"))
+
+
+def test_who_closed_a_thread_is_two_facts_not_one():
+    """``actor`` says which kind, ``author`` says which one.
+
+    A convention in the author string is not checkable — an agent named
+    ``agent:reviewer`` and a person who typed that as their name are the same
+    bytes. The kind is a closed field so a reader can act on it.
+    """
+    record = valid("thread.resolve", author="agent:reviewer", actor="agent")
+    validate_event(record)
+    assert record["author"] != record["actor"]
+    with pytest.raises(SchemaError, match="missing required field 'actor'"):
+        validate_event({k: v for k, v in record.items() if k != "actor"})
+
+
+def test_reopening_says_why_and_resolving_need_not():
+    validate_event(valid("thread.resolve"))  # no note at all
+    validate_event(valid("thread.resolve", note="agreed in the reply"))
+    validate_event(valid("thread.resolve", note=""))
+    with pytest.raises(SchemaError, match="'reason' must not be empty"):
+        validate_event(valid("thread.reopen", reason=""))
+    with pytest.raises(SchemaError, match="unknown field"):
+        validate_event(valid("thread.resolve", reason="not this field"))
+
+
 def test_strategy_vocabulary_is_closed():
     from specround.reanchor import STRATEGIES
 
@@ -209,11 +249,21 @@ def test_derived_ids_are_prefixed_by_kind_and_stable():
         ("round.close", "x-"),
         ("anchor.reanchor", "a-"),
         ("anchor.orphan", "o-"),
+        ("thread.resolve", "v-"),
+        ("thread.reopen", "n-"),
     ]:
         record = {k: v for k, v in valid(kind).items() if k != "id"}
         derived = derive_id(record)
         assert derived.startswith(prefix)
         assert derive_id(record) == derived  # deterministic
+
+
+def test_each_event_type_has_its_own_id_prefix():
+    """A bare id in a log line has to say what kind of record it came from."""
+    from specround.events import _ID_PREFIX
+
+    assert sorted(_ID_PREFIX) == sorted(EVENT_TYPES)
+    assert len(set(_ID_PREFIX.values())) == len(EVENT_TYPES)
 
 
 def test_derived_ids_differ_for_identical_content_at_different_positions():

@@ -18,7 +18,7 @@ from specround.fold import fold
 from specround.locations import CONFIG_FILENAME, MODES, ORIGIN_SCHEMA, SOURCES
 
 DOC_PATH = Path(specround.__file__).parents[2] / "docs" / "ledger-format.md"
-INVARIANT_IDS = [f"I{n}" for n in range(1, 10)]
+INVARIANT_IDS = [f"I{n}" for n in range(1, 11)]
 
 
 @pytest.fixture(scope="module")

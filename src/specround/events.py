@@ -35,6 +35,8 @@ DISPOSITION = "disposition"
 ROUND_CLOSE = "round.close"
 ANCHOR_REANCHOR = "anchor.reanchor"
 ANCHOR_ORPHAN = "anchor.orphan"
+THREAD_RESOLVE = "thread.resolve"
+THREAD_REOPEN = "thread.reopen"
 
 EVENT_TYPES = (
     ROUND_OPEN,
@@ -45,6 +47,8 @@ EVENT_TYPES = (
     ROUND_CLOSE,
     ANCHOR_REANCHOR,
     ANCHOR_ORPHAN,
+    THREAD_RESOLVE,
+    THREAD_REOPEN,
 )
 
 #: Events that rebind (or fail to rebind) a comment's anchor to a new snapshot.
@@ -52,6 +56,20 @@ EVENT_TYPES = (
 #: comment lives now is the latest of these, and the whole path is still in the
 #: log (G1 across revisions, G3 loss 0).
 ANCHOR_KINDS = (ANCHOR_REANCHOR, ANCHOR_ORPHAN)
+
+#: Events that end or re-open a thread — a comment and the replies under it (G11).
+#: A thread has no object of its own: replies are flat, so the root comment's id
+#: *is* the thread's id and these events target it.
+THREAD_KINDS = (THREAD_RESOLVE, THREAD_REOPEN)
+
+#: Who closed the conversation, as a closed vocabulary (G4, G11).
+#: ``author`` says *which* participant; this says which *kind*. Both are required
+#: on thread events because "an agent decided this discussion was over" and "a
+#: person did" are different facts to a reader, and a convention in the author
+#: string (``agent:reviewer``) is not something a reader can check.
+HUMAN = "human"
+AGENT = "agent"
+ACTORS = (HUMAN, AGENT)
 
 #: Disposition vocabulary (G3). Korean reading: 반영 / 기각 / 답변 / 보류.
 APPLIED = "applied"
@@ -100,6 +118,12 @@ _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
         {"ambiguous": _FLAG},
     ),
     ANCHOR_ORPHAN: ({"target": _STRING, "base": _STRING, "reason": _STRING}, {}),
+    # Resolving carries an optional note: the thread itself is the record of why
+    # it ended. Re-opening carries a required reason, because it overturns a
+    # decision someone already recorded — the same rule that makes ``reason``
+    # mandatory on a disposition and on an orphan.
+    THREAD_RESOLVE: ({"target": _STRING, "actor": _STRING}, {"note": _TEXT}),
+    THREAD_REOPEN: ({"target": _STRING, "actor": _STRING, "reason": _STRING}, {}),
 }
 
 #: Event ids are prefixed by kind so a bare id in a log line is readable.
@@ -112,6 +136,8 @@ _ID_PREFIX: dict[str, str] = {
     ROUND_CLOSE: "x",
     ANCHOR_REANCHOR: "a",
     ANCHOR_ORPHAN: "o",
+    THREAD_RESOLVE: "v",  # resol-v-e
+    THREAD_REOPEN: "n",  # reope-n
 }
 _ID_HASH_CHARS = 12
 
@@ -215,6 +241,13 @@ def validate_event(record: Any) -> None:
         raise SchemaError(
             f"{where}: unknown verdict {record['verdict']!r}; "
             f"known verdicts: {', '.join(VERDICTS)}"
+        )
+    if kind in THREAD_KINDS and record["actor"] not in ACTORS:
+        # Closed like the verdicts: "who ended this conversation" is only a fact
+        # a reader can act on while the answer comes from a fixed set.
+        raise SchemaError(
+            f"{where}: unknown actor {record['actor']!r}; "
+            f"known actors: {', '.join(ACTORS)}"
         )
     if kind == ANCHOR_REANCHOR and record["strategy"] not in STRATEGIES:
         # Closed like the verdicts: a reader has to be able to tell a comment
