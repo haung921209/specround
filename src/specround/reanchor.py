@@ -30,12 +30,17 @@ quadratic, so candidates are generated from word seeds, ranked by a linear
 prefilter, and only the best :data:`ALIGN_CANDIDATES` of them are aligned
 exactly, inside a window of the quote plus :data:`ALIGN_PAD` on each side. The
 failure mode this avoids is on record: Hypothesis measured multi-second blocking
-on short quotes in long documents.
+on short quotes in long documents. Every one of those bounds is taken **around
+the old position** rather than from the top of the document: a cap that decides
+which candidates exist would otherwise decide the answer, by hiding the true
+span from the scoring it was supposed to win.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
+from bisect import bisect_left
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -57,6 +62,13 @@ STRATEGIES = (POSITION, QUOTE, NORMALIZED, FUZZY)
 
 #: How similar an approximate match has to be before it counts as the same span.
 MIN_SIMILARITY = 0.7
+#: How much of an anchor's neighbourhood has to survive before *any* rung may
+#: claim a span. A perfect quote match is not on its own evidence of the same
+#: place — prose repeats, and the same sentence under a different heading is a
+#: different sentence. Without this the two most trusted rungs were the only
+#: ones with no veto at all, so a deleted section moved its comments onto their
+#: twins and recorded the move as ``quote``, the highest confidence there is.
+MIN_CONTEXT = 0.7
 #: Candidate positions considered per fuzzy search.
 MAX_CANDIDATES = 64
 #: Of those, how many get an exact (quadratic) alignment.
@@ -76,7 +88,8 @@ _PRECISION = 6
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 #: Characters folded to an ASCII equivalent before the ``normalized`` rung.
-#: One character in, one character out — the index map depends on it.
+#: Applied after Unicode composition, so a decomposed source character is folded
+#: by the same table its composed form would be.
 _FOLD = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"', "‟": '"',
@@ -132,26 +145,42 @@ def reanchor(anchor: Anchor, text: str, *, min_similarity: float = MIN_SIMILARIT
 
 
 def _reanchor_quote(anchor: Anchor, text: str, min_similarity: float) -> Rebind:
+    verbatim = False
     for strategy, spans in (
-        (QUOTE, _verbatim_spans(text, anchor.exact)),
-        (NORMALIZED, _normalized_spans(text, anchor.exact)),
+        (QUOTE, _verbatim_spans(text, anchor.exact, anchor.start)),
+        (NORMALIZED, _normalized_spans(text, anchor.exact, anchor.start)),
     ):
-        picked = _pick(spans, anchor, text)
+        verbatim = verbatim or bool(spans)
+        picked = _pick(spans, anchor, text, min_context=MIN_CONTEXT)
         if picked is not None:
             start, end, ambiguous = picked
             return Rebind(anchor_for(text, start, end), strategy, ambiguous)
 
     picked = _fuzzy(text, anchor, anchor.exact, min_similarity)
     if picked is None:
-        return Rebind(
-            None,
-            reason=(
-                f"quote {_clip(anchor.exact)} is not in the revised text, and no span "
-                f"reaches {min_similarity:.2f} similarity"
-            ),
-        )
+        return Rebind(None, reason=_orphan_reason(anchor.exact, verbatim, min_similarity))
     start, end, ambiguous = picked
     return Rebind(anchor_for(text, start, end), FUZZY, ambiguous)
+
+
+def _orphan_reason(quote: str, verbatim: bool, min_similarity: float) -> str:
+    """Why nothing was good enough — the two failures read very differently.
+
+    "The sentence is gone" sends a reviewer looking for what replaced it. "The
+    sentence is still there but not where this comment was" sends them looking
+    for the section that was deleted around it, which is the case this reason
+    exists to name: the comment did not lose its text, it lost its place.
+    """
+    if verbatim:
+        return (
+            f"quote {_clip(quote)} still occurs in the revised text, but no occurrence "
+            f"keeps {MIN_CONTEXT:.2f} of the context this comment was anchored in — "
+            "the passage it was made on is gone"
+        )
+    return (
+        f"quote {_clip(quote)} is not in the revised text, and no span reaches "
+        f"{min_similarity:.2f} similarity"
+    )
 
 
 def _reanchor_insertion(anchor: Anchor, text: str, min_similarity: float) -> Rebind:
@@ -173,12 +202,13 @@ def _reanchor_insertion(anchor: Anchor, text: str, min_similarity: float) -> Reb
         )
 
     split = len(anchor.prefix)
+    near = max(0, anchor.start - split)
     for strategy, spans in (
-        (QUOTE, _verbatim_spans(text, joined)),
-        (NORMALIZED, _normalized_spans(text, joined)),
+        (QUOTE, _verbatim_spans(text, joined, near)),
+        (NORMALIZED, _normalized_spans(text, joined, near)),
     ):
         points = [(start + split, start + split) for start, _ in spans]
-        picked = _pick(points, anchor, text)
+        picked = _pick(points, anchor, text, min_context=MIN_CONTEXT)
         if picked is not None:
             start, _, ambiguous = picked
             return Rebind(anchor_for(text, start, start), strategy, ambiguous)
@@ -202,20 +232,43 @@ def _reanchor_insertion(anchor: Anchor, text: str, min_similarity: float) -> Reb
 # -- candidate spans -----------------------------------------------------
 
 
-def _occurrences(text: str, needle: str, limit: int = MAX_OCCURRENCES) -> list[int]:
-    """Every start offset of ``needle`` in ``text``, up to ``limit``."""
-    if not needle:
+def _occurrences(
+    text: str, needle: str, *, near: int = 0, limit: int = MAX_OCCURRENCES
+) -> list[int]:
+    """Start offsets of ``needle`` in ``text`` — the ``limit`` closest to ``near``.
+
+    The cap is what stops a one-character quote from running away in a long
+    document, and it has to stay. What matters is *where* it cuts. Cutting from
+    the top means a phrase that repeats past the cap never offers the occurrence
+    the anchor actually came from, so the best of a set that does not contain the
+    right answer wins, on the ``quote`` rung, with no ambiguity flag — the
+    position hint only ever got to break ties among survivors it had no say in
+    choosing. Scanning outward from that hint keeps the same bound and puts the
+    span it points at first in line.
+    """
+    if not needle or limit <= 0:
         return []
-    found: list[int] = []
-    start = text.find(needle)
-    while start != -1 and len(found) < limit:
-        found.append(start)
+    forward: list[int] = []
+    start = text.find(needle, max(0, near))
+    while start != -1 and len(forward) < limit:
+        forward.append(start)
         start = text.find(needle, start + 1)
-    return found
+    backward: list[int] = []
+    edge = max(0, near)
+    while len(backward) < limit:
+        # The window ends one character into the needle so an occurrence that
+        # overlaps ``edge`` is still reachable — "aa" inside "aaaa" is two spans.
+        found = text.rfind(needle, 0, edge + len(needle) - 1)
+        if found == -1:
+            break
+        backward.append(found)
+        edge = found
+    nearest = sorted(forward + backward, key=lambda at: (abs(at - near), at))[:limit]
+    return sorted(nearest)
 
 
-def _verbatim_spans(text: str, quote: str) -> list[tuple[int, int]]:
-    return [(start, start + len(quote)) for start in _occurrences(text, quote)]
+def _verbatim_spans(text: str, quote: str, near: int = 0) -> list[tuple[int, int]]:
+    return [(start, start + len(quote)) for start in _occurrences(text, quote, near=near)]
 
 
 def _normalize(text: str) -> tuple[str, list[int], list[int]]:
@@ -223,7 +276,16 @@ def _normalize(text: str) -> tuple[str, list[int], list[int]]:
 
     Each folded character records the half-open source range it came from, so a
     match found in folded space names an exact span of the original — the caller
-    never has to guess where a collapsed run of whitespace began or ended.
+    never has to guess where a collapsed run of whitespace began or ended. The
+    map is what lets the fold be many-to-one: a run of whitespace and a base
+    character with its combining marks both collapse, and both still name the
+    exact source span they came from.
+
+    Unicode composition is folded here rather than left to rung 4 because it is
+    the same kind of change as the rest of this fold — the glyphs a reader sees
+    are identical. A macOS filesystem or an editor can renormalise a file with
+    nobody editing it, and calling that ``fuzzy`` would tell a reviewer the
+    quoted text had been rewritten when not one character of it changed.
     """
     out: list[str] = []
     starts: list[int] = []
@@ -240,21 +302,36 @@ def _normalize(text: str) -> tuple[str, list[int], list[int]]:
             ends.append(run)
             index = run
             continue
-        out.append(_FOLD.get(text[index], text[index]))
-        starts.append(index)
-        ends.append(index + 1)
-        index += 1
+        # A base character owns the combining marks that follow it: composing
+        # them separately would leave a mark stranded with no base to sit on.
+        # Every combining mark is above U+007F, so the ASCII test is a cheap
+        # prefilter that cannot skip one — and it keeps this loop off the
+        # unicodedata calls entirely for the documents that have no marks.
+        run = index + 1
+        while run < length and not text[run].isascii() and unicodedata.combining(text[run]):
+            run += 1
+        head = text[index]
+        chunk = head if run == index + 1 and head.isascii() else unicodedata.normalize(
+            "NFC", text[index:run]
+        )
+        for char in chunk:
+            out.append(_FOLD.get(char, char))
+            starts.append(index)
+            ends.append(run)
+        index = run
     return "".join(out), starts, ends
 
 
-def _normalized_spans(text: str, quote: str) -> list[tuple[int, int]]:
+def _normalized_spans(text: str, quote: str, near: int = 0) -> list[tuple[int, int]]:
     folded_text, starts, ends = _normalize(text)
     folded_quote, _, _ = _normalize(quote)
     if not folded_quote:
         return []
+    # ``starts`` is non-decreasing, so the hint crosses into folded space by
+    # bisection — the cap has to cut around the old position here too.
     return [
         (starts[at], ends[at + len(folded_quote) - 1])
-        for at in _occurrences(folded_text, folded_quote)
+        for at in _occurrences(folded_text, folded_quote, near=bisect_left(starts, near))
     ]
 
 
@@ -273,7 +350,9 @@ def _candidates(text: str, quote: str, hint: int) -> list[int]:
 
     starts: set[int] = set()
     for word, offset in seeds:
-        for at in _occurrences(text, word):
+        # A seed sits ``offset`` into the quote, so the place to look for it is
+        # that far past the hint — the cap cuts around there, not around zero.
+        for at in _occurrences(text, word, near=max(0, hint + offset)):
             starts.add(max(0, at - offset))
     if not starts:
         stride = max(1, len(quote) // 2)
@@ -345,7 +424,14 @@ def _fuzzy(
         if window[1] > window[0]:
             spans.append(window)
 
-    picked = _pick(spans, anchor, text, quote=quote, min_similarity=min_similarity)
+    picked = _pick(
+        spans,
+        anchor,
+        text,
+        quote=quote,
+        min_similarity=min_similarity,
+        min_context=MIN_CONTEXT,
+    )
     if picked is None:
         return None
     start, end, ambiguous = picked
@@ -391,6 +477,7 @@ def _pick(
     *,
     quote: str | None = None,
     min_similarity: float = 0.0,
+    min_context: float = 0.0,
 ) -> tuple[int, int, bool] | None:
     """Rank candidate spans and return the winner, flagged if it was a tie.
 
@@ -400,6 +487,12 @@ def _pick(
     position hint alone decided it, and that is reported rather than hidden:
     a silently chosen wrong span is the failure this whole module exists to
     avoid.
+
+    Ranking and vetoing ask different questions of the same context, so they
+    read it differently. Ranking wants overall agreement and averages the two
+    sides; the veto wants to know whether the span is somewhere this anchor has
+    ever been, and one side surviving intact answers that — deleting the
+    paragraph above a quote wipes its prefix without moving it anywhere.
     """
     if not spans:
         return None
@@ -408,8 +501,14 @@ def _pick(
         quality = _round(_ratio(quote, text[start:end])) if quote is not None else 1.0
         if quote is not None and quality < min_similarity:
             continue
+        # Both readings come off one measurement of the context — comparing the
+        # two sides twice would double the only quadratic work on this path.
+        parts = _context_parts(text, start, end, anchor)
+        if _round(max(parts) if parts else 1.0) < min_context:
+            continue
+        agreement = sum(parts) / len(parts) if parts else 1.0
         scored.append(
-            (-quality, -_round(_context_ratio(text, start, end, anchor)), abs(start - anchor.start), start, end)
+            (-quality, -_round(agreement), abs(start - anchor.start), start, end)
         )
     if not scored:
         return None
@@ -419,19 +518,29 @@ def _pick(
     return best[3], best[4], ambiguous
 
 
-def _context_ratio(text: str, start: int, end: int, anchor: Anchor) -> float:
-    """How well the text around a span agrees with the anchor's context.
+def _context_parts(text: str, start: int, end: int, anchor: Anchor) -> list[float]:
+    """How well each side of a span agrees with the anchor's context.
 
-    An anchor with no context agrees with everything, which is the honest
-    answer: it carries nothing to tell two identical quotes apart, and the
-    resulting tie is what raises the ambiguity flag.
+    The two sides are returned rather than a single number because the caller
+    asks two questions of them. *Which candidate is best* is the average — a
+    span that agrees on both sides beats one that agrees on one. *Is any
+    candidate acceptable at all* is the better side, because a revision that
+    moves a quote usually keeps one side of it: deleting the paragraph above
+    destroys the prefix and leaves the suffix untouched, and the reverse for a
+    deletion below. A different occurrence of the same sentence agrees with
+    neither side beyond the generic similarity any two pieces of prose have.
+
+    An anchor with no context at all yields nothing here, and both readings then
+    treat it as agreeing with everything — the honest answer, since it carries
+    nothing to tell two identical quotes apart. The resulting tie is what raises
+    the ambiguity flag.
     """
     parts: list[float] = []
     if anchor.prefix:
         parts.append(_ratio(anchor.prefix, text[max(0, start - len(anchor.prefix)) : start]))
     if anchor.suffix:
         parts.append(_ratio(anchor.suffix, text[end : end + len(anchor.suffix)]))
-    return sum(parts) / len(parts) if parts else 1.0
+    return parts
 
 
 def _ratio(left: str, right: str) -> float:

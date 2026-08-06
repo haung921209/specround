@@ -151,6 +151,22 @@ class Comment:
         return latest is not None and latest.orphaned
 
     @property
+    def current_anchoring(self) -> Anchoring | None:
+        """The attempt that put this comment where it is now, if one did.
+
+        Not the same as :attr:`anchoring`, which is the *latest* attempt and may
+        be the orphan that failed. This is the latest that succeeded — the one
+        whose ``strategy`` says how the comment got here, and therefore whether
+        a person should look at it (§4: ``fuzzy`` means the quoted text was
+        rewritten). ``None`` means nothing has moved it and it still sits where
+        it was made.
+        """
+        for attempt in reversed(self.anchorings):
+            if attempt.anchor is not None:
+                return attempt
+        return None
+
+    @property
     def current_anchor(self) -> Anchor | None:
         """Where this comment lives now — the last anchor that was bound.
 
@@ -159,10 +175,8 @@ class Comment:
         where it used to be: a later revision that restores the text can bind
         the comment again from here.
         """
-        for attempt in reversed(self.anchorings):
-            if attempt.anchor is not None:
-                return attempt.anchor
-        return self.anchor
+        placed = self.current_anchoring
+        return placed.anchor if placed is not None else self.anchor
 
     @property
     def bound_to(self) -> str | None:

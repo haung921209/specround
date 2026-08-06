@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from specround.anchors import Anchor, anchor_for_quote
-from specround.errors import InvariantError, SpecroundError
+from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import (
     ANCHOR_ORPHAN,
     ANCHOR_REANCHOR,
@@ -62,6 +62,12 @@ class ReanchorReport:
     ``unchanged`` is the quiet majority and gets no ledger event: a comment
     whose anchor still verifies has nothing to record, and writing "still
     fine" on every revision would bury the entries that matter under noise.
+
+    The test for that is the comment's state, not the matcher's rung. An orphan
+    whose text came back to the very offset it left from also matches on rung 1,
+    and there "nothing changed" is only true of the anchor — the comment went
+    from unplaceable to placed, which is the change worth a line. It lands in
+    ``rebound``.
     """
 
     #: Snapshot of the revised document this pass ran against.
@@ -99,6 +105,9 @@ class ReviewStore:
         self.origin = origin
         self.ledger = Ledger(self.root / LEDGER_FILENAME, clock=clock)
         self.snapshots = SnapshotStore(self.root)
+        #: Snapshot texts already read, by reference. Objects are immutable, so
+        #: this only ever remembers facts — see :meth:`_snapshot_text`.
+        self._texts: dict[str, str] = {}
 
     @classmethod
     def for_document(
@@ -172,16 +181,82 @@ class ReviewStore:
     # -- state -----------------------------------------------------------
 
     def fold(self) -> State:
-        """The current state, computed from the ledger alone."""
-        return self.ledger.state()
+        """The current state — the records, plus the one invariant they cannot settle.
+
+        Everything a ledger can contradict on its own is settled while folding,
+        and that keeps :func:`~specround.fold.fold` the pure function §8 specifies:
+        same lines in, same state out, no clock and no filesystem. I7 is the one
+        rule that does not fit, because deciding whether an anchor agrees with
+        its snapshot means opening the snapshot.
+
+        So it is enforced here instead — one layer out, in the only object that
+        has the objects. §6's "the reading code is the writing gate" is what this
+        preserves: :meth:`_check_anchor` below is the single implementation, and
+        both the writer and every read through a store go through it. A line
+        someone typed by hand meets the same oracle as one the API appended, and
+        there is still only one copy of the rule to drift.
+        """
+        state = self.ledger.state()
+        self._verify_anchors(state)
+        return state
+
+    def _snapshot_text(self, base: str) -> str:
+        """The text of a snapshot, remembered for the life of this store object.
+
+        Objects are content addressed and immutable, so this caches a fact, not
+        state — the thing §8 says not to cache is the folded present, and that is
+        still recomputed every time. Without it a fold would re-read and re-hash
+        the same base once per anchored comment, and appending is a fold, so the
+        cost would land on every write. It grows with the number of distinct
+        snapshots a caller touches, which is revisions, not comments.
+        """
+        cached = self._texts.get(base)
+        if cached is None:
+            cached = self.snapshots.get_text(base)
+            self._texts[base] = cached
+        return cached
+
+    def _check_anchor(self, anchor: Anchor, base: str, what: str) -> None:
+        """I7: this anchor agrees with the snapshot it names, or the history is wrong.
+
+        The two failures are kept apart because a caller does different things
+        about them. An anchor that does not hold in a snapshot the store *can*
+        open is a claim the recorded history cannot support — that is the
+        invariant, and it reads as one. A base the store cannot open at all is
+        the object store failing to answer, which is not the ledger's fault and
+        keeps :class:`~specround.errors.SnapshotError`.
+        """
+        try:
+            anchor.verify(self._snapshot_text(base))
+        except AnchorError as exc:
+            raise InvariantError(f"I7: {what} does not hold in snapshot {base}: {exc}") from exc
+
+    def _verify_anchors(self, state: State) -> None:
+        for comment in state.comments.values():
+            if comment.anchor is not None:
+                self._check_anchor(
+                    comment.anchor,
+                    state.rounds[comment.round].base,
+                    f"the anchor on {comment.id!r}",
+                )
+            for attempt in comment.anchorings:
+                # An orphan names a base and carries no anchor: there is nothing
+                # to agree, which is the point of recording it.
+                if attempt.anchor is not None:
+                    self._check_anchor(
+                        attempt.anchor, attempt.base, f"the anchor on {attempt.id!r}"
+                    )
+
+    def round_base(self, round_id: str) -> str:
+        """The snapshot reference this round froze."""
+        round_ = self.fold().rounds.get(round_id)
+        if round_ is None:
+            raise InvariantError(f"unknown round {round_id!r}")
+        return round_.base
 
     def base_text(self, round_id: str) -> str:
         """The document as this round froze it."""
-        state = self.fold()
-        round_ = state.rounds.get(round_id)
-        if round_ is None:
-            raise InvariantError(f"unknown round {round_id!r}")
-        return self.snapshots.get_text(round_.base)
+        return self._snapshot_text(self.round_base(round_id))
 
     def anchor_in_round(self, round_id: str, quote: str, *, occurrence: int = 0) -> Anchor:
         """Build an anchor by quoting the round's base snapshot."""
@@ -233,11 +308,19 @@ class ReviewStore:
         round froze — because that is the text the reviewer was reading. The live
         document may have moved on; carrying a comment across a revision is
         re-anchoring (H4) and is not this function's job.
+
+        The check itself is :meth:`_check_anchor`, the same one the read path
+        runs, down to the exception it raises. Two paths through one rule is the
+        arrangement §6 asks for; two exception classes for one condition is how
+        that arrangement quietly stops being true, because a caller then has to
+        learn which side of the store it is standing on to know what to catch.
         """
         if anchor is None:
             return None
         resolved = anchor if isinstance(anchor, Anchor) else Anchor.from_json(anchor)
-        resolved.verify(self.base_text(round_id))
+        self._check_anchor(
+            resolved, self.round_base(round_id), f"the anchor given for round {round_id!r}"
+        )
         return resolved.to_json()
 
     def add_comment(
@@ -434,7 +517,7 @@ class ReviewStore:
             raise SpecroundError(f"cannot re-anchor {path}: not a file")
         key = self.doc_key(path)
         base = self.snapshots.put_file(path)
-        text = self.snapshots.get_text(base)
+        text = self._snapshot_text(base)
 
         state = self.fold()
         report = ReanchorReport(base=base)
@@ -443,11 +526,12 @@ class ReviewStore:
                 report.skipped.append(comment.id)
                 continue
             result = reanchor(comment.current_anchor, text, min_similarity=min_similarity)
-            if result.strategy == POSITION:
+            if result.strategy == POSITION and not comment.orphaned:
                 report.unchanged.append(comment.id)
                 continue
             if result.found:
-                result.anchor.verify(text)  # never append an anchor that does not hold
+                # Never append an anchor that does not hold — same rule, same call.
+                self._check_anchor(result.anchor, base, "the re-anchored span")
                 record: dict[str, Any] = {
                     "type": ANCHOR_REANCHOR,
                     "author": author,

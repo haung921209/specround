@@ -163,6 +163,28 @@ def test_a_typographic_pass_is_absorbed_by_the_fold():
     assert result.anchor.exact == "The server answers with a “hello” frame."
 
 
+def test_unicode_renormalisation_is_absorbed_by_the_fold():
+    """NFC to NFD is what a macOS filesystem does on its own.
+
+    Not one glyph changed, so calling it ``fuzzy`` tells a reviewer to go and
+    look at a sentence nobody touched. ``fuzzy`` is the word for "the quoted text
+    was rewritten", and diluting it costs the signal it exists to carry.
+    """
+    import unicodedata
+
+    quote = "Le délai est de 30 secondes."
+    doc = unicodedata.normalize("NFC", f"# Protocole\n\n{quote} Rien d'autre.\n")
+    anchor = anchor_for_quote(doc, unicodedata.normalize("NFC", quote))
+    revised = unicodedata.normalize("NFD", doc)
+    assert revised != doc  # the file really did change on disk
+
+    result = reanchor(anchor, revised)
+
+    assert result.strategy == NORMALIZED
+    assert result.anchor.exact == unicodedata.normalize("NFD", quote)
+    result.anchor.verify(revised)
+
+
 def test_an_edited_quote_is_found_by_fuzzy_alignment():
     result = reanchor(anchored(), _edit_the_paragraph(DOC))
     assert result.strategy == FUZZY
@@ -232,6 +254,130 @@ def test_a_true_tie_is_flagged_rather_than_silently_resolved():
 def test_an_unambiguous_single_hit_is_not_flagged():
     result = reanchor(anchored(), _insert_above(DOC))
     assert result.ambiguous is False
+
+
+# -- the context floor: a twin is not the same span ----------------------
+#
+# The two tests below are the same failure from opposite sides. A verbatim hit
+# is the most trusted rung there is, which is exactly why it needs a veto: an
+# identical sentence somewhere else in the document scores a perfect quote match
+# and is still the wrong place to put the comment.
+
+
+TWIN_DOC = """# Protocol
+
+## Section A — connection
+The timeout is 30 seconds for the handshake phase of the connection.
+
+## Section B — streaming
+The timeout is 30 seconds for the streaming phase, which is under review.
+"""
+
+TWIN_QUOTE = "The timeout is 30 seconds"
+
+
+def test_a_comment_whose_section_was_deleted_does_not_move_to_its_twin():
+    """The author answered the comment by deleting the section it was on.
+
+    The quoted sentence still exists — in the *other* section, which nobody was
+    talking about. Landing there puts an objection on a sentence its author
+    never objected to, and records it on the most trusted rung there is. An
+    orphan is the honest answer: the passage this comment named is gone.
+    """
+    revised = TWIN_DOC[: TWIN_DOC.index("## Section B")]
+    anchor = anchor_for_quote(TWIN_DOC, TWIN_QUOTE, occurrence=1)
+
+    result = reanchor(anchor, revised)
+
+    assert result.orphaned
+    assert result.anchor is None
+    assert "context" in result.reason
+
+
+def test_the_context_floor_does_not_cost_a_quote_that_only_lost_one_side():
+    """The other side of the same veto: an edit above must stay survivable.
+
+    Deleting the paragraph before the quote wipes the anchor's prefix, but the
+    suffix is untouched and the quote is unique. That is a move, not a twin, and
+    it has to keep rebinding — a floor that orphaned this would trade a rare
+    wrong answer for a common lost comment.
+    """
+    doc = (
+        "# Protocol\n\nA long opening paragraph that carries the whole prefix.\n\n"
+        "The timeout is 30 seconds for the streaming phase.\n"
+    )
+    anchor = anchor_for_quote(doc, TWIN_QUOTE)
+    revised = "# Protocol\n\nThe timeout is 30 seconds for the streaming phase.\n"
+
+    result = reanchor(anchor, revised)
+
+    assert result.found
+    assert result.strategy == QUOTE
+    assert result.anchor.exact == TWIN_QUOTE
+
+
+def test_a_twin_is_not_readmitted_by_the_fuzzy_rung():
+    """A veto on one rung has to hold on the ones below it.
+
+    Rung 4 scores the quote, and a twin matches the quote perfectly — so a floor
+    that only lived on rungs 2 and 3 would hand the same wrong span back one rung
+    later, wearing ``fuzzy`` instead of ``quote``.
+    """
+    revised = TWIN_DOC[: TWIN_DOC.index("## Section B")]
+    anchor = anchor_for_quote(TWIN_DOC, TWIN_QUOTE, occurrence=1)
+
+    result = reanchor(anchor, revised, min_similarity=0.0)
+
+    assert result.orphaned
+
+
+# -- the occurrence cap cuts around the old position ---------------------
+
+
+def _repetitive(marker: str, count: int = 2000, target: int = 1700) -> str:
+    """A document where one phrase repeats far past the occurrence cap."""
+    lines = []
+    for index in range(count):
+        if index == target:
+            lines.append(f"ratelimit section heading {marker} end of the ratelimit part")
+        else:
+            lines.append(f"line {index:04d} filler {marker} trailing filler {index:04d}")
+    return "\n".join(lines) + "\n"
+
+
+def test_the_occurrence_cap_does_not_cut_away_the_true_span():
+    """The cap has to bound the work without deciding the answer.
+
+    Cutting the scan at the top of the document throws away every occurrence
+    past the cap, so a comment on the 1700th one never gets scored at all and
+    loses to a stranger near the top — silently, on the ``quote`` rung. The cap
+    stays; where it cuts moves to the old position.
+    """
+    from specround.reanchor import MAX_OCCURRENCES
+
+    marker = "the retry policy applies"
+    doc = _repetitive(marker)
+    anchor = anchor_for_quote(doc, marker, occurrence=1700)
+    assert doc.count(marker) > MAX_OCCURRENCES  # the cap is genuinely in play
+
+    revised = "x" + doc  # one character above everything
+
+    result = reanchor(anchor, revised)
+
+    assert result.strategy == QUOTE
+    assert result.anchor.start == anchor.start + 1
+    result.anchor.verify(revised)
+
+
+def test_the_occurrence_scan_stays_bounded_when_it_is_centred():
+    from specround.reanchor import MAX_OCCURRENCES, _occurrences
+
+    text = "ab" * 5000
+    assert len(_occurrences(text, "ab")) == MAX_OCCURRENCES
+    near = len(text) // 2
+    around = _occurrences(text, "ab", near=near)
+    assert len(around) == MAX_OCCURRENCES
+    assert min(around) < near < max(around)  # it scanned both ways
 
 
 # -- insertion points -----------------------------------------------------

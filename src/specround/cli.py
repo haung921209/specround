@@ -362,6 +362,7 @@ def _anchoring_json(anchoring: Anchoring | None) -> dict[str, Any] | None:
         "author": anchoring.author,
         "ts": anchoring.ts,
         "base": anchoring.base,
+        "anchor": _anchor_json(anchoring.anchor),
         "strategy": anchoring.strategy,
         "ambiguous": anchoring.ambiguous,
         "reason": anchoring.reason,
@@ -376,7 +377,16 @@ def _comment_json(comment: Comment) -> dict[str, Any]:
     is where it lives now after any re-anchoring. Both are here because a reader
     that only had the second could not tell a comment that moved from one that
     never did.
+
+    ``strategy`` and ``ambiguous`` say *how* it got there, and they are on the
+    comment rather than only in the output of the ``reanchor`` run that moved it.
+    That distinction is the whole point of the closed strategy vocabulary (§4):
+    ``fuzzy`` means the quoted text was rewritten and a person should look, and a
+    reviewer reading the list a week later is exactly the person meant. Both come
+    from the last attempt that *placed* the comment, so an orphan still reports
+    how it reached the anchor it is keeping.
     """
+    placed = comment.current_anchoring
     return {
         "id": comment.id,
         "round": comment.round,
@@ -392,11 +402,14 @@ def _comment_json(comment: Comment) -> dict[str, Any]:
         "orphaned": comment.orphaned,
         "anchoring": _anchoring_json(comment.anchoring),
         "ext": comment.ext,
+        "strategy": placed.strategy if placed else None,
+        "ambiguous": placed.ambiguous if placed else False,
         "replies": [
             {"id": r.id, "author": r.author, "ts": r.ts, "body": r.body}
             for r in comment.replies
         ],
         "dispositions": [_disposition_json(d) for d in comment.dispositions],
+        "anchorings": [_anchoring_json(a) for a in comment.anchorings],
     }
 
 
@@ -466,6 +479,27 @@ def _anchor_cell(comment: Comment) -> str:
     return _clip(anchor.exact, _QUOTE_WIDTH)
 
 
+def _moved_marks(comment: Comment) -> list[str]:
+    """What about this comment's landing is worth a person's attention.
+
+    Not every move is. A comment pushed down the page by an insertion above
+    matched its quote verbatim and needs nobody — that is the distinction the
+    closed strategy vocabulary exists to draw (§4). ``fuzzy`` means the quoted
+    text itself was rewritten, and ``ambiguous`` means more than one span fit
+    equally well and the old position broke the tie. Those two, and only those,
+    are news a week later.
+    """
+    placed = comment.current_anchoring
+    if placed is None:
+        return []
+    marks = []
+    if placed.strategy == FUZZY:
+        marks.append(FUZZY)
+    if placed.ambiguous:
+        marks.append("ambiguous")
+    return marks
+
+
 def _comment_rows(comments: Sequence[Comment]) -> list[str]:
     rows = [
         [
@@ -479,20 +513,19 @@ def _comment_rows(comments: Sequence[Comment]) -> list[str]:
         for c in comments
     ]
     lines = _table(["ID", "KIND", "STATE", "AUTHOR", "ANCHOR", "BODY"], rows)
+    # Footers rather than columns: both of these are rare, and widening every
+    # row for them would cost the common case to report the uncommon one.
     orphans = [c.id for c in comments if c.orphaned]
     if orphans:
-        # A footer rather than a column: orphaning is rare, and widening every
-        # row for it would cost the common case to report the uncommon one.
         lines.append("")
         lines.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
-    moved = [f"{c.id} ({_moved_how(c)})" for c in comments if _moved_how(c)]
-    if moved:
-        # Only the ones the format says a person has to check — a comment whose
-        # sentence was rewritten under it, or one that moved on a tie. A rebind
-        # that followed its own quote is not news, and listing every move would
-        # bury these two. The full history is in ``--json``.
+    moved = [(c.id, _moved_marks(c)) for c in comments if not c.orphaned]
+    flagged = [f"{cid} ({', '.join(marks)})" for cid, marks in moved if marks]
+    if flagged:
+        # The ``reanchor`` run said this once, to whoever happened to be running
+        # it. This is where the reviewer reading the list afterwards finds out.
         lines.append("")
-        lines.append(f"{len(moved)} re-anchored, worth a look: {', '.join(moved)}")
+        lines.append(f"{len(flagged)} moved on rewritten text — worth a look: {', '.join(flagged)}")
     return lines
 
 
