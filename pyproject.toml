@@ -1,0 +1,33 @@
+[project]
+name = "specround"
+version = "0.0.1"
+description = "Spec review rounds for humans and AI agents — anchored comments, suggestion diffs, and an append-only disposition ledger. No server, no git dependency."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["review", "spec", "annotation", "ledger", "agents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Documentation",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/specround/specround"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/specround"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
