@@ -428,10 +428,12 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
     payload = run("comments", doc, "--json").json["comments"][0]
     assert set(payload) == {
         "anchor",
+        "anchoring",
         "author",
         "body",
         "current_anchor",
         "dispositions",
+        "ext",
         "id",
         "kind",
         "orphaned",
@@ -455,6 +457,7 @@ def test_the_round_object_field_set_is_closed(run, doc, opened):
         "closed_ts",
         "comment_count",
         "doc",
+        "ext",
         "id",
         "status",
         "title",
@@ -771,3 +774,85 @@ def test_an_argument_error_without_json_still_reads_like_argparse(run, doc):
 def test_help_and_version_are_not_failures(run):
     assert run("--version").code == 0
     assert run("--help").code == 0
+
+
+# -- what the listing carries --------------------------------------------
+
+
+def test_ext_written_by_an_agent_can_be_read_back(run, doc):
+    """``ext`` is preserved on disk and was invisible to every verb.
+
+    The field exists so an agent can carry data the schema has no place for
+    yet. One that can write it and not read it back has to parse the ledger by
+    hand, which is the thing the CLI is for (G4).
+    """
+    store = ReviewStore.for_document(doc)
+    round_id = store.open_round(doc, author="alice", ext={"harness": "probe-7"})
+    store.add_comment(round_id, author="agent:reviewer", body="a note", ext={"confidence": "low"})
+
+    assert run("round", "status", doc, "--json").json["rounds"][0]["ext"] == {"harness": "probe-7"}
+    assert run("comments", doc, "--json").json["comments"][0]["ext"] == {"confidence": "low"}
+
+
+def test_a_record_without_ext_says_so_rather_than_omitting_the_key(run, doc, opened):
+    a_comment(run, doc)
+    assert run("comments", doc, "--json").json["comments"][0]["ext"] is None
+    assert run("round", "status", doc, "--json").json["rounds"][0]["ext"] is None
+
+
+def test_the_listing_carries_the_re_anchoring_that_moved_a_comment(run, doc, opened):
+    """Which comments moved, and how, outlived the pass that moved them.
+
+    ``reanchor`` reported ``strategy`` and ``ambiguous`` in the moment and
+    nowhere else, so a reviewer reading the list later could not tell a comment
+    whose sentence was rewritten under it — the one a person is supposed to
+    look at — from one that was merely pushed down the page.
+    """
+    comment = a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+    moved = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
+
+    payload = run("comments", doc, "--json").json["comments"][0]
+    assert payload["anchoring"]["strategy"] == moved["strategies"][comment]
+    assert payload["anchoring"]["base"] == moved["base"]
+    assert payload["anchoring"]["orphaned"] is False
+    assert payload["anchoring"]["ambiguous"] is False
+
+
+def test_an_orphan_carries_the_reason_it_could_not_be_placed(run, doc, opened):
+    a_comment(run, doc)
+    doc.write_text(REWRITTEN, encoding="utf-8")
+    run("reanchor", doc, "--author", "agent:reanchor")
+
+    anchoring = run("comments", doc, "--json").json["comments"][0]["anchoring"]
+    assert anchoring["orphaned"] is True
+    assert anchoring["reason"]
+    assert anchoring["strategy"] is None
+
+
+def test_a_comment_that_never_moved_has_no_anchoring(run, doc, opened):
+    a_comment(run, doc)
+    assert run("comments", doc, "--json").json["comments"][0]["anchoring"] is None
+
+
+def test_the_table_names_the_comments_a_person_should_look_at(run, doc, opened):
+    """The human listing keeps the signal, not the whole re-anchoring log.
+
+    ``fuzzy`` and ``ambiguous`` are the two the format says a person has to
+    check; a rebind that merely followed its quote is not news, and a footer
+    listing every move would bury the two that matter.
+    """
+    comment = a_comment(run, doc, quote="The client sends a hello frame", body="which frame?")
+    doc.write_text(
+        "# Widget protocol\n\n"
+        "The client sends a hell0 frame. The server answers with a hello frame.\n\n"
+        "Timeouts are 30 seconds. Retries are not specified yet.\n",
+        encoding="utf-8",
+    )
+    moved = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
+    assert moved["strategies"].get(comment) == "fuzzy", moved
+
+    listing = run("comments", doc)
+    assert listing.code == 0
+    assert "1 re-anchored, worth a look" in listing.out
+    assert comment in listing.out.splitlines()[-1]

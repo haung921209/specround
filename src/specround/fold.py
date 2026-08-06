@@ -130,6 +130,9 @@ class Comment:
     anchorings: list[Anchoring] = field(default_factory=list)
     #: Resolve/reopen history for this thread, oldest first (G11).
     resolutions: list[Resolution] = field(default_factory=list)
+    #: The reserved additive object, exactly as the record carried it. The fold
+    #: does not look inside — preserving it is the whole contract (§2).
+    ext: dict[str, Any] | None = None
 
     @property
     def disposition(self) -> Disposition | None:
@@ -232,6 +235,8 @@ class Round:
     closed_ts: str | None = None
     unresolved_at_close: list[str] = field(default_factory=list)
     close_note: str = ""
+    #: The reserved additive object from ``round.open``, preserved not read.
+    ext: dict[str, Any] | None = None
 
     @property
     def open(self) -> bool:
@@ -391,6 +396,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
             author=record["author"],
             ts=record["ts"],
             title=record.get("title", ""),
+            ext=dict(record["ext"]) if "ext" in record else None,
         )
 
     elif kind in COMMENT_KINDS:
@@ -405,6 +411,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
             body=record.get("body", ""),
             patch=record["patch"] if kind == SUGGESTION_ADD else None,
             anchor=Anchor.from_json(anchor) if anchor is not None else None,
+            ext=dict(record["ext"]) if "ext" in record else None,
         )
 
     elif kind == REPLY:

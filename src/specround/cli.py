@@ -48,8 +48,9 @@ from specround import __version__
 from specround.anchors import Anchor
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ANSWERED, APPLIED, DEFERRED, REJECTED
-from specround.fold import Comment, Disposition, Round, State
+from specround.fold import Anchoring, Comment, Disposition, Round, State
 from specround.locations import canonical_path
+from specround.reanchor import FUZZY
 from specround.store import ReviewStore
 
 #: Exit codes. See the module docstring — these are the contract, not the prose.
@@ -348,6 +349,28 @@ def _disposition_json(disposition: Disposition | None) -> dict[str, Any] | None:
     }
 
 
+def _anchoring_json(anchoring: Anchoring | None) -> dict[str, Any] | None:
+    """The latest attempt to carry a comment onto a revision, or ``None``.
+
+    ``reanchor`` reports this in the moment and the listing did not carry it at
+    all, so a reviewer reading the list afterwards could not tell which
+    comments had moved — least of all which ones moved on the ``fuzzy`` rung,
+    the ones the format says a person is supposed to look at.
+    """
+    if anchoring is None:
+        return None
+    return {
+        "id": anchoring.id,
+        "author": anchoring.author,
+        "ts": anchoring.ts,
+        "base": anchoring.base,
+        "strategy": anchoring.strategy,
+        "ambiguous": anchoring.ambiguous,
+        "reason": anchoring.reason,
+        "orphaned": anchoring.orphaned,
+    }
+
+
 def _comment_json(comment: Comment) -> dict[str, Any]:
     """One comment, with both anchors and every disposition it has collected.
 
@@ -369,6 +392,8 @@ def _comment_json(comment: Comment) -> dict[str, Any]:
         "state": comment.state,
         "unresolved": comment.unresolved,
         "orphaned": comment.orphaned,
+        "anchoring": _anchoring_json(comment.anchoring),
+        "ext": comment.ext,
         "replies": [
             {"id": r.id, "author": r.author, "ts": r.ts, "body": r.body}
             for r in comment.replies
@@ -391,6 +416,7 @@ def _round_json(state: State, round_: Round) -> dict[str, Any]:
         "closed_ts": round_.closed_ts,
         "close_note": round_.close_note,
         "unresolved_at_close": list(round_.unresolved_at_close),
+        "ext": round_.ext,
         "comment_count": len(comments),
         "unresolved_count": sum(1 for c in comments if c.unresolved),
     }
@@ -461,7 +487,31 @@ def _comment_rows(comments: Sequence[Comment]) -> list[str]:
         # row for it would cost the common case to report the uncommon one.
         lines.append("")
         lines.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
+    moved = [f"{c.id} ({_moved_how(c)})" for c in comments if _moved_how(c)]
+    if moved:
+        # Only the ones the format says a person has to check — a comment whose
+        # sentence was rewritten under it, or one that moved on a tie. A rebind
+        # that followed its own quote is not news, and listing every move would
+        # bury these two. The full history is in ``--json``.
+        lines.append("")
+        lines.append(f"{len(moved)} re-anchored, worth a look: {', '.join(moved)}")
     return lines
+
+
+def _moved_how(comment: Comment) -> str:
+    """Why this comment's last move needs a human, or ``""`` if it does not."""
+    anchoring = comment.anchoring
+    if anchoring is None or anchoring.orphaned:
+        return ""
+    marks = [
+        mark
+        for mark in (
+            anchoring.strategy if anchoring.strategy == FUZZY else "",
+            "ambiguous" if anchoring.ambiguous else "",
+        )
+        if mark
+    ]
+    return ", ".join(marks)
 
 
 # -- verbs ---------------------------------------------------------------
