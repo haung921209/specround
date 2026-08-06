@@ -45,6 +45,11 @@ specround reanchor SPEC.md
 Success goes to stdout and errors to stderr, so `--json | jq` never receives
 an error object as a result.
 
+Reading a ledger works anywhere; **appending needs POSIX**. Assigning `seq`
+spans a read and a write, so it is done under an exclusive file lock, and an
+interpreter without one (Windows, no `fcntl`) is told no rather than handed a
+ledger two writers can put the same position in.
+
 ```bash
 uv run pytest
 ```
