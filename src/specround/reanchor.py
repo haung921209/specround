@@ -36,6 +36,7 @@ on short quotes in long documents.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -76,7 +77,8 @@ _PRECISION = 6
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 #: Characters folded to an ASCII equivalent before the ``normalized`` rung.
-#: One character in, one character out — the index map depends on it.
+#: Applied after Unicode composition, so a decomposed source character is folded
+#: by the same table its composed form would be.
 _FOLD = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"', "‟": '"',
@@ -223,7 +225,16 @@ def _normalize(text: str) -> tuple[str, list[int], list[int]]:
 
     Each folded character records the half-open source range it came from, so a
     match found in folded space names an exact span of the original — the caller
-    never has to guess where a collapsed run of whitespace began or ended.
+    never has to guess where a collapsed run of whitespace began or ended. The
+    map is what lets the fold be many-to-one: a run of whitespace and a base
+    character with its combining marks both collapse, and both still name the
+    exact source span they came from.
+
+    Unicode composition is folded here rather than left to rung 4 because it is
+    the same kind of change as the rest of this fold — the glyphs a reader sees
+    are identical. A macOS filesystem or an editor can renormalise a file with
+    nobody editing it, and calling that ``fuzzy`` would tell a reviewer the
+    quoted text had been rewritten when not one character of it changed.
     """
     out: list[str] = []
     starts: list[int] = []
@@ -240,10 +251,23 @@ def _normalize(text: str) -> tuple[str, list[int], list[int]]:
             ends.append(run)
             index = run
             continue
-        out.append(_FOLD.get(text[index], text[index]))
-        starts.append(index)
-        ends.append(index + 1)
-        index += 1
+        # A base character owns the combining marks that follow it: composing
+        # them separately would leave a mark stranded with no base to sit on.
+        # Every combining mark is above U+007F, so the ASCII test is a cheap
+        # prefilter that cannot skip one — and it keeps this loop off the
+        # unicodedata calls entirely for the documents that have no marks.
+        run = index + 1
+        while run < length and not text[run].isascii() and unicodedata.combining(text[run]):
+            run += 1
+        head = text[index]
+        chunk = head if run == index + 1 and head.isascii() else unicodedata.normalize(
+            "NFC", text[index:run]
+        )
+        for char in chunk:
+            out.append(_FOLD.get(char, char))
+            starts.append(index)
+            ends.append(run)
+        index = run
     return "".join(out), starts, ends
 
 

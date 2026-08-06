@@ -163,6 +163,28 @@ def test_a_typographic_pass_is_absorbed_by_the_fold():
     assert result.anchor.exact == "The server answers with a “hello” frame."
 
 
+def test_unicode_renormalisation_is_absorbed_by_the_fold():
+    """NFC to NFD is what a macOS filesystem does on its own.
+
+    Not one glyph changed, so calling it ``fuzzy`` tells a reviewer to go and
+    look at a sentence nobody touched. ``fuzzy`` is the word for "the quoted text
+    was rewritten", and diluting it costs the signal it exists to carry.
+    """
+    import unicodedata
+
+    quote = "Le délai est de 30 secondes."
+    doc = unicodedata.normalize("NFC", f"# Protocole\n\n{quote} Rien d'autre.\n")
+    anchor = anchor_for_quote(doc, unicodedata.normalize("NFC", quote))
+    revised = unicodedata.normalize("NFD", doc)
+    assert revised != doc  # the file really did change on disk
+
+    result = reanchor(anchor, revised)
+
+    assert result.strategy == NORMALIZED
+    assert result.anchor.exact == unicodedata.normalize("NFD", quote)
+    result.anchor.verify(revised)
+
+
 def test_an_edited_quote_is_found_by_fuzzy_alignment():
     result = reanchor(anchored(), _edit_the_paragraph(DOC))
     assert result.strategy == FUZZY
