@@ -395,6 +395,19 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
 
     elif kind == REPLY:
         comment = _comment_or_raise(state, record["target"], f"reply {event_id!r}")
+        if comment.resolved:
+            # The one asymmetry in an otherwise permissive thread model (I11).
+            # Resolved threads are hidden by default (G11), so a reply appended
+            # under one lands where nobody looks — a lost answer wearing the
+            # shape of a recorded one, which is the failure G3 exists to
+            # prevent. Re-opening first costs one line and puts the
+            # conversation back where its answer can be read.
+            current = comment.resolution
+            assert current is not None  # resolved implies a resolution
+            raise InvariantError(
+                f"comment {comment.id!r} is a resolved thread (closed by {current.id!r}) "
+                "— reopen it before replying, or the reply lands in a hidden thread"
+            )
         comment.replies.append(
             Reply(
                 id=event_id,
