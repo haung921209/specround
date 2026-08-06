@@ -22,15 +22,26 @@ from specround.errors import (
     SpecroundError,
 )
 from specround.events import (
+    ACTORS,
     EVENT_TYPES,
     SCHEMA,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     TERMINAL_VERDICTS,
+    THREAD_KINDS,
     VERDICTS,
     validate_event,
 )
-from specround.fold import Anchoring, Comment, Disposition, Reply, Round, State, fold
+from specround.fold import (
+    Anchoring,
+    Comment,
+    Disposition,
+    Reply,
+    Resolution,
+    Round,
+    State,
+    fold,
+)
 from specround.ledger import Ledger
 from specround.reanchor import STRATEGIES, Rebind, reanchor
 from specround.snapshots import SnapshotStore
@@ -50,6 +61,7 @@ from specround.store import ReviewStore
 __version__ = "0.0.1"
 
 __all__ = [
+    "ACTORS",
     "Anchor",
     "AnchorError",
     "Anchoring",
@@ -66,6 +78,7 @@ __all__ = [
     "ReanchorReport",
     "Rebind",
     "Reply",
+    "Resolution",
     "ReviewStore",
     "Round",
     "SCHEMA",
@@ -80,6 +93,7 @@ __all__ = [
     "State",
     "StoreLocation",
     "TERMINAL_VERDICTS",
+    "THREAD_KINDS",
     "VERDICTS",
     "__version__",
     "anchor_for",
