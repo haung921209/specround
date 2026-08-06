@@ -28,7 +28,7 @@ from specround.events import (
     derive_id,
     validate_event,
 )
-from specround.fold import State, fold
+from specround.fold import State, check_position, fold
 
 try:  # pragma: no cover - platform dependent
     import fcntl
@@ -84,11 +84,10 @@ class Ledger:
                 validate_event(record)
             except SchemaError as exc:
                 raise SchemaError(f"{self.path}:{index + 1}: {exc}") from exc
-            if record["seq"] != index:
-                raise SchemaError(
-                    f"{self.path}:{index + 1}: record claims seq {record['seq']} but sits at "
-                    f"position {index} — history was reordered or truncated"
-                )
+            # I2 is enforced by one function, shared with the fold — see
+            # check_position. Reading and folding used to disagree about which
+            # error this is, and a caller cannot act on two answers.
+            check_position(record.get("id", ""), record["seq"], index, where=f"{self.path}:{index + 1}")
             records.append(record)
         return records
 

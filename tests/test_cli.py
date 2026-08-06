@@ -621,3 +621,22 @@ def test_a_stripped_final_newline_does_not_kill_the_ledger(run, doc, opened):
     result = run("round", "status", doc, "--json")
     assert result.code == 0
     assert result.json["counts"]["comments"] == 2
+
+
+def test_a_reordered_ledger_is_a_state_failure_not_a_crash(run, doc, opened):
+    """One rule, one exit code.
+
+    ``seq`` disagreeing with its position was checked twice — once while
+    reading (exit 1) and once while folding (exit 3) — so which code a caller
+    got depended on which path reached the file first. It is an invariant (I2),
+    and every invariant the recorded history refuses is a 3.
+    """
+    a_comment(run, doc, body="first")
+    ledger = ReviewStore.for_document(doc).ledger.path
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    ledger.write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
+
+    result = run("round", "status", doc, "--json")
+    assert result.code == 3
+    assert result.error["kind"] == "state"
+    assert "reordered or truncated" in result.error["message"]

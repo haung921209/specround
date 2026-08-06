@@ -323,6 +323,25 @@ class State:
         return self.rounds[self.comments[comment_id].round]
 
 
+def check_position(event_id: str, seq: Any, position: int, *, where: str = "") -> None:
+    """Enforce I2 — ``seq`` is the record's own position, nothing else.
+
+    The one implementation of the rule. It used to live twice: once in the
+    reader, which raised a schema error, and once here, which raised an
+    invariant error — so a hand-reordered ledger produced two different
+    diagnoses and two different exit codes depending on which path touched the
+    file first. It is an invariant either way, which is what the caller has to
+    act on: the file's history is wrong, not one record's shape.
+    """
+    if seq == position:
+        return
+    prefix = f"{where}: " if where else ""
+    raise InvariantError(
+        f"{prefix}record {event_id!r} claims seq {seq} but sits at position {position} — "
+        "history was reordered or truncated"
+    )
+
+
 def _comment_or_raise(state: State, target: str, what: str) -> Comment:
     comment = state.comments.get(target)
     if comment is None:
@@ -359,12 +378,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
 
     kind = record["type"]
     event_id = record["id"]
-    seq = record["seq"]
-    if seq != state.count:
-        raise InvariantError(
-            f"record {event_id!r} claims seq {seq} but is at position {state.count} — "
-            "the ledger has been reordered or truncated"
-        )
+    check_position(event_id, record["seq"], state.count)
     if event_id in state.seen_ids:
         raise InvariantError(f"duplicate event id {event_id!r}")
     state.seen_ids.add(event_id)

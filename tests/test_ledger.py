@@ -6,6 +6,7 @@ import pytest
 
 from specround.errors import InvariantError, LedgerError, SchemaError
 from specround.events import SCHEMA, canonical_json
+from specround.fold import fold
 from specround.ledger import Ledger, utc_now
 
 
@@ -100,12 +101,19 @@ def test_a_caller_supplied_timestamp_is_kept(ledger):
 
 
 def test_a_truncated_ledger_is_reported_not_folded(ledger):
+    """I2 is an invariant, so reading a truncated file raises one.
+
+    Not a ``SchemaError``: every record here is well formed on its own, and
+    what is wrong is the history they sit in. The fold has always said so — the
+    reader used to say something else, and the two disagreed about the exit
+    code a caller gets.
+    """
     round_id = open_round(ledger)["id"]
     ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
     lines = ledger.path.read_text(encoding="utf-8").splitlines()
     # Drop the first line by hand: every remaining seq is now off by one.
     ledger.path.write_text(lines[1] + "\n", encoding="utf-8")
-    with pytest.raises(SchemaError, match="reordered or truncated"):
+    with pytest.raises(InvariantError, match="reordered or truncated"):
         ledger.read()
 
 
@@ -114,8 +122,29 @@ def test_a_reordered_ledger_is_reported(ledger):
     ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
     lines = ledger.path.read_text(encoding="utf-8").splitlines()
     ledger.path.write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
-    with pytest.raises(SchemaError, match="reordered or truncated"):
+    with pytest.raises(InvariantError, match="reordered or truncated"):
         ledger.read()
+
+
+def test_reading_and_folding_agree_on_a_reordered_ledger(ledger):
+    """One rule, one implementation — the reader and the fold cannot drift.
+
+    Both paths raise the same class with the same sentence; only the file
+    location the reader can add is different.
+    """
+    round_id = open_round(ledger)["id"]
+    ledger.append({"type": "comment.add", "author": "bob", "round": round_id, "body": "why?"})
+    records = ledger.read()
+    swapped = [dict(records[1]), dict(records[0])]
+
+    with pytest.raises(InvariantError) as folded:
+        fold(swapped)
+    ledger.path.write_text(
+        "\n".join(canonical_json(r) for r in swapped) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(InvariantError) as read:
+        ledger.read()
+    assert str(folded.value) in str(read.value)
 
 
 def test_a_corrupt_line_names_its_line_number(ledger):
