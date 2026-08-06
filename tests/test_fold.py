@@ -72,10 +72,17 @@ def test_comment_carries_its_anchor(store, doc, round_id):
 
 
 def test_an_anchor_is_verified_against_the_round_base(store, doc, round_id):
-    from specround.anchors import Anchor
-    from specround.errors import AnchorError
+    """I7 on the way in — and it raises what I7 raises on the way out.
 
-    with pytest.raises(AnchorError, match="quote mismatch"):
+    One condition, one exception class, whichever side of the store the caller
+    is standing on: the read path refuses the same anchor with the same error
+    (``tests/test_anchor_integrity.py``). Two classes here would be the "two
+    copies of a check" §6 warns about, wearing a different coat.
+    """
+    from specround.anchors import Anchor
+    from specround.errors import InvariantError
+
+    with pytest.raises(InvariantError, match="I7"):
         store.add_comment(
             round_id,
             author="bob",
