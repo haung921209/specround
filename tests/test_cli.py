@@ -682,3 +682,41 @@ def test_a_case_only_difference_does_not_report_an_empty_history(run, tmp_path):
     result = run("round", "status", other, "--json")
     assert result.code == 0
     assert result.json["counts"]["rounds"] == 1
+
+
+# -- a document that is no longer there ----------------------------------
+
+
+def test_the_history_of_a_moved_document_is_still_readable(run, doc, opened, tmp_path):
+    """The store outlives the file, and the CLI is the way in (G7).
+
+    Renaming the document made ``specround comments <old path>`` exit 2 while
+    the ledger sat there intact — the format says the old history stays in the
+    old store and ``origin`` keeps naming it, and that was true only for
+    ``cat``.
+    """
+    comment_id = a_comment(run, doc, body="outlives the file")
+    doc.rename(tmp_path / "renamed.md")
+
+    listed = run("comments", doc, "--json")
+    assert listed.code == 0
+    assert [c["id"] for c in listed.json["comments"]] == [comment_id]
+    assert run("round", "status", doc, "--json").json["counts"]["comments"] == 1
+
+
+def test_a_mistyped_path_is_still_refused(run, tmp_path):
+    """The reason the check was there in the first place stays covered.
+
+    A path with no history behind it is a typo, and answering "no comments"
+    would be a wrong answer that looks like a fact. Only a path the store
+    already knows is addressable once the file is gone.
+    """
+    result = run("comments", tmp_path / "nope.md")
+    assert result.code == 2
+    assert "no history" in result.err
+
+
+def test_a_writing_verb_still_needs_the_document(run, doc, opened, tmp_path):
+    """Reading history is one thing; commenting on text that is gone is not."""
+    doc.rename(tmp_path / "renamed.md")
+    assert run("comment", doc, "--author", "bob", "--body", "on what?").code == 2

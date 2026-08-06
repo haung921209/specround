@@ -106,24 +106,44 @@ class Target:
         return {"doc": self.key, "path": str(self.path), "store": str(self.store.root)}
 
 
-def _document(value: str) -> Path:
+def _document(value: str, *, must_exist: bool = True) -> Path:
     """Resolve the document argument, refusing a path that is not there.
 
     Every verb names a document, including the read-only ones, and a mistyped
     path that quietly reports "no comments" is worse than an error: the store is
     keyed by path, so a typo addresses a different (empty) history and the answer
     looks like a fact.
+
+    ``must_exist=False`` is for the read-only verbs, where the missing file is
+    not necessarily a typo — a document can be renamed or deleted while its
+    history stays exactly where it was. :func:`_target` finishes that check
+    against the store, because the thing that separates a rename from a typo is
+    whether there is any history behind the path.
     """
     path = Path(value).expanduser()
-    if not path.is_file():
+    if must_exist and not path.is_file():
         raise UsageError(f"{path}: not a file — every verb names the document under review")
     return canonical_path(path)
 
 
-def _target(args: argparse.Namespace) -> Target:
-    path = _document(args.doc)
+def _target(args: argparse.Namespace, *, missing_ok: bool = False) -> Target:
+    path = _document(args.doc, must_exist=not missing_ok)
     store = ReviewStore.for_document(path, store=Path(args.store) if args.store else None)
-    return Target(store=store, path=path, key=store.doc_key(path))
+    key = store.doc_key(path)
+    if missing_ok and not path.is_file() and not _has_history(store, key):
+        # The file is gone. That is a rename when the store holds history for
+        # this key and a typo otherwise — one answer comes from a record, the
+        # other would come from a store that was never anything.
+        raise UsageError(
+            f"{path}: not a file, and no history for it in {store.root} — "
+            "check the path (a moved document keeps its old store)"
+        )
+    return Target(store=store, path=path, key=key)
+
+
+def _has_history(store: ReviewStore, key: str) -> bool:
+    """True when this store already holds a round for ``key``."""
+    return store.ledger.exists() and bool(_rounds_on(store.fold(), key))
 
 
 def _author(args: argparse.Namespace) -> str:
@@ -468,7 +488,9 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    target = _target(args)
+    # Read-only: a document that was renamed or deleted still has history, and
+    # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
+    target = _target(args, missing_ok=True)
     state = target.store.fold()
     rounds = _rounds_on(state, target.key)
     comments = _comments_on(state, target.key)
@@ -536,7 +558,9 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    target = _target(args)
+    # Read-only: a document that was renamed or deleted still has history, and
+    # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
+    target = _target(args, missing_ok=True)
     state = target.store.fold()
     items = _comments_on(state, target.key)
     if args.round:
