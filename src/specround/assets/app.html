@@ -1,0 +1,730 @@
+<!doctype html>
+<!--
+  The whole front end: one file, no build step, no network beyond this process.
+
+  The load-bearing idea is that the server hands down text runs carrying their
+  document offsets (see specround/markdown.py), so turning a selection into an
+  anchor is arithmetic on `data-s` rather than a guess about what the reader
+  meant. Every mode below plays by that one rule, which is why a comment made on
+  the render, on the raw text, or on a diff row is the same comment (SPEC §3).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>specround</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a19; --dim: #6b6b66; --line: #e2e1dc;
+    --accent: #2f6f5e; --warn: #9a5b12; --bad: #a33; --mark: #fff3bf; --markopen: #ffe08a;
+    --add: #e9f6ec; --del: #fdecec; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --panel: #1e2023; --ink: #e6e5e1; --dim: #9a9a94; --line: #33363a;
+      --accent: #7fc0ac; --warn: #d99a4e; --bad: #e08a8a; --mark: #4a4423; --markopen: #6b5f22;
+      --add: #1d2d22; --del: #33211f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 8px 14px;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  }
+  header .doc { font-weight: 600; }
+  header .meta { color: var(--dim); font-size: 13px; font-family: var(--mono); }
+  header .grow { flex: 1; }
+  .modes { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .modes button { border: 0; background: transparent; color: var(--ink); padding: 5px 12px; cursor: pointer; font: inherit; }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  button, select, input, textarea { font: inherit; color: var(--ink); }
+  .btn {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  #notice { padding: 6px 14px; font-size: 13px; border-bottom: 1px solid var(--line); display: none; }
+  #notice.show { display: block; }
+  #notice.bad { background: var(--del); color: var(--bad); }
+  #notice.info { background: var(--panel); color: var(--dim); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 0; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  #doc { padding: 18px 22px 60vh; min-width: 0; }
+  #doc h1, #doc h2, #doc h3, #doc h4 { line-height: 1.3; margin: 1.4em 0 .5em; }
+  #doc h1 { font-size: 1.6em; } #doc h2 { font-size: 1.3em; } #doc h3 { font-size: 1.1em; }
+  #doc pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 13px;
+  }
+  #doc table { border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; }
+  #doc th, #doc td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
+  #doc blockquote { margin: 1em 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--dim); }
+  #doc code { font-family: var(--mono); font-size: .9em; background: var(--panel); padding: 1px 4px; border-radius: 3px; }
+  #doc pre code { background: none; padding: 0; }
+  #doc hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
+  #doc.raw, #doc.diff { font-family: var(--mono); font-size: 13px; line-height: 1.55; }
+  .line { display: flex; }
+  .line .ln {
+    flex: 0 0 4.5ch; text-align: right; padding-right: 1.2ch; color: var(--dim);
+    user-select: none; -webkit-user-select: none;
+  }
+  .line .body { white-space: pre-wrap; word-break: break-word; flex: 1; min-width: 0; }
+  .line.added { background: var(--add); }
+  .line.removed { background: var(--del); }
+  .line .sign { flex: 0 0 2ch; color: var(--dim); user-select: none; -webkit-user-select: none; }
+  mark.anch { background: var(--mark); color: inherit; border-radius: 2px; cursor: pointer; }
+  mark.anch.open { background: var(--markopen); }
+  mark.anch.here { outline: 2px solid var(--accent); }
+  .caret { color: var(--accent); font-weight: 700; cursor: pointer; }
+  aside {
+    position: sticky; top: 49px; max-height: calc(100vh - 49px); overflow-y: auto;
+    border-left: 1px solid var(--line); background: var(--panel); padding: 12px;
+  }
+  aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; margin-bottom: 10px; background: var(--bg); }
+  .card.here { border-color: var(--accent); }
+  .card .who { font-size: 12px; color: var(--dim); font-family: var(--mono); }
+  .card .quote {
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    border-left: 2px solid var(--line); padding-left: 6px; margin: 5px 0;
+    white-space: pre-wrap; word-break: break-word; max-height: 5.5em; overflow: hidden;
+  }
+  .card .body { white-space: pre-wrap; word-break: break-word; }
+  .card pre.patch {
+    font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; overflow-x: auto; margin: 6px 0;
+  }
+  .card .reply { border-left: 2px solid var(--line); margin: 6px 0 0 8px; padding-left: 7px; font-size: 14px; }
+  .tag {
+    display: inline-block; font-size: 11px; font-family: var(--mono); border: 1px solid var(--line);
+    border-radius: 10px; padding: 0 7px; margin-right: 4px; color: var(--dim);
+  }
+  .tag.open { color: var(--accent); border-color: var(--accent); }
+  .tag.warn { color: var(--warn); border-color: var(--warn); }
+  .tag.bad { color: var(--bad); border-color: var(--bad); }
+  .acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  textarea { width: 100%; min-height: 60px; resize: vertical; padding: 6px 8px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+  input[type=text] { padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+  #float {
+    position: absolute; display: none; z-index: 9;
+    box-shadow: 0 2px 8px rgba(0,0,0,.18);
+  }
+  #float.show { display: block; }
+  #editor { display: none; padding: 0 22px 22px; }
+  #editor.show { display: block; }
+  #editor textarea { min-height: 55vh; font-family: var(--mono); font-size: 13px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  label.check { font-size: 13px; color: var(--dim); display: flex; gap: 5px; align-items: center; }
+  .empty { color: var(--dim); font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="doc" id="docname">…</span>
+  <span class="meta" id="roundmeta"></span>
+  <span class="grow"></span>
+  <div class="modes" role="group" aria-label="view mode">
+    <button data-mode="render" aria-pressed="true">render</button>
+    <button data-mode="raw" aria-pressed="false">raw</button>
+    <button data-mode="diff" aria-pressed="false">diff</button>
+  </div>
+  <label class="check">author <input type="text" id="author" size="12"></label>
+  <label class="check">as
+    <select id="actor"><option value="human">human</option><option value="agent">agent</option></select>
+  </label>
+  <button class="btn" id="refresh" title="re-read the ledger and the document">reload</button>
+</header>
+<div id="notice"></div>
+<main>
+  <div>
+    <div id="doc"></div>
+    <div id="editor">
+      <textarea id="edittext" spellcheck="false"></textarea>
+      <div class="row">
+        <input type="text" id="editwhy" placeholder="why (optional)" size="40">
+        <button class="btn primary" id="propose">propose as suggestion</button>
+        <button class="btn" id="editcancel">cancel</button>
+        <span class="meta" id="editnote"></span>
+      </div>
+    </div>
+  </div>
+  <aside>
+    <div id="composer"></div>
+    <h2 id="threadhead">threads</h2>
+    <label class="check"><input type="checkbox" id="showresolved"> show resolved</label>
+    <div id="threads"></div>
+  </aside>
+</main>
+<button class="btn primary" id="float">comment</button>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const $ = (id) => document.getElementById(id);
+const state = { data: null, mode: "render", pending: null, focused: null, editing: false };
+
+// -- transport ------------------------------------------------------------
+
+async function api(path, body) {
+  const options = {
+    headers: { "X-Specround-Token": TOKEN, "Content-Type": "application/json" },
+    method: body === undefined ? "GET" : "POST",
+  };
+  if (body !== undefined) options.body = JSON.stringify(body);
+  const response = await fetch(path + "?t=" + encodeURIComponent(TOKEN), options);
+  const text = await response.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
+  if (!response.ok) {
+    // The server answers in the ledger's own words. Passing the message through
+    // unchanged is the point: it names the fix ("open a round", "reopen it").
+    throw new Error((payload && payload.error && payload.error.message) || text || response.statusText);
+  }
+  return payload;
+}
+
+function notice(message, kind) {
+  const box = $("notice");
+  box.textContent = message || "";
+  box.className = message ? "show " + (kind || "info") : "";
+}
+
+async function act(body, path) {
+  try {
+    await api(path, body);
+    notice("");
+    await load();
+    return true;
+  } catch (error) {
+    notice(String(error.message || error), "bad");
+    return false;
+  }
+}
+
+// -- text runs ------------------------------------------------------------
+//
+// One rule for all three modes: an element with `data-s` holds text that is
+// verbatim document content starting at that offset, in the space named by
+// `data-space` (the round's base unless it says otherwise). Everything below
+// reads or writes offsets through that, and nothing else.
+
+function holderOf(node) {
+  const element = node && node.nodeType === 3 ? node.parentElement : node;
+  return element && element.closest ? element.closest("[data-s]") : null;
+}
+
+function offsetIn(holder, node, offset) {
+  if (node === holder || node.nodeType !== 3) {
+    // A boundary landed on the element itself; the honest reading is its edge.
+    return offset === 0 ? 0 : holder.textContent.length;
+  }
+  let seen = 0;
+  const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+  let current;
+  while ((current = walker.nextNode())) {
+    if (current === node) return seen + offset;
+    seen += current.nodeValue.length;
+  }
+  return seen;
+}
+
+function selectedSpan() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  const head = holderOf(range.startContainer);
+  const tail = holderOf(range.endContainer);
+  if (!head || !tail) return null;
+  const space = head.dataset.space || "base";
+  if ((tail.dataset.space || "base") !== space) return null;
+  const start = Number(head.dataset.s) + offsetIn(head, range.startContainer, range.startOffset);
+  const end = Number(tail.dataset.s) + offsetIn(tail, range.endContainer, range.endOffset);
+  if (end <= start) return null;
+  const source = space === "base" ? state.data.base : state.data.live;
+  return { space, start, end, quote: source ? source.slice(start, end) : "" };
+}
+
+// -- painting anchors ------------------------------------------------------
+
+function paint(container, comments) {
+  const anchored = comments.filter((c) => c.current_anchor);
+  container.querySelectorAll("[data-s]").forEach((element) => {
+    if ((element.dataset.space || "base") !== "base") return;
+    const start = Number(element.dataset.s);
+    const text = element.textContent;
+    const end = start + text.length;
+    const spans = anchored.filter((c) => c.current_anchor.start < end && c.current_anchor.end > start);
+    const points = anchored.filter(
+      (c) => c.current_anchor.start === c.current_anchor.end
+          && c.current_anchor.start >= start && c.current_anchor.start <= end
+    );
+    if (!spans.length && !points.length) return;
+    const clamp = (at) => Math.max(0, Math.min(text.length, at - start));
+    const cuts = new Set([0, text.length]);
+    spans.forEach((c) => { cuts.add(clamp(c.current_anchor.start)); cuts.add(clamp(c.current_anchor.end)); });
+    points.forEach((c) => cuts.add(clamp(c.current_anchor.start)));
+    const ordered = [...cuts].sort((a, b) => a - b);
+    const fragment = document.createDocumentFragment();
+    const caretsAt = (at) => points.filter((c) => clamp(c.current_anchor.start) === at);
+    for (let index = 0; index < ordered.length; index += 1) {
+      const at = ordered[index];
+      caretsAt(at).forEach((c) => fragment.appendChild(caret(c)));
+      const next = ordered[index + 1];
+      if (next === undefined || next === at) continue;
+      const piece = text.slice(at, next);
+      const covering = spans.filter(
+        (c) => clamp(c.current_anchor.start) <= at && clamp(c.current_anchor.end) >= next
+      );
+      if (!covering.length) { fragment.appendChild(document.createTextNode(piece)); continue; }
+      const mark = document.createElement("mark");
+      mark.className = "anch" + (covering.some((c) => c.unresolved) ? " open" : "");
+      mark.dataset.comments = covering.map((c) => c.id).join(" ");
+      mark.textContent = piece;
+      fragment.appendChild(mark);
+    }
+    element.textContent = "";
+    element.appendChild(fragment);
+  });
+  container.querySelectorAll("mark.anch, .caret").forEach((mark) => {
+    mark.addEventListener("click", (event) => {
+      event.stopPropagation();
+      focus(mark.dataset.comments.split(" ")[0]);
+    });
+  });
+}
+
+function caret(comment) {
+  const element = document.createElement("span");
+  element.className = "caret";
+  element.dataset.comments = comment.id;
+  element.textContent = "‸";
+  element.title = "insertion point — " + comment.id;
+  return element;
+}
+
+// -- the three modes ------------------------------------------------------
+
+function drawRender(host, data) {
+  host.className = "";
+  host.innerHTML = data.render;
+}
+
+function drawRaw(host, data) {
+  host.className = "raw";
+  host.textContent = "";
+  const text = data.base || "";
+  let at = 0;
+  let number = 0;
+  while (at <= text.length) {
+    const stop = text.indexOf("\n", at);
+    const cut = stop === -1 ? text.length : stop;
+    number += 1;
+    host.appendChild(lineRow(String(number), "", text.slice(at, cut), at, "base", ""));
+    if (stop === -1) break;
+    at = stop + 1;
+  }
+}
+
+function drawDiff(host, data) {
+  host.className = "diff";
+  host.textContent = "";
+  const diff = data.diff;
+  if (!diff.available) {
+    host.innerHTML = '<p class="empty">No diff: this needs both a round and a readable document.</p>';
+    return;
+  }
+  const only = $("changesonly") && $("changesonly").checked;
+  diff.rows.forEach((row) => {
+    if (only && row.op === "same") return;
+    const sign = row.op === "added" ? "+" : row.op === "removed" ? "-" : " ";
+    const space = row.op === "added" ? "revision" : "base";
+    const start = row.op === "added" ? row.live_start : row.base_start;
+    host.appendChild(
+      lineRow(row.base_line ? String(row.base_line) : "", row.live_line ? String(row.live_line) : "",
+              row.text, start, space, row.op, sign)
+    );
+  });
+  if (!host.children.length) {
+    host.innerHTML = '<p class="empty">Nothing changed since this round froze the document.</p>';
+  }
+}
+
+function lineRow(left, right, text, start, space, cls, sign) {
+  const line = document.createElement("div");
+  line.className = "line" + (cls ? " " + cls : "");
+  const gutterLeft = document.createElement("span");
+  gutterLeft.className = "ln";
+  gutterLeft.textContent = left;
+  line.appendChild(gutterLeft);
+  if (right !== "" || sign !== undefined) {
+    const gutterRight = document.createElement("span");
+    gutterRight.className = "ln";
+    gutterRight.textContent = right;
+    line.appendChild(gutterRight);
+  }
+  if (sign !== undefined) {
+    const marker = document.createElement("span");
+    marker.className = "sign";
+    marker.textContent = sign;
+    line.appendChild(marker);
+  }
+  const body = document.createElement("span");
+  body.className = "body t";
+  body.dataset.s = String(start);
+  body.dataset.space = space;
+  body.textContent = text;
+  line.appendChild(body);
+  return line;
+}
+
+function draw() {
+  const data = state.data;
+  const host = $("doc");
+  if (!data.round) {
+    host.className = "";
+    host.innerHTML = '<p class="empty">' + escapeHtml(data.blocked || "nothing to show") + "</p>";
+    return;
+  }
+  if (state.mode === "raw") drawRaw(host, data);
+  else if (state.mode === "diff") drawDiff(host, data);
+  else drawRender(host, data);
+  paint(host, data.comments);
+  if (state.focused) markFocus();
+}
+
+// -- threads --------------------------------------------------------------
+
+function tag(text, kind) {
+  return '<span class="tag ' + (kind || "") + '">' + escapeHtml(text) + "</span>";
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+function anchorLabel(comment) {
+  const anchor = comment.current_anchor;
+  if (!anchor) return "(the whole document)";
+  if (anchor.start === anchor.end) return "(insertion point at " + anchor.start + ")";
+  return anchor.exact;
+}
+
+function drawThreads() {
+  const data = state.data;
+  const showResolved = $("showresolved").checked;
+  const hidden = data.comments.filter((c) => c.resolved).length;
+  const shown = data.comments.filter((c) => showResolved || !c.resolved);
+  $("threadhead").textContent =
+    "threads — " + shown.length + " shown, " + data.counts.unresolved + " undisposed"
+    + (hidden && !showResolved ? ", " + hidden + " resolved and hidden" : "");
+  const host = $("threads");
+  host.textContent = "";
+  if (!shown.length) {
+    host.innerHTML = '<p class="empty">'
+      + (hidden ? hidden + " resolved thread(s), hidden by default — tick the box above."
+                : "No comments yet. Select text in any mode to leave one.")
+      + "</p>";
+    return;
+  }
+  shown.forEach((comment) => host.appendChild(card(comment)));
+}
+
+function card(comment) {
+  const element = document.createElement("div");
+  element.className = "card" + (state.focused === comment.id ? " here" : "");
+  element.dataset.comment = comment.id;
+  const tags = [tag(comment.kind), tag(comment.state, comment.unresolved ? "open" : "")];
+  if (comment.resolved) tags.push(tag("resolved"));
+  if (comment.orphaned) tags.push(tag("orphaned", "bad"));
+  if (comment.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
+  if (comment.ambiguous) tags.push(tag("ambiguous", "warn"));
+  if (comment.ext && comment.ext.view) tags.push(tag("from " + comment.ext.view.space));
+  element.innerHTML =
+    '<div class="who">' + escapeHtml(comment.id) + " · " + escapeHtml(comment.author)
+      + " · " + escapeHtml(comment.ts) + "</div>"
+    + "<div>" + tags.join("") + "</div>"
+    + '<div class="quote">' + escapeHtml(anchorLabel(comment)) + "</div>"
+    + (comment.body ? '<div class="body">' + escapeHtml(comment.body) + "</div>" : "")
+    + (comment.patch ? '<pre class="patch">' + escapeHtml(comment.patch) + "</pre>" : "")
+    + comment.replies.map((reply) =>
+        '<div class="reply"><span class="who">' + escapeHtml(reply.author) + "</span> "
+        + escapeHtml(reply.body) + "</div>").join("")
+    + (comment.dispositions.length
+        ? '<div class="who">' + comment.dispositions.map((d) =>
+            escapeHtml(d.verdict + " — " + d.reason)).join("<br>") + "</div>"
+        : "");
+
+  const actions = document.createElement("div");
+  actions.className = "acts";
+  actions.appendChild(button("reply", () => replyBox(comment)));
+  if (comment.unresolved) actions.appendChild(button("dispose", () => disposeBox(comment)));
+  actions.appendChild(button(comment.resolved ? "reopen" : "resolve", () => threadBox(comment)));
+  element.appendChild(actions);
+  element.addEventListener("click", () => focus(comment.id));
+  return element;
+}
+
+function button(label, onClick, primary) {
+  const element = document.createElement("button");
+  element.className = "btn" + (primary ? " primary" : "");
+  element.textContent = label;
+  element.addEventListener("click", (event) => { event.stopPropagation(); onClick(); });
+  return element;
+}
+
+// -- composers ------------------------------------------------------------
+
+function clearComposer() {
+  $("composer").textContent = "";
+  state.pending = null;
+}
+
+function panel(title) {
+  const host = $("composer");
+  host.textContent = "";
+  const box = document.createElement("div");
+  box.className = "card here";
+  const head = document.createElement("div");
+  head.className = "who";
+  head.textContent = title;
+  box.appendChild(head);
+  host.appendChild(box);
+  return box;
+}
+
+function commentBox(span) {
+  const box = panel(span ? "comment on the selection" : "comment on the whole document");
+  if (span) {
+    const quote = document.createElement("div");
+    quote.className = "quote";
+    quote.textContent = span.quote;
+    box.appendChild(quote);
+    if (span.space === "revision") {
+      const note = document.createElement("div");
+      note.className = "who";
+      note.textContent = "selected in the revision — it will be carried into the round's base";
+      box.appendChild(note);
+    }
+  }
+  const area = document.createElement("textarea");
+  area.placeholder = "what is wrong with this, or what it should say";
+  box.appendChild(area);
+  const actions = document.createElement("div");
+  actions.className = "acts";
+  actions.appendChild(button("add comment", async () => {
+    const body = { body: area.value, author: $("author").value, whole: !span };
+    if (span) Object.assign(body, { space: span.space, start: span.start, end: span.end });
+    if (await act(body, "/api/comment")) clearComposer();
+  }, true));
+  actions.appendChild(button("cancel", clearComposer));
+  box.appendChild(actions);
+  area.focus();
+}
+
+function replyBox(comment) {
+  const box = panel("reply to " + comment.id);
+  const area = document.createElement("textarea");
+  box.appendChild(area);
+  const actions = document.createElement("div");
+  actions.className = "acts";
+  actions.appendChild(button("reply", async () => {
+    if (await act({ target: comment.id, body: area.value, author: $("author").value }, "/api/reply"))
+      clearComposer();
+  }, true));
+  actions.appendChild(button("cancel", clearComposer));
+  box.appendChild(actions);
+  area.focus();
+}
+
+function disposeBox(comment) {
+  const box = panel("dispose " + comment.id);
+  const choice = document.createElement("select");
+  state.data.verdicts.forEach((verdict) => {
+    const option = document.createElement("option");
+    option.value = verdict;
+    option.textContent = verdict;
+    choice.appendChild(option);
+  });
+  const row = document.createElement("div");
+  row.className = "row";
+  row.appendChild(choice);
+  box.appendChild(row);
+  const area = document.createElement("textarea");
+  area.placeholder = "the reason — required for every verdict";
+  box.appendChild(area);
+  const actions = document.createElement("div");
+  actions.className = "acts";
+  actions.appendChild(button("record", async () => {
+    const body = { target: comment.id, verdict: choice.value, reason: area.value, author: $("author").value };
+    if (await act(body, "/api/dispose")) clearComposer();
+  }, true));
+  actions.appendChild(button("cancel", clearComposer));
+  box.appendChild(actions);
+  area.focus();
+}
+
+function threadBox(comment) {
+  const closing = !comment.resolved;
+  const box = panel((closing ? "resolve " : "reopen ") + comment.id);
+  const area = document.createElement("textarea");
+  area.placeholder = closing ? "a closing note (optional)" : "why it goes back — required";
+  box.appendChild(area);
+  const actions = document.createElement("div");
+  actions.className = "acts";
+  actions.appendChild(button(closing ? "resolve" : "reopen", async () => {
+    const body = {
+      target: comment.id, resolved: closing, author: $("author").value, actor: $("actor").value,
+    };
+    if (closing) body.note = area.value; else body.reason = area.value;
+    if (await act(body, "/api/thread")) clearComposer();
+  }, true));
+  actions.appendChild(button("cancel", clearComposer));
+  box.appendChild(actions);
+  area.focus();
+}
+
+// -- focus ----------------------------------------------------------------
+
+function focus(id) {
+  state.focused = id;
+  markFocus();
+  const card = document.querySelector('.card[data-comment="' + id + '"]');
+  if (card) card.scrollIntoView({ block: "nearest" });
+}
+
+function markFocus() {
+  document.querySelectorAll("mark.anch.here").forEach((m) => m.classList.remove("here"));
+  document.querySelectorAll(".card.here[data-comment]").forEach((c) => c.classList.remove("here"));
+  if (!state.focused) return;
+  document.querySelectorAll("mark.anch, .caret").forEach((mark) => {
+    if (mark.dataset.comments.split(" ").includes(state.focused)) mark.classList.add("here");
+  });
+  const card = document.querySelector('.card[data-comment="' + state.focused + '"]');
+  if (card) card.classList.add("here");
+}
+
+// -- raw editing → suggestion (G8) ---------------------------------------
+
+function startEditing() {
+  state.editing = true;
+  $("edittext").value = state.data.base || "";
+  $("editnote").textContent = "editing the text this round froze — submitting records a patch, "
+    + "it does not touch the file";
+  $("editor").classList.add("show");
+  $("doc").style.display = "none";
+}
+
+function stopEditing() {
+  state.editing = false;
+  $("editor").classList.remove("show");
+  $("doc").style.display = "";
+}
+
+// -- wiring ---------------------------------------------------------------
+
+function setMode(mode) {
+  state.mode = mode;
+  document.querySelectorAll(".modes button").forEach((element) => {
+    element.setAttribute("aria-pressed", String(element.dataset.mode === mode));
+  });
+  if (mode !== "raw" && state.editing) stopEditing();
+  renderControls();
+  draw();
+}
+
+function renderControls() {
+  const host = $("doc");
+  const existing = $("modebar");
+  if (existing) existing.remove();
+  const bar = document.createElement("div");
+  bar.id = "modebar";
+  bar.className = "row";
+  if (state.mode === "diff") {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "changesonly";
+    box.addEventListener("change", draw);
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(" changed lines only"));
+    bar.appendChild(label);
+    const summary = document.createElement("span");
+    summary.className = "meta";
+    const diff = state.data.diff;
+    summary.textContent = !diff.available ? ""
+      : diff.identical ? "the document is byte-identical to this round's base"
+      : diff.only_terminator ? "only the trailing line break differs"
+      : "+" + diff.added + " / -" + diff.removed + " against this round's base";
+    bar.appendChild(summary);
+  }
+  if (state.mode === "raw" && state.data.commentable) {
+    bar.appendChild(button("edit → suggestion", startEditing));
+  }
+  if (state.data.commentable) {
+    bar.appendChild(button("comment on the document", () => commentBox(null)));
+  }
+  if (state.data.blocked) {
+    const note = document.createElement("span");
+    note.className = "meta";
+    note.textContent = state.data.blocked;
+    bar.appendChild(note);
+  }
+  host.parentNode.insertBefore(bar, host);
+}
+
+function placeFloat() {
+  const span = selectedSpan();
+  const floater = $("float");
+  if (!span || !state.data.commentable) { floater.classList.remove("show"); return; }
+  const rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  floater.style.top = (window.scrollY + rect.bottom + 6) + "px";
+  floater.style.left = (window.scrollX + rect.left) + "px";
+  floater.classList.add("show");
+}
+
+async function load() {
+  const data = await api("/api/state");
+  state.data = data;
+  $("docname").textContent = data.doc;
+  $("roundmeta").textContent = data.round
+    ? data.round.id + " · " + data.round.status + " · base " + data.round.base.slice(7, 19)
+      + (data.round.title ? " · " + data.round.title : "")
+    : "no round";
+  if (!$("author").value) $("author").value = data.author;
+  if (data.actor) $("actor").value = data.actor;
+  renderControls();
+  draw();
+  drawThreads();
+}
+
+document.querySelectorAll(".modes button").forEach((element) => {
+  element.addEventListener("click", () => setMode(element.dataset.mode));
+});
+$("showresolved").addEventListener("change", drawThreads);
+$("refresh").addEventListener("click", () => load().catch((e) => notice(String(e.message || e), "bad")));
+$("float").addEventListener("mousedown", (event) => {
+  // mousedown, not click: clicking clears the selection before the handler runs.
+  event.preventDefault();
+  const span = selectedSpan();
+  $("float").classList.remove("show");
+  if (span) commentBox(span);
+});
+document.addEventListener("selectionchange", placeFloat);
+$("propose").addEventListener("click", async () => {
+  const body = { text: $("edittext").value, body: $("editwhy").value, author: $("author").value };
+  if (await act(body, "/api/suggestion")) { stopEditing(); $("editwhy").value = ""; }
+});
+$("editcancel").addEventListener("click", stopEditing);
+
+load().catch((error) => notice(String(error.message || error), "bad"));
+</script>
+</body>
+</html>
