@@ -308,11 +308,11 @@ function commentOnLine(space, start, text) {
 
 // -- the pure part --------------------------------------------------------
 //
-// These three touch neither the DOM nor `state`, and the tests lift this block
-// out and run it. Everything else on this page needs a browser to mean anything;
-// this is the part a machine can hold to account, and the line-to-anchor
-// conversion belongs in it because it is the one offset the page works out for
-// itself rather than receiving from the server.
+// These touch neither the DOM nor `state`, and the tests lift this block out and
+// run it. Everything else on this page needs a browser to mean anything; this is
+// the part a machine can hold to account, and the line-to-anchor conversion
+// belongs in it because it is the one offset the page works out for itself
+// rather than receiving from the server.
 
 function rawLines(text) {
   // One entry per line, each carrying the offset its first character sits at.
@@ -368,6 +368,22 @@ function badges(entry) {
   return out;
 }
 
+function focusScroll(origin, present) {
+  // Which side of the screen moves when a comment is focused: the side the click
+  // did not come from. A reviewer who clicks a mark is reading the document and
+  // wants the thread; one who clicks a card is reading the thread and wants the
+  // place. Moving both takes the viewport out from under whichever one they were
+  // actually reading, and in the same scroll parent the two would chase each
+  // other. So this answers with exactly one, and the caller scrolls only that.
+  //
+  // `""` is a no-op and is an ordinary answer rather than a failure: a card can
+  // be filtered out of the list, and an anchor can sit on a line the diff is
+  // hiding or in a mode that does not draw it. Nothing is wrong in either case
+  // and there is nowhere to go, so the page stays where the reviewer put it.
+  if (origin !== "card") return present.card ? "card" : "";
+  return present.mark ? "anchor" : "";
+}
+
 // -- end of the pure part -------------------------------------------------
 
 // -- painting anchors ------------------------------------------------------
@@ -414,7 +430,7 @@ function paint(container, comments) {
   container.querySelectorAll("mark.anch, .caret").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
-      focus(mark.dataset.comments.split(" ")[0]);
+      focus(mark.dataset.comments.split(" ")[0], "mark");
     });
   });
 }
@@ -678,7 +694,7 @@ function card(comment) {
   if (comment.unresolved) actions.appendChild(button("dispose", () => disposeBox(comment)));
   actions.appendChild(button(comment.resolved ? "reopen" : "resolve", () => threadBox(comment)));
   element.appendChild(actions);
-  element.addEventListener("click", () => focus(comment.id));
+  element.addEventListener("click", () => focus(comment.id, "card"));
   return element;
 }
 
@@ -802,11 +818,27 @@ function threadBox(comment) {
 
 // -- focus ----------------------------------------------------------------
 
-function focus(id) {
+function focus(id, origin) {
+  // `origin` is which side was clicked, and it is the whole of the difference:
+  // focusing has always highlighted both sides, and only ever moved one of them.
+  //
+  // The elements are the ones `markFocus` just found, rather than matched again
+  // here — the rule for "does this mark carry this comment" is written once, in
+  // the place that draws the highlight, and this reads its answer off the class.
+  // That also settles the navigation bar: a card cannot be clicked before the
+  // document it belongs to has been drawn, because `load` draws the document and
+  // then the threads, so switching files leaves nothing stale to scroll to.
   state.focused = id;
   markFocus();
+  const anchor = document.querySelector("mark.anch.here, .caret.here");
   const card = document.querySelector('.card[data-comment="' + id + '"]');
-  if (card) card.scrollIntoView({ block: "nearest" });
+  const where = focusScroll(origin, { mark: !!anchor, card: !!card });
+  // `nearest` for the card because the thread column scrolls on its own and a
+  // card already in view should not jump; `center` for the anchor because an
+  // anchor pinned to the top or bottom edge shows the reviewer the sentence
+  // without the paragraph it has to be read against.
+  if (where === "card") card.scrollIntoView({ block: "nearest" });
+  else if (where === "anchor") anchor.scrollIntoView({ block: "center" });
 }
 
 function markFocus() {

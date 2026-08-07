@@ -496,6 +496,46 @@ def test_the_focus_highlight_covers_both_kinds_of_anchor(tmp_path):
     assert 'querySelectorAll("mark.anch.here, .caret.here")' in html
 
 
+def test_focusing_moves_the_side_the_click_did_not_come_from(tmp_path):
+    """The round trip, both ways: mark to thread, and thread back to the place.
+
+    Highlighting has always been symmetric and scrolling was not, so a mark took
+    the reviewer to its card and a card took them nowhere. The rule is one line —
+    move the far side — and it is stated once here rather than at the two
+    listeners, where the two directions could quietly stop being each other's
+    inverse.
+    """
+    assert in_node('focusScroll("mark", {mark: true, card: true})', None, tmp_path) == "card"
+    assert in_node('focusScroll("card", {mark: true, card: true})', None, tmp_path) == "anchor"
+
+
+def test_focusing_never_scrolls_both_sides(tmp_path):
+    """One answer, so the caller cannot move two viewports on one click.
+
+    Scrolling the document and the thread column together would take the pane
+    the reviewer is reading with and hand it back somewhere else; where the two
+    share a scroll parent it is a fight rather than a jump. A function that
+    returns one name is the shape of that guarantee, not a comment about it.
+    """
+    for origin in ("mark", "card"):
+        answer = in_node(
+            'focusScroll(input, {mark: true, card: true})', origin, tmp_path
+        )
+        assert answer in {"card", "anchor"}
+
+
+def test_a_side_that_is_not_on_screen_is_not_scrolled_to(tmp_path):
+    """Absence is ordinary here, and ordinary means no-op rather than no-answer.
+
+    A card is missing whenever the resolved filter hides it; an anchor is missing
+    whenever the mode does not draw one — a diff showing changed lines only, or a
+    render whose markup carries no mark for that offset. Neither is a fault to
+    report, and neither is a reason to scroll somewhere arbitrary.
+    """
+    assert in_node('focusScroll("mark", {mark: true, card: false})', None, tmp_path) == ""
+    assert in_node('focusScroll("card", {mark: false, card: true})', None, tmp_path) == ""
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 
