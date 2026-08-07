@@ -267,8 +267,11 @@ def _parse_item(payload: Any, index: int) -> Item:
 def parse_batch(payload: Any) -> Batch:
     """Read a decoded import file, refusing anything this contract does not define."""
     raw = _require_mapping(payload, "an import file")
-    _check_keys(raw, _BATCH_KEYS, "import file")
 
+    # Schema before field names, the order the ledger reader uses: a file from a
+    # contract this reader does not implement is expected to have fields it does
+    # not know, and reporting one of those instead of the version would send the
+    # caller to fix the wrong thing.
     schema = raw.get("schema")
     if not isinstance(schema, str) or not schema:
         raise BatchError("import file: missing a 'schema' field")
@@ -285,6 +288,7 @@ def parse_batch(payload: Any) -> Batch:
             f"this reader implements v{IMPORT_SCHEMA_VERSION} and will not guess"
         )
 
+    _check_keys(raw, _BATCH_KEYS, "import file")
     source = _string(raw, "source", "import file", required=True)
     assert source is not None  # required
 

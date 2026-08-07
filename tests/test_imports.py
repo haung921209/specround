@@ -107,6 +107,16 @@ def test_a_foreign_schema_is_refused():
         parse_batch(batch(item(quote="x"), schema="rdjson/v0"))
 
 
+def test_the_version_is_checked_before_the_field_names():
+    # A file from a contract this reader does not implement is expected to have
+    # fields it does not know. Naming one of those would send the caller to fix
+    # the wrong thing.
+    payload = batch(item(quote="x"), schema="specround.import/v9")
+    payload["something_v9_added"] = True
+    with pytest.raises(BatchError, match="will not guess"):
+        parse_batch(payload)
+
+
 def test_a_later_major_is_refused_rather_than_guessed_at():
     with pytest.raises(BatchError, match="will not guess"):
         parse_batch(batch(item(quote="x"), schema="specround.import/v1"))
