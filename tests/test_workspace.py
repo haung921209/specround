@@ -225,6 +225,75 @@ def test_the_default_limit_is_not_in_the_way_of_an_ordinary_tree(space):
     assert space.list().hidden == 0
 
 
+# -- when the documents share one store ----------------------------------
+#
+# The default is a store per document, which is why most of the above reads like
+# it. A config that puts one store over the folder is the other layout the
+# resolution rules allow, and the listing has to be right on both — the badges
+# come from one fold indexed by each document's own key, not from a second way
+# of counting kept for this case.
+
+
+@pytest.fixture
+def shared(tree):
+    """One in-tree store for the whole tree, the way a team opts into sharing.
+
+    ``path`` rather than ``beside``: ``beside`` puts a store in each *document's*
+    folder, so a tree with subfolders gets several of them and ``sub/beta.md``
+    would be keyed ``beta.md`` under its own. ``path`` anchors at the config
+    file, which is what makes one store hold the whole tree under the same keys
+    the workspace uses.
+    """
+    (tree / ".specround.json").write_text(
+        '{"store": {"mode": "path", "path": ".specround"}}\n', encoding="utf-8"
+    )
+    return ReviewStore.at(tree)
+
+
+def test_documents_sharing_a_store_are_told_apart_by_their_own_keys(tree, shared, clock):
+    """A shared ledger holds several documents. Each row must be about its own."""
+    alpha, beta = tree / "alpha.md", tree / "sub" / "beta.md"
+    store = ReviewStore.for_document(alpha, clock=clock)
+    assert store.root == shared.root  # the config is in force
+    round_id = store.open_round(alpha, author="alice", title="alpha pass")
+    store.add_comment(round_id, author="bob", body="on alpha", anchor=None)
+    store.open_round(beta, author="alice", title="beta pass")
+    listed = {document.key: document for document in Workspace(root=tree, clock=clock).list().documents}
+    assert listed["alpha.md"].summary["comments"] == 1
+    assert listed["sub/beta.md"].summary["comments"] == 0
+    assert listed["gamma.md"].summary["rounds"] == 0
+    assert {d.store for d in listed.values()} == {shared.root}
+
+
+def test_a_shared_ledger_is_folded_once_for_the_whole_listing(tree, shared, clock, monkeypatch):
+    """Not once per document: a bar over a folder would re-read the same file N times."""
+    folds = []
+    original = ReviewStore.fold
+    monkeypatch.setattr(
+        ReviewStore, "fold", lambda self: (folds.append(self.root), original(self))[1]
+    )
+    path = tree / "alpha.md"
+    ReviewStore.for_document(path, clock=clock).open_round(path, author="alice", title="a look")
+    folds.clear()
+    assert len(Workspace(root=tree, clock=clock).list().documents) == 3
+    assert folds == [shared.root]
+
+
+def test_an_explicit_store_applies_to_every_document_in_the_tree(tree, tmp_path, clock):
+    """``--store`` means the same thing here as it does for every other verb."""
+    elsewhere = tmp_path / "history"
+    path = tree / "alpha.md"
+    store = ReviewStore.for_document(path, store=elsewhere, base=tree, clock=clock)
+    store.open_round(path, author="alice", title="a look")
+    listed = {
+        document.key: document
+        for document in Workspace(root=tree, store=elsewhere, clock=clock).list().documents
+    }
+    assert {d.store for d in listed.values()} == {store.root}
+    assert listed["alpha.md"].active
+    assert not listed["sub/beta.md"].active
+
+
 # -- turning a key back into a document ----------------------------------
 
 
