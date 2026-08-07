@@ -10,7 +10,8 @@ no gitignore homework. A team that wants shared history can opt the store back
 into the repo with `.specround.json`. Committing the ledger is an optional
 layer for sharing and durability, never a precondition for the tool to work.
 
-**Status: ledger core, CLI, and the local web view landed.** The contract is
+**Status: ledger core, CLI, the local web view, and the inline-annotation
+harvester landed.** The contract is
 [SPEC.md](SPEC.md) (guarantees G1–G11); the ledger format and store location
 live in [docs/ledger-format.md](docs/ledger-format.md). This tool's first
 customer is the review of its own spec.
@@ -47,6 +48,46 @@ specround round close SPEC.md --allow-unresolved --note "retries move to round 2
 # After a revision: carry the comments over, and say which ones lost their text.
 specround reanchor SPEC.md
 ```
+
+## In your editor
+
+Nothing has to be running. Open the document in whatever editor you have, type
+[CriticMarkup](https://fletcher.github.io/MultiMarkdown-6/syntax/critic.html)
+markers where they belong, and save.
+
+| marker | becomes |
+|---|---|
+| `{>>the proxy caps at 45s<<}` | a comment at that point |
+| `{++ See RFC 1.++}` | a suggestion that inserts the text |
+| `{--not --}` | a suggestion that removes the marked text |
+| `{~~30~>60~~}` | a suggestion that replaces the marked text |
+
+```bash
+specround harvest SPEC.md            # what it would record, and what the file becomes
+specround harvest SPEC.md --apply    # record it, and rewrite the file without the markers
+```
+
+**The harvested text is the document, and a marker is a proposal about it.**
+`{--x--}` leaves `x` in the file and records a suggestion to remove it;
+`{++x++}` does not put `x` in the file at all, because it is not there yet.
+Harvesting records proposals — carrying one out is a `dispose … --as applied`
+somebody decides, never a side effect of reading the file.
+
+A dry run is the default because this is the one verb that rewrites your
+document, and it refuses everything `--apply` would. A marker with nothing in it
+is a `2` with its line named. An opener with no closer, or the `{==highlight==}`
+form this subset does not read, is left in the file and reported — nothing goes
+missing quietly.
+
+**Markers inside code are specimens, not instructions.** Fenced blocks and
+inline backtick spans are skipped, which is what lets a document explain this
+syntax — every table above is in this document, and harvesting it finds nothing.
+
+Anchors count in the text the markers are gone from. If you annotated the
+document after opening the round, or opened the round on the already-annotated
+document, the spans are exact. If the prose moved as well, they are carried into
+the round's base by the same ladder `reanchor` uses, and the ones that were
+carried are flagged for you to look at.
 
 ## In a browser
 
