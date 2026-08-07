@@ -16,11 +16,14 @@ that is untracked, or that lives outside any repository, gets the full loop.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
 from specround.anchors import Anchor, anchor_for, anchor_for_quote
+from specround.critic import COMMENT, Annotation, Skipped, parse
+from specround.diffs import unified_patch
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import (
     ANCHOR_ORPHAN,
@@ -52,7 +55,24 @@ from specround.snapshots import SnapshotStore
 
 LEDGER_FILENAME = "ledger.jsonl"
 
-__all__ = ["LEDGER_FILENAME", "STORE_DIRNAME", "ReviewStore"]
+#: Which text a harvested anchor was cut from, when it had to be carried into the
+#: round's base. Named for the ``ext`` provenance record — the web view's
+#: ``base``/``revision`` do not cover it, because the harvest reads the document
+#: *minus its annotation syntax*, which is neither of those two strings.
+CLEAN = "clean"
+
+#: Suffix of the temporary file a harvest writes before replacing the document.
+_HARVEST_TEMP = ".specround-harvest"
+
+__all__ = [
+    "CLEAN",
+    "LEDGER_FILENAME",
+    "STORE_DIRNAME",
+    "HarvestReport",
+    "Placement",
+    "ReanchorReport",
+    "ReviewStore",
+]
 
 
 @dataclass(frozen=True)
@@ -85,6 +105,83 @@ class ReanchorReport:
     def changed(self) -> bool:
         """True when this pass appended anything."""
         return bool(self.rebound or self.orphaned)
+
+
+@dataclass(frozen=True)
+class Placement:
+    """One inline annotation, and where it landed in the round's base.
+
+    ``strategy`` is ``None`` in the ordinary case: the reviewer typed the
+    markers into the document the round froze, so removing them restores that
+    exact text and the span needs no carrying. It names a rung of the ladder
+    when the document had drifted as well, which is the only case where a
+    harvested anchor is not an exact cut of the base.
+    """
+
+    annotation: Annotation
+    anchor: Anchor
+    strategy: str | None = None
+    ambiguous: bool = False
+    #: Id of the appended event, or ``None`` on a dry run.
+    event: str | None = None
+
+    @property
+    def carried(self) -> bool:
+        """True when the ladder moved this span rather than the offsets holding."""
+        return self.strategy is not None and self.strategy != POSITION
+
+    def landed(self, event: str) -> "Placement":
+        """The same placement, now recorded."""
+        return Placement(
+            annotation=self.annotation,
+            anchor=self.anchor,
+            strategy=self.strategy,
+            ambiguous=self.ambiguous,
+            event=event,
+        )
+
+
+@dataclass(frozen=True)
+class HarvestReport:
+    """What one pass over an annotated document found, and whether it was kept.
+
+    A dry run and an applied run compute the same report — the placements, the
+    refusals, and the text that would be written are all decided before anything
+    is appended. ``applied`` is what separates them, and it is the only thing
+    that differs besides the event ids.
+    """
+
+    #: The round the annotations were recorded against.
+    round: str
+    #: The snapshot that round froze — the text the anchors verify in.
+    base: str
+    #: The document with every harvested marker removed.
+    clean: str
+    #: True when ``clean`` differs from what is on disk, i.e. there is a rewrite
+    #: to do. False when the markers were all skipped, or there were none.
+    rewrite: bool
+    #: False for a dry run: nothing was appended and the file was not touched.
+    applied: bool
+    placements: list[Placement] = field(default_factory=list)
+    #: Markers left in the document — see :class:`~specround.critic.Skipped`.
+    skipped: list[Skipped] = field(default_factory=list)
+
+    @property
+    def comments(self) -> list[Placement]:
+        return [p for p in self.placements if p.annotation.kind == COMMENT]
+
+    @property
+    def suggestions(self) -> list[Placement]:
+        return [p for p in self.placements if p.annotation.suggestion]
+
+    @property
+    def found(self) -> bool:
+        """True when there was anything to harvest."""
+        return bool(self.placements)
+
+    @property
+    def events(self) -> list[str]:
+        return [p.event for p in self.placements if p.event is not None]
 
 
 class ReviewStore:
@@ -597,6 +694,170 @@ class ReviewStore:
             if comment.anchor is not None and state.rounds[comment.round].doc == key
         ]
 
+    # -- inline annotations ----------------------------------------------
+
+    def harvest_document(
+        self,
+        doc: Path,
+        round_id: str,
+        *,
+        author: str,
+        apply: bool = False,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> HarvestReport:
+        """Read the CriticMarkup markers out of ``doc`` and record them (G6).
+
+        Comments become ``comment.add``, edits become ``suggestion.add``, and the
+        document is rewritten without the markers — which is the order the two
+        halves have to happen in. **The anchors count in the text the markers are
+        gone from**, because that is the text the file will hold and the text the
+        round's base is: leaving a marker in would push every offset after it.
+
+        With ``apply=False`` (the default) nothing is appended and the file is not
+        touched. The report is otherwise identical, so a preview cannot promise
+        something the applied run would refuse — including the refusals, which
+        are raised on the dry run too.
+
+        The append comes **before** the rewrite. If the process dies between
+        them, the annotations are in the ledger *and* still in the file: a second
+        harvest would record them twice, which a reader can see. The other order
+        risks losing them from both, and a lost comment is the failure this whole
+        format is built against (G3).
+        """
+        path = canonical_path(doc)
+        if not path.is_file():
+            raise SpecroundError(f"cannot harvest {path}: not a file")
+        key = self.doc_key(path)
+        round_ = self.fold().rounds.get(round_id)
+        if round_ is None or round_.doc != key:
+            raise InvariantError(f"no round {round_id!r} on {key}")
+        text = _document_text(path)
+        harvest = parse(text)
+        base = self._snapshot_text(round_.base)
+        placements = [
+            self._place(round_, harvest.clean, base, text, annotation, min_similarity)
+            for annotation in harvest.annotations
+        ]
+        report = HarvestReport(
+            round=round_.id,
+            base=round_.base,
+            clean=harvest.clean,
+            rewrite=harvest.clean != text,
+            applied=False,
+            placements=placements,
+            skipped=harvest.skipped,
+        )
+        if not apply:
+            return report
+        recorded = [
+            placement.landed(self._record(round_, key, harvest.clean, placement, author))
+            for placement in placements
+        ]
+        if report.rewrite:
+            _write_document(path, harvest.clean)
+        return HarvestReport(
+            round=report.round,
+            base=report.base,
+            clean=report.clean,
+            rewrite=report.rewrite,
+            applied=True,
+            placements=recorded,
+            skipped=report.skipped,
+        )
+
+    def _place(
+        self,
+        round_: Round,
+        clean: str,
+        base: str,
+        text: str,
+        annotation: Annotation,
+        min_similarity: float,
+    ) -> Placement:
+        """Where an annotation's span sits in the round's base.
+
+        Two of the three answers are exact, and they are the two workflows people
+        actually have:
+
+        * **Annotated after the round opened.** Removing the markers restores the
+          text the round froze, so the clean offsets *are* base offsets.
+        * **Annotated before the round opened.** The base still holds the
+          markers, so the span is inside one of them — three characters right of
+          its opener (:attr:`~specround.critic.Annotation.source_span`). Also
+          exact, and deliberately not a search: the offsets are known, and
+          matching for something you can compute is how a tool ends up guessing.
+
+        Only genuine drift — prose that moved as well — reaches the ladder, run
+        backwards the way the diff view already runs it (§5.1). No second matcher.
+
+        A span the ladder cannot place refuses the whole harvest. The batch is
+        atomic because the clean text has to be both the anchor basis *and* the
+        text written to disk: leaving one marker behind would shift every offset
+        after it, so "harvest the rest" is not a smaller version of this
+        operation. The exit is in the message and it works — re-opening the round
+        on the annotated document lands in the exact second case above.
+        """
+        span = (annotation.start, annotation.end)
+        if clean == base:
+            return Placement(annotation=annotation, anchor=anchor_for(base, *span))
+        if text == base:
+            start, end = annotation.source_span
+            if end <= len(base) and base[start:end] == annotation.removed:
+                return Placement(annotation=annotation, anchor=anchor_for(base, start, end))
+            # The arithmetic disagrees with the bytes. That should not happen, and
+            # falling through to the ladder is the safe way to be wrong about it.
+        rebind = reanchor(anchor_for(clean, *span), base, min_similarity=min_similarity)
+        if rebind.orphaned:
+            raise InvariantError(
+                f"the {annotation.kind} on line {annotation.source_line} has no place in "
+                f"the base round {round_.id} froze ({rebind.reason}) — the document has "
+                "moved on beyond its markers, so close this round and open a new one on "
+                "the document as it is now, or take that marker off text the round cannot see"
+            )
+        assert rebind.anchor is not None  # found, by the branch above
+        return Placement(
+            annotation=annotation,
+            anchor=rebind.anchor,
+            strategy=rebind.strategy,
+            ambiguous=rebind.ambiguous,
+        )
+
+    def _record(
+        self, round_: Round, key: str, clean: str, placement: Placement, author: str
+    ) -> str:
+        """Append the event one placement stands for.
+
+        A carried anchor takes an ``ext`` note saying which rung placed it, for
+        the reason the view records the same thing (§2): without it a comment the
+        fuzzy rung moved reads exactly like one cut straight out of the base, and
+        §4 is explicit that the first is worth a person's time.
+        """
+        annotation = placement.annotation
+        ext: dict[str, Any] | None = None
+        if placement.carried:
+            ext = {
+                "harvest": {
+                    "space": CLEAN,
+                    "strategy": placement.strategy,
+                    "ambiguous": placement.ambiguous,
+                }
+            }
+        if annotation.kind == COMMENT:
+            return self.add_comment(
+                round_.id,
+                author=author,
+                body=annotation.body,
+                anchor=placement.anchor,
+                ext=ext,
+            )
+        return self.add_suggestion(
+            round_.id,
+            author=author,
+            patch=unified_patch(clean, annotation.proposed(clean), label=key),
+            anchor=placement.anchor,
+            ext=ext,
+        )
+
     def orphans(self, doc: Path | None = None) -> list[Comment]:
         """Comments whose text the latest re-anchor pass could not find."""
         state = self.fold()
@@ -617,3 +878,40 @@ class ReviewStore:
         key = self.doc_key(doc) if doc is not None else None
         rounds = [r for r in self.fold().rounds.values() if key is None or r.doc == key]
         return rounds[-1] if rounds else None
+
+
+# -- document text -------------------------------------------------------
+#
+# Bytes both ways, decoded and encoded here rather than by ``read_text``. A
+# snapshot keeps the bytes it was handed (§5), so ``\r\n`` survives into the base
+# text — and text-mode IO would translate it on the way in *and* on the way out.
+# Either translation makes the clean text a different string from the base for a
+# CRLF document, which is the quiet kind of wrong: the anchors would be off by
+# one character per line and nothing would fail.
+
+
+def _document_text(path: Path) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise SpecroundError(f"cannot read {path}: {exc}") from exc
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SpecroundError(f"{path} is not valid UTF-8: {exc}") from exc
+
+
+def _write_document(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text``, via a temporary file in the same folder.
+
+    A rewrite of somebody's document is the one destructive thing in this
+    package, so it is never a partial write: the replace is atomic, and a failure
+    before it leaves the original exactly as it was.
+    """
+    temp = path.with_name(path.name + _HARVEST_TEMP)
+    try:
+        temp.write_bytes(text.encode("utf-8"))
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
