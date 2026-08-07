@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from specround.cli import CLI_SCHEMA, main
+from specround.imports import IMPORT_SCHEMA
 from specround.store import ReviewStore
 from specround.webview import WebView
 
@@ -217,6 +218,126 @@ def test_reanchor_a_second_time_says_nothing_new(run, doc, opened):
     again = run("reanchor", doc, "--author", "agent:reanchor", "--json")
     assert again.json["changed"] is False
     assert again.json["rebound"] == []
+
+
+def an_import_file(tmp_path, *comments, source="cmux", name="in.json") -> Path:
+    path = tmp_path / name
+    path.write_text(
+        json.dumps({"schema": IMPORT_SCHEMA, "source": source, "comments": list(comments)}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_import_is_a_dry_run_until_apply(run, doc, opened, tmp_path):
+    incoming = an_import_file(
+        tmp_path, {"id": "ext-1", "body": "too short for the proxy", "quote": "30 seconds"}
+    )
+    result = run("import", doc, "--file", incoming, "--author", "agent:importer", "--json")
+    assert result.code == 0
+    assert result.json["applied"] is False
+    assert result.json["imported"] == []
+    assert [entry["source_id"] for entry in result.json["planned"]] == ["ext-1"]
+    # The point of the dry run: the plan is readable and the ledger is untouched.
+    assert run("comments", doc, "--json").json["comments"] == []
+
+
+def test_import_records_the_comments_and_where_they_came_from(run, doc, opened, tmp_path):
+    incoming = an_import_file(
+        tmp_path,
+        {
+            "id": "ext-1",
+            "body": "too short for the proxy",
+            "quote": "30 seconds",
+            "author": "bob",
+            "ts": "2026-08-06T06:07:16Z",
+        },
+    )
+    result = run(
+        "import", doc, "--file", incoming, "--apply", "--author", "agent:importer", "--json"
+    )
+    assert result.code == 0
+    assert result.json["applied"] is True
+    assert result.json["counts"] == {"total": 1, "planned": 1, "skipped": 0, "rejected": 0}
+
+    listed = run("comments", doc, "--json").json["comments"]
+    assert len(listed) == 1
+    assert listed[0]["author"] == "bob"
+    assert listed[0]["anchor"]["exact"] == "30 seconds"
+    assert listed[0]["ext"] == {
+        "import": {"source": "cmux", "id": "ext-1", "ts": "2026-08-06T06:07:16Z"}
+    }
+
+
+def test_importing_the_same_file_twice_records_once(run, doc, opened, tmp_path):
+    incoming = an_import_file(
+        tmp_path, {"id": "ext-1", "body": "too short", "quote": "30 seconds"}
+    )
+    run("import", doc, "--file", incoming, "--apply", "--author", "agent:importer")
+    again = run(
+        "import", doc, "--file", incoming, "--apply", "--author", "agent:importer", "--json"
+    )
+    assert again.code == 0
+    assert again.json["planned"] == []
+    assert [entry["source_id"] for entry in again.json["skipped"]] == ["ext-1"]
+    assert len(run("comments", doc, "--json").json["comments"]) == 1
+
+
+def test_import_refuses_one_item_without_dropping_the_rest(run, doc, opened, tmp_path):
+    incoming = an_import_file(
+        tmp_path,
+        {"id": "ext-1", "body": "lands", "quote": "30 seconds"},
+        {"id": "ext-2", "body": "nowhere to go", "quote": "a line from another document"},
+    )
+    result = run(
+        "import", doc, "--file", incoming, "--apply", "--author", "agent:importer", "--json"
+    )
+    # Exit 0 with the loss reported, the shape ``reanchor`` already has for a
+    # comment it could not place — one moved paragraph is not a failed run.
+    assert result.code == 0
+    assert [entry["source_id"] for entry in result.json["imported"]] == ["ext-1"]
+    assert result.json["rejected"][0]["source_id"] == "ext-2"
+    assert "is not in the base" in result.json["rejected"][0]["reason"]
+    assert len(run("comments", doc, "--json").json["comments"]) == 1
+
+
+def test_import_prints_the_whole_reason_it_refused(run, doc, opened, tmp_path):
+    incoming = an_import_file(
+        tmp_path, {"id": "ext-1", "body": "b", "quote": "a line from another document"}
+    )
+    result = run("import", doc, "--file", incoming, "--author", "agent:importer")
+    assert result.code == 0
+    assert "nothing was guessed at" in result.out
+    assert "is not in the base" in result.out
+
+
+def test_import_reads_stdin(run, doc, opened, monkeypatch):
+    payload = json.dumps(
+        {
+            "schema": IMPORT_SCHEMA,
+            "source": "cmux",
+            "comments": [{"id": "ext-1", "body": "b", "quote": "30 seconds"}],
+        }
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
+    result = run("import", doc, "--file", "-", "--apply", "--author", "agent:importer", "--json")
+    assert result.code == 0
+    assert result.json["counts"]["planned"] == 1
+
+
+def test_a_malformed_import_file_is_a_command_to_fix(run, doc, opened, tmp_path):
+    path = tmp_path / "in.json"
+    path.write_text('{"schema": "rdjson/v0", "source": "x", "comments": []}', encoding="utf-8")
+    result = run("import", doc, "--file", path, "--author", "agent:importer", "--json")
+    assert result.code == 2
+    assert result.error["kind"] == "usage"
+
+
+def test_importing_with_no_open_round_is_a_history_to_change(run, doc, tmp_path):
+    incoming = an_import_file(tmp_path, {"id": "ext-1", "body": "b", "quote": "30 seconds"})
+    result = run("import", doc, "--file", incoming, "--author", "agent:importer", "--json")
+    assert result.code == 3
+    assert result.error["kind"] == "state"
 
 
 def test_dispose_settles_a_comment_with_its_reason(run, doc, opened):

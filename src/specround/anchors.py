@@ -139,6 +139,26 @@ def anchor_for(text: str, start: int, end: int, *, context: int = CONTEXT_CHARS)
     return anchor
 
 
+def count_occurrences(text: str, quote: str) -> int:
+    """How many appearances of ``quote`` :func:`anchor_for_quote` can address.
+
+    Stepping by one character rather than by the length of the quote, because
+    that is exactly how :func:`anchor_for_quote` walks them: ``str.count`` skips
+    overlaps, so ``"aa"`` in ``"aaa"`` would read as unique here and still be
+    addressable as occurrence 1 there. A count that disagrees with the indexer
+    is a count that waves through the one case it exists to catch — which is why
+    it lives beside the indexer instead of next to each caller that asks.
+    """
+    if not quote:
+        return 0
+    total = 0
+    at = text.find(quote)
+    while at != -1:
+        total += 1
+        at = text.find(quote, at + 1)
+    return total
+
+
 def anchor_for_quote(text: str, quote: str, *, occurrence: int = 0, context: int = CONTEXT_CHARS) -> Anchor:
     """Anchor the ``occurrence``-th appearance of ``quote`` (0-based).
 

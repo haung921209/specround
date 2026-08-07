@@ -89,6 +89,26 @@ document, the spans are exact. If the prose moved as well, they are carried into
 the round's base by the same ladder `reanchor` uses, and the ones that were
 carried are flagged for you to look at.
 
+## Comments made somewhere else
+
+Review comments get left in other tools — a diff viewer with a line gutter, an
+editor plugin. `import` brings them in, through a documented file format and
+never through knowledge of the tool that made them.
+
+```bash
+adapters/cmux-diff-comments.py --doc SPEC.md > incoming.json
+specround import SPEC.md --file incoming.json            # the plan; nothing written
+specround import SPEC.md --file incoming.json --apply    # record it
+```
+
+The core reads [`specround.import/v0`](docs/import-format.md) and nothing else;
+per-tool converters live in [`adapters/`](adapters) and import nothing from the
+package. Each item quotes the text it is about, and an item whose quote is not
+in the round's base is refused *by itself* with a reason — nothing is guessed
+onto a neighbouring span. Where a comment came from is recorded, so importing
+the same file twice imports it once and re-running after fixing one item is
+safe.
+
 ## In a browser
 
 ```bash

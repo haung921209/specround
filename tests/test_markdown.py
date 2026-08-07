@@ -67,7 +67,14 @@ def exactness(text: str) -> list[Run]:
 
 
 @pytest.mark.parametrize(
-    "name", ["SPEC.md", "README.md", "docs/ledger-format.md", "docs/research/prior-art.md"]
+    "name",
+    [
+        "SPEC.md",
+        "README.md",
+        "docs/ledger-format.md",
+        "docs/import-format.md",
+        "docs/research/prior-art.md",
+    ],
 )
 def test_runs_describe_the_document_they_came_from(name):
     """The invariant, over the documents this tool is actually used on."""
