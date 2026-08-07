@@ -21,6 +21,7 @@ import urllib.request
 import pytest
 
 from specround import markdown
+from specround.anchors import anchor_for
 from specround.webview import _GETS, _POSTS, VIEW_SCHEMA, WebView, page
 
 REVISED_QUOTE = "Timeouts are 45 seconds."
@@ -69,6 +70,38 @@ def state(view):
     status, payload = call(view, "/api/state")
     assert status == 200
     return payload
+
+
+#: The script fences off the functions that touch neither the DOM nor the page's
+#: state, so that this file can lift them out and run them.
+_LIFTED = re.compile(r"// -- the pure part.*?\n(.*?)\n// -- end of the pure part", re.DOTALL)
+
+
+def in_node(expression, given, tmp_path):
+    """Evaluate ``expression`` against the page's own pure functions.
+
+    The page is one file with no build step and no test runner, so the only part
+    of it a machine here can hold to account is the part that needs no browser to
+    mean anything. Lifting that part and running it is the same best-effort
+    footing as the syntax check further down, for the same reason: the engine is
+    not a dependency of this package and will not become one.
+
+    ``given`` arrives in the lifted script as ``input``.
+    """
+    engine = shutil.which("node") or shutil.which("bun")
+    if engine is None:
+        pytest.skip("no javascript engine on this machine")
+    block = _LIFTED.search(page().decode("utf-8"))
+    assert block is not None, "the page should still fence off its pure part"
+    source = tmp_path / "lifted.js"
+    source.write_text(
+        f"{block.group(1)}\nconst input = {json.dumps(given)};\n"
+        f"console.log(JSON.stringify({expression}));\n",
+        encoding="utf-8",
+    )
+    finished = subprocess.run([engine, str(source)], capture_output=True, text=True, timeout=60)
+    assert finished.returncode == 0, finished.stderr
+    return json.loads(finished.stdout)
 
 
 # -- the door ------------------------------------------------------------
@@ -306,6 +339,136 @@ def test_text_only_the_revision_has_is_refused_with_the_two_ways_out(opened, sto
     assert "whole document" in payload["error"]["message"]
     assert "new round" in payload["error"]["message"]
     assert not store.fold().comments
+
+
+# -- the line gutter (G6) ------------------------------------------------
+#
+# Clicking a line number comments on that line. It is the gesture the first live
+# round reached for before anything else, and it is cheaper than a drag for the
+# comment people actually write most ("this line is wrong"). What makes it worth
+# no new concepts is that it lands in the anchor space that was already there:
+# the line's span is the run the gutter numbers, so the two gestures are one
+# comment, and a line the revision alone has takes the exit that already exists.
+
+
+def test_the_raw_gutter_numbers_the_lines_the_document_has(tmp_path, doc_text):
+    """The page splits the raw text itself, so its lines must be the real ones.
+
+    Raw mode is drawn from the base string rather than from anything the server
+    laid out, which makes this the one offset the page computes instead of
+    receiving. ``lines_of`` is the oracle it has to agree with.
+    """
+    lines = in_node("rawLines(input)", doc_text, tmp_path)
+    pieces = markdown.lines_of(doc_text)
+    assert [(piece.start, piece.text) for piece in pieces] == [
+        (line["start"], line["text"]) for line in lines[: len(pieces)]
+    ]
+    # The document ends with a break, so raw mode shows the empty line after it.
+    # That is not an off-by-one to trim — the gutter beside it is where a reviewer
+    # clicks to say something belongs at the end of the document.
+    assert lines[len(pieces) :] == [{"start": len(doc_text), "text": ""}]
+
+
+def test_a_line_click_and_a_selection_of_that_line_are_the_same_anchor(tmp_path, doc_text):
+    """The convergence claim from SPEC §3, at the level of the arithmetic."""
+    spans = in_node(
+        'rawLines(input).map((line) => spanOfRun("base", line.start, line.text, input))',
+        doc_text,
+        tmp_path,
+    )
+    for span, piece in zip(spans, markdown.lines_of(doc_text)):
+        assert span == {
+            "space": "base",
+            "start": piece.start,
+            "end": piece.start + len(piece.text),
+            "quote": piece.text,
+        }
+        # Exactly the span a drag across that line yields, and the anchor machine
+        # already takes it — no second converter, and nothing to keep in step.
+        assert anchor_for(doc_text, span["start"], span["end"]).exact == piece.text
+    # An empty line has nothing to quote, so it comes out zero-width: an
+    # insertion point, which the ledger has a reading for (§5) and the painter
+    # already draws as a caret. "Something belongs here" is the honest comment.
+    empty = spans[-1]
+    assert empty["start"] == empty["end"] == len(doc_text)
+    assert anchor_for(doc_text, empty["start"], empty["end"]).exact == ""
+
+
+def test_a_line_of_the_base_becomes_a_comment_on_that_line(opened, store, doc_text, tmp_path):
+    piece = next(p for p in markdown.lines_of(doc_text) if "30 seconds" in p.text)
+    span = in_node(
+        'spanOfRun("base", input.start, input.text, input.base)',
+        {"start": piece.start, "text": piece.text, "base": doc_text},
+        tmp_path,
+    )
+    status, payload = call(
+        opened,
+        "/api/comment",
+        {
+            "space": span["space"],
+            "start": span["start"],
+            "end": span["end"],
+            "body": "this whole line is vague",
+        },
+    )
+    assert status == 200
+    assert payload["comment"]["anchor"]["exact"] == piece.text
+    anchored(store, doc_text, piece.text)
+
+
+def test_the_gutter_of_a_revision_only_line_gets_the_refusal_that_already_exists(
+    opened, store, doc, doc_text, tmp_path
+):
+    """One rejection, not two: the line takes the exit a selection takes.
+
+    The span is not written by hand — it is what the page's arithmetic makes of
+    the diff row the server sent, which is the only way this test would notice
+    the two of them drifting apart.
+    """
+    doc.write_text(
+        doc_text + "\n## Retry policy\n\nRetries are three, with jitter.\n", encoding="utf-8"
+    )
+    live = doc.read_text(encoding="utf-8")
+    rows = state(opened)["diff"]["rows"]
+    added = next(row for row in rows if row["op"] == "added" and row["text"].startswith("Retries"))
+    span = in_node(
+        'spanOfRun("revision", input.start, input.text, input.live)',
+        {"start": added["live_start"], "text": added["text"], "live": live},
+        tmp_path,
+    )
+    assert span == {
+        "space": "revision",
+        "start": added["live_start"],
+        "end": added["live_start"] + len(added["text"]),
+        "quote": added["text"],
+    }
+    status, payload = call(
+        opened,
+        "/api/comment",
+        {
+            "space": span["space"],
+            "start": span["start"],
+            "end": span["end"],
+            "body": "jitter needs a bound",
+        },
+    )
+    assert status == 409
+    assert "whole document" in payload["error"]["message"]
+    assert "new round" in payload["error"]["message"]
+    assert not store.fold().comments
+
+
+def test_the_gutter_looks_clickable_only_where_a_click_records_something(tmp_path):
+    """The affordance and its gate are one class name, written by one function.
+
+    Renaming either half leaves a control that works and does not look like one —
+    the same failure the first live round hit, approached from the other side.
+    """
+    assert in_node('[modeClass("raw", true), modeClass("diff", false)]', None, tmp_path) == [
+        "raw live",
+        "diff",
+    ]
+    assert "#doc.live .line .ln" in page().decode("utf-8")
 
 
 # -- suggestions (G8) ----------------------------------------------------
