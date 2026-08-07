@@ -11,6 +11,8 @@ before it (the base still holds the markers, so the span is inside one). Only
 genuine drift reaches the re-anchor ladder. Each has its own section.
 """
 
+from pathlib import Path
+
 import pytest
 
 from specround.critic import MarkupError
@@ -52,6 +54,17 @@ def harvested(store, doc, round_id):
     """The ordinary case, applied: a round, then markers, then a harvest."""
     annotate(doc)
     return store.harvest_document(doc, round_id, author="bob", apply=True)
+
+
+@pytest.fixture
+def clean_round(store, doc):
+    """Freeze ``text`` as the round's base, so only later edits count as drift."""
+
+    def open_on(text):
+        annotate(doc, text)
+        return store.open_round(doc, author="alice")
+
+    return open_on
 
 
 # -- the ordinary case: annotated after the round opened -----------------
@@ -338,3 +351,66 @@ def test_the_report_carries_the_event_ids_only_once_applied(store, doc, round_id
     applied = store.harvest_document(doc, round_id, author="bob", apply=True)
     assert len(applied.events) == 4
     assert all(event in store.fold().comments for event in applied.events)
+
+
+# -- code is a specimen, not an instruction ------------------------------
+
+
+def test_markers_in_code_are_not_harvested_by_default(store, doc, round_id):
+    annotate(doc, HARVESTED + "\nWrite `{--this--}` to propose a deletion.\n")
+    report = store.harvest_document(doc, round_id, author="bob", apply=True)
+    # A document that documents this syntax has to be able to write it.
+    assert report.found is False
+    assert report.skipped == []
+    assert "`{--this--}`" in doc.read_text(encoding="utf-8")
+    assert kinds(store) == ["round.open"]
+
+
+def test_markers_in_a_fenced_block_are_not_harvested(store, doc, round_id):
+    annotate(doc, HARVESTED + "\n```bash\nspecround harvest {>>why<<}\n```\n")
+    assert store.harvest_document(doc, round_id, author="bob").found is False
+
+
+def test_a_marker_in_prose_still_lands_beside_one_in_code(store, doc, clean_round):
+    # The specimen was in the base too, so the only drift is the marker in prose.
+    round_id = clean_round(HARVESTED + "\nWrite `{>>specimen<<}` for one.\n")
+    annotate(
+        doc,
+        HARVESTED.rstrip("\n") + "{>>real<<}\n\nWrite `{>>specimen<<}` for one.\n",
+    )
+    report = store.harvest_document(doc, round_id, author="bob", apply=True)
+    (placement,) = report.placements
+    assert placement.annotation.body == "real"
+    assert "`{>>specimen<<}`" in doc.read_text(encoding="utf-8")
+
+
+def test_the_rule_can_be_turned_off(store, doc, clean_round):
+    round_id = clean_round(HARVESTED + "\nWrite `{--this--}` to propose a deletion.\n")
+    report = store.harvest_document(doc, round_id, author="bob", verbatim=(), apply=True)
+    (placement,) = report.placements
+    assert placement.annotation.removed == "this"
+    assert "`this`" in doc.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", ["SPEC.md", "README.md", "docs/research/prior-art.md"])
+def test_this_repository_harvests_to_nothing(store, tmp_path, clock, name):
+    """The regression this rule exists for, run end to end on the real files.
+
+    Measured before it existed: SPEC.md offered eight of its own specimens as
+    review comments and would have had them deleted from its prose, README.md
+    six, and docs/research/prior-art.md could not be harvested at all — the
+    ``{~~old~>new~~}`` line in its syntax table raised on the empty
+    substitution. The feature was unable to be documented where it is used.
+    """
+    source = Path(__file__).resolve().parent.parent / name
+    doc = tmp_path / Path(name).name
+    doc.write_bytes(source.read_bytes())
+    store = ReviewStore.for_document(doc, clock=clock)
+    round_id = store.open_round(doc, author="alice")
+    before = doc.read_bytes()
+
+    report = store.harvest_document(doc, round_id, author="bob", apply=True)
+
+    assert report.found is False
+    assert report.skipped == []
+    assert doc.read_bytes() == before

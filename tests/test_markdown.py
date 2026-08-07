@@ -11,7 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from specround.markdown import Chunk, Piece, Run, lines_of, render, runs_of
+from specround.markdown import (
+    Chunk,
+    Piece,
+    Run,
+    code_spans,
+    lines_of,
+    render,
+    runs_of,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -308,3 +316,98 @@ def test_an_unsafe_autolink_keeps_its_text_and_goes_nowhere():
     assert 'href=""' in html
     assert 'href="javascript' not in html
     assert [r.text for r in exactness(text)] == ["javascript:danger"]
+
+
+# -- code, for the harvester ---------------------------------------------
+#
+# ``code_spans`` is not about rendering. It answers the harvester's question —
+# "is this marker a specimen or an instruction" — and the assertion form that
+# matters is the same one the rest of this file uses: the returned offsets have
+# to slice the document back out.
+
+
+def sliced(text):
+    return [text[low:high] for low, high in code_spans(text)]
+
+
+def test_an_inline_span_is_named_by_its_offsets():
+    text = "Write `{--this--}` to propose a deletion.\n"
+    assert sliced(text) == ["`{--this--}`"]
+
+
+def test_a_fenced_block_includes_its_fences():
+    text = "before\n\n```bash\nspecround harvest {--x--}\n```\n\nafter\n"
+    assert sliced(text) == ["```bash", "specround harvest {--x--}", "```"]
+
+
+def test_a_tilde_fence_is_a_fence_too():
+    text = "~~~\n{>>inside<<}\n~~~\n"
+    assert sliced(text) == ["~~~", "{>>inside<<}", "~~~"]
+
+
+def test_a_fence_is_not_closed_by_one_carrying_an_info_string():
+    text = "```\none\n``` python\ntwo\n```\n"
+    # The middle line is content, not a close — otherwise "two" would read as
+    # prose and a marker on it would be harvested.
+    assert sliced(text) == ["```", "one", "``` python", "two", "```"]
+
+
+def test_an_unclosed_fence_runs_to_the_end():
+    assert sliced("```\n{--x--}\n") == ["```", "{--x--}"]
+
+
+def test_several_spans_on_one_line():
+    text = "`{++a++}` and `{--b--}` both.\n"
+    assert sliced(text) == ["`{++a++}`", "`{--b--}`"]
+
+
+def test_a_double_backtick_span_may_contain_a_single_one():
+    text = "``a ` b`` tail\n"
+    assert sliced(text) == ["``a ` b``"]
+
+
+def test_a_backtick_pairs_with_the_next_run_of_its_own_length():
+    text = "a ` b and `c` d\n"
+    # CommonMark's rule, and worth a test because the result surprises: the first
+    # tick pairs with the *next* single tick, so "c" ends up outside the span
+    # rather than inside it. A reader of the rendered page sees the same thing.
+    assert sliced(text) == ["` b and `"]
+
+
+def test_a_run_that_never_closes_is_not_a_span():
+    text = "propose it with {--x--} or ` alone\n"
+    # The stray tick opens nothing, so the marker before it stays prose and is
+    # harvested. Over-reaching here would silently swallow a real annotation,
+    # and nothing surfaces that.
+    assert sliced(text) == []
+
+
+def test_prose_with_no_code_has_no_spans():
+    assert code_spans("Just a sentence.\n\nAnd another.\n") == []
+
+
+def test_spans_are_ordered_and_disjoint():
+    text = "`a` b `c`\n\n```\nd\n```\n\n`e`\n"
+    spans = code_spans(text)
+    assert spans == sorted(spans)
+    assert all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
+
+
+@pytest.mark.parametrize("name", ["SPEC.md", "README.md", "docs/ledger-format.md"])
+def test_every_marker_in_this_repo_is_inside_code(name):
+    """The documents this tool reviews quote the syntax it harvests.
+
+    Not a style check. Before ``code_spans`` existed, harvesting SPEC.md read
+    eight of its specimens as review comments and deleted them from the prose,
+    and docs/research/prior-art.md could not be harvested at all. The rule is
+    what lets this feature be documented in the documents it operates on.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    spans = code_spans(text)
+    for opener in ("{>>", "{++", "{--", "{~~", "{=="):
+        at = text.find(opener)
+        while at != -1:
+            assert any(low <= at < high for low, high in spans), (
+                f"{name}: {opener} at offset {at} is in prose — the harvester would eat it"
+            )
+            at = text.find(opener, at + 1)

@@ -34,7 +34,15 @@ import re
 from dataclasses import dataclass
 from typing import Iterator, Sequence
 
-__all__ = ["SAFE_SCHEMES", "Piece", "Run", "render", "runs_of", "safe_href"]
+__all__ = [
+    "SAFE_SCHEMES",
+    "Piece",
+    "Run",
+    "code_spans",
+    "render",
+    "runs_of",
+    "safe_href",
+]
 
 #: Everything ``str.splitlines`` treats as a break, so a line's text never keeps
 #: one and offsets still count every byte of it.
@@ -187,6 +195,83 @@ def lines_of(text: str) -> list[Piece]:
         out.append(Piece(at, content, raw[len(content) :]))
         at += len(raw)
     return out
+
+
+def code_spans(text: str) -> list[tuple[int, int]]:
+    """Half-open ranges of ``text`` that are code rather than prose.
+
+    Fenced blocks (their fence lines included) and inline backtick spans. What
+    wants this is the inline-annotation harvester: a document that explains an
+    annotation syntax has to be able to *write* that syntax, and every one of
+    these spec files quotes ``{--like this--}`` in backticks. Without somewhere
+    to say "this is a specimen, not an instruction", the harvester mangles the
+    documentation of its own feature — including this repository's.
+
+    Deliberately narrow. Indented code blocks are not recognised, and a code span
+    is matched within one line: a rule that decides whether a reviewer's marker
+    counts should be one a reader can apply by eye, and "it is between backticks
+    on this line" is that. Missing a construct here costs a specimen being
+    harvested, which the dry run shows; over-reaching would silently swallow a
+    real annotation, which nothing shows.
+
+    Ranges are returned in ascending order and never overlap.
+    """
+    spans: list[tuple[int, int]] = []
+    fence: str | None = None
+    for piece in lines_of(text):
+        marker = _FENCE.match(piece.text)
+        if fence is not None:
+            # Everything in the block is verbatim, the closing fence with it.
+            spans.append((piece.start, piece.end))
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                if not marker.group(2):  # a closing fence carries no info string
+                    fence = None
+            continue
+        if marker:
+            fence = marker.group(1)
+            spans.append((piece.start, piece.end))
+            continue
+        spans.extend(_inline_code(piece))
+    return spans
+
+
+def _inline_code(piece: Piece) -> list[tuple[int, int]]:
+    """Backtick spans on one line, closed by a run of the same length."""
+    spans: list[tuple[int, int]] = []
+    text = piece.text
+    at = 0
+    while at < len(text):
+        if text[at] != "`":
+            at += 1
+            continue
+        run = at
+        while run < len(text) and text[run] == "`":
+            run += 1
+        ticks = text[at:run]
+        close = _closing_run(text, ticks, run)
+        if close == -1:
+            # An unmatched run is not a span. Resuming after it rather than
+            # inside it keeps ``a ` b `c` `` from reading as one long span.
+            at = run
+            continue
+        spans.append((piece.start + at, piece.start + close + len(ticks)))
+        at = close + len(ticks)
+    return spans
+
+
+def _closing_run(text: str, ticks: str, at: int) -> int:
+    """Offset of the next run of exactly ``ticks``, or ``-1``."""
+    while True:
+        found = text.find(ticks, at)
+        if found == -1:
+            return -1
+        after = found + len(ticks)
+        if after >= len(text) or text[after] != "`":
+            return found
+        # Part of a longer run, which does not close this one — step past it.
+        at = after
+        while at < len(text) and text[at] == "`":
+            at += 1
 
 
 def render(text: str) -> str:

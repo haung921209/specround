@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from specround.anchors import Anchor, anchor_for, anchor_for_quote
 from specround.critic import COMMENT, Annotation, Skipped, parse
@@ -39,6 +39,7 @@ from specround.events import (
 )
 from specround.fold import Comment, Round, State
 from specround.ledger import Clock, Ledger
+from specround.markdown import code_spans
 from specround.locations import (
     DIRECTORY,
     DOCUMENT,
@@ -703,6 +704,7 @@ class ReviewStore:
         *,
         author: str,
         apply: bool = False,
+        verbatim: Sequence[tuple[int, int]] | None = None,
         min_similarity: float = MIN_SIMILARITY,
     ) -> HarvestReport:
         """Read the CriticMarkup markers out of ``doc`` and record them (G6).
@@ -723,6 +725,13 @@ class ReviewStore:
         harvest would record them twice, which a reader can see. The other order
         risks losing them from both, and a lost comment is the failure this whole
         format is built against (G3).
+
+        ``verbatim`` names ranges where a marker is a specimen rather than an
+        instruction. It defaults to the document's code
+        (:func:`~specround.markdown.code_spans`), because a spec that documents
+        this syntax quotes it in backticks — every file in this repository does —
+        and harvesting those would mangle the documentation of the feature. Pass
+        ``()`` to read markers everywhere.
         """
         path = canonical_path(doc)
         if not path.is_file():
@@ -732,7 +741,7 @@ class ReviewStore:
         if round_ is None or round_.doc != key:
             raise InvariantError(f"no round {round_id!r} on {key}")
         text = _document_text(path)
-        harvest = parse(text)
+        harvest = parse(text, verbatim=code_spans(text) if verbatim is None else verbatim)
         base = self._snapshot_text(round_.base)
         placements = [
             self._place(round_, harvest.clean, base, text, annotation, min_similarity)

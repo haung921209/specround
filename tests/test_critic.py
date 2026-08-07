@@ -311,3 +311,58 @@ def test_source_span_holds_for_every_anchored_form():
     for annotation in parse(text).annotations:
         start, end = annotation.source_span
         assert text[start:end] == annotation.removed
+
+
+# -- verbatim ranges: a specimen is not an instruction -------------------
+
+
+def test_a_marker_inside_a_verbatim_range_is_not_read():
+    text = "Write `{--this--}` to propose a deletion.\n"
+    span = (text.index("`"), text.rindex("`") + 1)
+    harvest = parse(text, verbatim=[span])
+    assert harvest.clean == text
+    assert harvest.annotations == []
+    # Not reported either: a spec quoting its own syntax is not a reviewer who
+    # left something behind, so there is nothing to tell them about.
+    assert harvest.skipped == []
+
+
+def test_markers_outside_the_ranges_are_still_read():
+    text = "Write `{--this--}` and mean {--that--}.\n"
+    span = (text.index("`"), text.rindex("`") + 1)
+    harvest = parse(text, verbatim=[span])
+    assert harvest.clean == "Write `{--this--}` and mean that.\n"
+    (annotation,) = harvest.annotations
+    assert annotation.removed == "that"
+    assert harvest.clean[annotation.start : annotation.end] == "that"
+
+
+def test_a_verbatim_range_shields_an_otherwise_refused_marker():
+    # Without the range this is a MarkupError. Documenting the four forms means
+    # writing {~~old~>new~~} in prose, and that is what this protects.
+    text = "The substitution form is `{~~~>~~}`.\n"
+    with pytest.raises(MarkupError):
+        parse(text)
+    span = (text.index("`"), text.rindex("`") + 1)
+    assert parse(text, verbatim=[span]).annotations == []
+
+
+def test_overlapping_and_unsorted_ranges_are_accepted():
+    text = "a {--x--} b {>>y<<} c\n"
+    first, second = text.index("{--"), text.index("{>>")
+    harvest = parse(
+        text, verbatim=[(second, second + 8), (0, 4), (2, 12), (first, first + 1)]
+    )
+    assert harvest.annotations == []
+    assert harvest.clean == text
+
+
+def test_an_empty_range_is_ignored():
+    text = "a {--x--} b\n"
+    (annotation,) = parse(text, verbatim=[(2, 2), (5, 5)]).annotations
+    assert annotation.removed == "x"
+
+
+def test_a_range_covering_nothing_relevant_changes_nothing():
+    text = "a {--x--} b\n"
+    assert parse(text, verbatim=[(0, 1)]) == parse(text)

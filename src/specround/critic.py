@@ -55,7 +55,9 @@ associating them would be the tool guessing at intent).
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from specround.errors import SpecroundError
 
@@ -114,6 +116,10 @@ assert all(len(opener) == _OPENER_CHARS for opener in _FORMS), "openers must be 
 
 #: How much of a skipped marker a report shows.
 _CLIP = 40
+
+#: Sorts after any real span end, so :func:`_inside` finds the span an offset may
+#: sit in with one comparison instead of a second key.
+_UNBOUNDED = float("inf")
 
 
 class MarkupError(SpecroundError):
@@ -227,16 +233,26 @@ class Harvest:
         return bool(self.annotations)
 
 
-def parse(text: str) -> Harvest:
+def parse(text: str, *, verbatim: Sequence[tuple[int, int]] = ()) -> Harvest:
     """Read the markers out of ``text``, returning them and the text without them.
 
     Pure and deterministic: no clock, no filesystem, and a single left-to-right
     scan, so the same document always yields the same spans. Markers do not
     nest — each opener closes at the first closer of its own form — which keeps
     that scan unambiguous and leaves nesting as a hole rather than a guess.
+
+    ``verbatim`` names ranges where an opener is a specimen rather than an
+    instruction — code, for a markdown document
+    (:func:`~specround.markdown.code_spans`). A marker beginning inside one is
+    not read and not reported, because there is nothing there to report: a spec
+    quoting its own syntax is not a reviewer leaving a comment. Which ranges
+    those are is the document type's business and not this module's, which is why
+    it comes in as offsets: H11 puts a renderer behind that, and nothing here has
+    to learn a second file format.
     """
     if not isinstance(text, str):
         raise MarkupError("text must be a string")
+    skip = _merged(verbatim)
 
     pieces: list[str] = []
     annotations: list[Annotation] = []
@@ -256,6 +272,9 @@ def parse(text: str) -> Harvest:
         if found is None:
             break
         start, opener = found
+        if _inside(skip, start):
+            at = start + len(opener)
+            continue
         closer, kind = _FORMS[opener]
         payload_end = text.find(closer, start + len(opener))
         if payload_end == -1:
@@ -347,6 +366,23 @@ def _read(
     return None, Annotation(
         start=kept, end=kept + len(removed), removed=removed, added=added, **common
     )
+
+
+def _merged(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """``spans`` sorted and coalesced, so :func:`_inside` can bisect them."""
+    ordered = sorted((low, high) for low, high in spans if high > low)
+    out: list[tuple[int, int]] = []
+    for low, high in ordered:
+        if out and low <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], high))
+        else:
+            out.append((low, high))
+    return out
+
+
+def _inside(spans: list[tuple[int, int]], at: int) -> bool:
+    index = bisect_right(spans, (at, _UNBOUNDED))
+    return index > 0 and spans[index - 1][1] > at
 
 
 def _next_marker(text: str, at: int) -> tuple[int, str] | None:
