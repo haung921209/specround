@@ -54,7 +54,31 @@
   #notice.bad { background: var(--del); color: var(--bad); }
   #notice.info { background: var(--panel); color: var(--dim); }
   main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 0; align-items: start; }
-  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  /* The navigation bar exists only when the server was started on a directory.
+     A file view keeps the two-column layout it always had, to the pixel. */
+  main.tree { grid-template-columns: 260px minmax(0, 1fr) 380px; }
+  @media (max-width: 900px) { main, main.tree { grid-template-columns: minmax(0, 1fr); } }
+  nav#files { display: none; }
+  main.tree nav#files {
+    display: block; position: sticky; top: 49px; max-height: calc(100vh - 49px);
+    overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 12px;
+  }
+  nav#files h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; }
+  nav#files .note { font-size: 12px; color: var(--dim); margin-top: 10px; line-height: 1.45; }
+  .file {
+    display: block; width: 100%; text-align: left; font: inherit; cursor: pointer;
+    background: transparent; color: var(--dim); border: 0; border-left: 3px solid transparent;
+    padding: 5px 7px; border-radius: 0 6px 6px 0; margin-top: 2px;
+  }
+  .file:hover { background: var(--bg); }
+  /* Two different things, and they must not look like one: the accent edge says
+     "this document has review on it", the filled row says "this is the one you
+     are reading". A reviewer scanning for the first should not have to work out
+     which of them the highlight means. */
+  .file.active { color: var(--ink); border-left-color: var(--accent); }
+  .file[aria-current="true"] { background: var(--bg); color: var(--ink); font-weight: 600; }
+  .file .name { display: block; font-size: 13px; word-break: break-all; }
+  .file .marks { display: block; margin-top: 3px; }
   #doc { padding: 18px 22px 60vh; min-width: 0; }
   #doc h1, #doc h2, #doc h3, #doc h4 { line-height: 1.3; margin: 1.4em 0 .5em; }
   #doc h1 { font-size: 1.6em; } #doc h2 { font-size: 1.3em; } #doc h3 { font-size: 1.1em; }
@@ -148,7 +172,8 @@
   <button class="btn" id="refresh" title="re-read the ledger and the document">reload</button>
 </header>
 <div id="notice"></div>
-<main>
+<main id="layout">
+  <nav id="files" aria-label="documents in this workspace"></nav>
   <div>
     <div id="doc"></div>
     <div id="editor">
@@ -174,7 +199,12 @@
 "use strict";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (id) => document.getElementById(id);
-const state = { data: null, mode: "render", focused: null, editing: false };
+// `doc` is which document of a workspace the page is reading, as the workspace
+// names it. It goes on every request rather than being remembered by the
+// server: the process holds no selection, which is what lets two tabs on one
+// port read two documents at once. Null until the first state arrives, and
+// always null for a file view, where the server serves the one document it has.
+const state = { data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false };
 
 // -- transport ------------------------------------------------------------
 
@@ -184,7 +214,9 @@ async function api(path, body) {
     method: body === undefined ? "GET" : "POST",
   };
   if (body !== undefined) options.body = JSON.stringify(body);
-  const response = await fetch(path + "?t=" + encodeURIComponent(TOKEN), options);
+  const query = new URLSearchParams({ t: TOKEN });
+  if (state.doc) query.set("doc", state.doc);
+  const response = await fetch(path + "?" + query.toString(), options);
   const text = await response.text();
   let payload = null;
   try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
@@ -307,6 +339,30 @@ function spanOfRun(space, start, text, source) {
 
 function modeClass(mode, commentable) {
   return commentable ? mode + " live" : mode;
+}
+
+function visibleDocuments(documents, activeOnly) {
+  // The activity filter, and the whole of it: the bar always receives the full
+  // listing and hides rows here. Asking the server for a filtered list instead
+  // would make the counts beside the checkbox describe a set the page cannot
+  // see, and "3 of 40 reviewed" is the number that makes the toggle worth a click.
+  return activeOnly ? documents.filter((entry) => entry.active) : documents;
+}
+
+function badges(entry) {
+  // What a reviewer scans a file list for, in the order they scan for it. The
+  // numbers are the server's; nothing is recomputed here, because a bar that
+  // counted unresolved threads itself would be a second oracle for a word the
+  // ledger defines. A document that was reviewed and has nothing outstanding
+  // still says so — "reviewed, nothing owed" and "never looked at" are
+  // different answers and a blank row would give them the same one.
+  const out = [];
+  if (entry.error) out.push({ text: "unreadable", kind: "bad" });
+  if (entry.open_rounds) out.push({ text: entry.open_rounds + " open", kind: "open" });
+  if (entry.unresolved) out.push({ text: entry.unresolved + " unresolved", kind: "warn" });
+  if (entry.orphans) out.push({ text: entry.orphans + " orphaned", kind: "bad" });
+  if (!out.length && entry.rounds) out.push({ text: "reviewed", kind: "" });
+  return out;
 }
 
 // -- end of the pure part -------------------------------------------------
@@ -468,6 +524,86 @@ function draw() {
   else drawRender(host, data);
   paint(host, data.comments);
   if (state.focused) markFocus();
+}
+
+// -- the workspace bar ----------------------------------------------------
+//
+// Navigation and nothing else. Clicking a file re-asks the server for that
+// document and everything below this point redraws from the answer — there is
+// no per-document state here to keep in step, which is why switching documents
+// cannot leave a comment pointed at the wrong one.
+
+function drawFiles() {
+  const workspace = state.data.workspace;
+  $("layout").className = workspace ? "tree" : "";
+  const host = $("files");
+  host.textContent = "";
+  if (!workspace) return;
+  const shown = visibleDocuments(workspace.documents, state.activeOnly);
+  const head = document.createElement("h2");
+  head.textContent = "documents — " + workspace.counts.active + " of "
+    + workspace.counts.documents + " reviewed";
+  host.appendChild(head);
+  const filter = document.createElement("label");
+  filter.className = "check";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = state.activeOnly;
+  box.addEventListener("change", () => { state.activeOnly = box.checked; drawFiles(); });
+  filter.appendChild(box);
+  filter.appendChild(document.createTextNode(" with review activity only"));
+  host.appendChild(filter);
+  shown.forEach((entry) => host.appendChild(fileRow(entry, workspace.selected)));
+  const notes = [];
+  if (!shown.length) notes.push("No document here has been reviewed yet. Untick to see them all.");
+  else if (shown.length < workspace.documents.length) {
+    notes.push((workspace.documents.length - shown.length) + " with no review activity, hidden by the filter.");
+  }
+  // The server's own note about what it held back. Passed through rather than
+  // reworded: a bar that showed a shorter tree without saying so would read as
+  // "this is the whole tree", which is the one thing it must never imply.
+  if (workspace.note) notes.push(workspace.note + ".");
+  if (notes.length) {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = notes.join(" ");
+    host.appendChild(note);
+  }
+}
+
+function fileRow(entry, selected) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "file" + (entry.active ? " active" : "");
+  element.setAttribute("aria-current", String(entry.key === selected));
+  element.title = entry.error
+    || (entry.last_activity ? "last activity " + entry.last_activity : "no review here yet");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = entry.key;
+  element.appendChild(name);
+  const marks = badges(entry);
+  if (marks.length) {
+    const row = document.createElement("span");
+    row.className = "marks";
+    row.innerHTML = marks.map((mark) => tag(mark.text, mark.kind)).join("");
+    element.appendChild(row);
+  }
+  element.addEventListener("click", () => openDocument(entry.key));
+  return element;
+}
+
+function openDocument(key) {
+  // Everything the old document put on screen goes with it. A composer left
+  // open would post its comment against whichever document answered next, and
+  // a focused thread id means nothing on a ledger that never saw it.
+  if (key === state.doc) return;
+  state.doc = key;
+  state.focused = null;
+  clearComposer();
+  if (state.editing) stopEditing();
+  notice("");
+  load().catch((error) => notice(String(error.message || error), "bad"));
 }
 
 // -- threads --------------------------------------------------------------
@@ -766,13 +902,19 @@ function placeFloat() {
 async function load() {
   const data = await api("/api/state");
   state.data = data;
-  $("docname").textContent = data.doc;
+  // From here on the page names the document explicitly, including the first
+  // load, where the server chose it. The header shows the workspace's name for
+  // it rather than the store's: a central store keys `docs/sub/a.md` as `a.md`,
+  // and a bar full of basenames would make two documents look like one.
+  if (data.workspace) state.doc = data.workspace.selected;
+  $("docname").textContent = data.workspace ? data.workspace.selected : data.doc;
   $("roundmeta").textContent = data.round
     ? data.round.id + " · " + data.round.status + " · base " + data.round.base.slice(7, 19)
       + (data.round.title ? " · " + data.round.title : "")
     : "no round";
   if (!$("author").value) $("author").value = data.author;
   if (data.actor) $("actor").value = data.actor;
+  drawFiles();
   renderControls();
   draw();
   drawThreads();
