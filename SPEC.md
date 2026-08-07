@@ -1,190 +1,265 @@
-# specround — 스펙 리뷰 라운드 (사람 ↔ 에이전트)
+# specround — spec review rounds (human ↔ agent)
 
-> 스펙 문서를 사이에 둔 사람과 에이전트의 리뷰 루프. 코멘트는 개정을 넘어 살아남고,
-> 편집은 제안 diff 가 되고, 모든 처분이 git 안의 원장에 남는다. 서버 없음.
+> A review loop between a person and an agent with a spec document between them.
+> Comments survive revisions, edits become suggestion diffs, and every
+> disposition lands in an append-only ledger. No server.
 
-status: **구현 착지 — 원장 코어 + CLI + 3모드 웹뷰 (654 green).** 첫 실사용 라운드가
-이 문서 위에서 돌았다(r-47878bb614f8, 2026-08-07 — 코멘트 3·스레드 응답·resolve 까지
-전부 이 도구로).
+status: **implementation landed — ledger core + CLI + the three-mode web view
+(654 green).** The first real review round ran on this document
+(r-47878bb614f8, 2026-08-07 — three comments, thread replies, and resolve, all
+through this tool).
 
-## 1. 왜 — 실측된 마찰
+## 1. Why — the friction, as measured
 
-에이전트와 스펙 문서를 주고받는 리뷰를 이틀 굴리며 나온 것:
+Two days of trading spec-document reviews with an agent produced this:
 
-| 마찰 | 원인 |
+| friction | cause |
 |---|---|
-| 개정마다 diff 탭을 갈아 끼운다 | diff 뷰가 스냅숏이라 개정과 함께 낡는다 |
-| 이미 반영한 코멘트가 다시 수확된다 | 수확이 비소비 — 처분 상태가 없다 |
-| 신규 문서에 라인 코멘트를 못 단다 | 코멘트가 diff 뷰에 기생한다 (stage 편법 필요) |
-| "그 코멘트 어떻게 됐지"의 답이 채팅에만 산다 | 처분 원장이 없다 |
-| 개정하면 코멘트 앵커가 죽는다 | 앵커가 라인 번호다 |
-| 코멘트 한 번 받으려고 스테이징/커밋 의식이 필요하다 | 리뷰의 버전 축이 git 커밋에 결합돼 있다 |
+| every revision needs a fresh diff tab | a diff view is a snapshot, so it goes stale along with the revision |
+| comments already dealt with get harvested again | harvesting does not consume — there is no disposition state |
+| a new document cannot take line comments | comments are parasitic on the diff view (a staging trick is needed) |
+| the answer to "what happened to that comment" lives only in the chat | there is no disposition ledger |
+| a revision kills comment anchors | the anchor is a line number |
+| getting one comment needs a staging/commit ceremony | review's version axis is coupled to git commits |
 
-## 2. 보장
+## 2. Guarantees
 
-| id | 보장 |
+| id | guarantee |
 |---|---|
-| G1 | 코멘트는 diff 스냅숏이 아니라 **문서 앵커**에 산다 — 개정을 넘어 생존(re-anchor) |
-| G2 | 리뷰는 **라운드** 단위다 — base 는 커밋이 아니라 **도구가 박제한 문서 스냅숏**, 라운드가 기록에 남는다 |
-| G3 | 모든 코멘트는 **처분**(반영/기각/답변/보류)을 가진다 — 유실 0, append-only 원장 |
-| G4 | **에이전트가 1급 참여자**다 — 수확·처분·회신이 기계 가능(구조화 출력), 사람과 같은 채널 |
-| G5 | **서버 0 · git 비의존** — 원장·스냅숏은 **홈 중앙 스토어**의 평문 append-only 파일(기본). 문서의 repo 를 오염시키지 않는다 — untracked 노이즈 0 · gitignore 숙제 0. 공유가 필요하면 스토어를 repo 안으로 두는 **옵트인** 설정 |
-| G6 | 입력 표면 중립 — 렌더 뷰·raw 문서 어느 쪽에서든 코멘트가 달리고 같은 원장으로 수렴 |
-| G7 | 셸에서 한 명령으로 열린다 — 리뷰의 진입점은 CLI 다 |
-| G8 | 리뷰어는 코멘트만이 아니라 **편집**할 수 있다 — 편집은 앵커에 붙는 **제안 diff** 로 접수된다 |
-| G9 | 제안 diff 는 에이전트가 **회수 가능한 채널**로 온다 — 반영(apply)/기각+사유가 처분 원장에 남는다 |
-| G10 | **커뮤니케이션은 커밋을 강제하지 않는다** — 리뷰 루프의 어느 단계도 stage/commit 을 요구하지 않는다. 커밋은 결과(문서)의 착지일 뿐, 피드백 교환의 티켓이 아니다 |
-| G11 | **끝난 대화는 resolve 로 닫는다** — 코멘트 스레드가 마무리되면(반영이든 기각이든 합의든) 사람도 에이전트도 resolve 할 수 있고, resolved 스레드는 **기본 뷰에서 가려진다**. 가림은 뷰의 일이지 삭제가 아니다 — 원장에는 전부 남는다(G3 유실 0 과 모순 없음) |
+| G1 | A comment lives on a **document anchor**, not on a diff snapshot — it survives revisions (re-anchor) |
+| G2 | Review happens in **rounds** — the base is not a commit but a **document snapshot the tool froze**, and the round stays in the record |
+| G3 | Every comment has a **disposition** (applied/rejected/answered/deferred) — zero loss, an append-only ledger |
+| G4 | **An agent is a first-class participant** — harvesting, disposing, and replying are machine-doable (structured output), on the same channel a person uses |
+| G5 | **No server, no git** — the ledger and the snapshots are plain append-only files in a **central home store** (the default). The document's repo stays uncontaminated — zero untracked noise, zero gitignore homework. A team that needs to share **opts in** to a store inside the repo |
+| G6 | Input-surface neutral — a comment can be made in the rendered view or on the raw document, and both converge on the same ledger |
+| G7 | One command from the shell opens it — review's entry point is the CLI |
+| G8 | A reviewer can **edit**, not only comment — an edit is taken in as a **suggestion diff** attached to an anchor |
+| G9 | A suggestion diff arrives on a **channel an agent can collect from** — apply or reject, plus a reason, lands in the disposition ledger |
+| G10 | **Communicating does not force a commit** — no step of the review loop asks for a stage or a commit. A commit is where the result (the document) lands, never the ticket for exchanging feedback |
+| G11 | **A conversation that is over is closed with resolve** — when a comment thread wraps up (applied, rejected, or simply agreed), a person and an agent can both resolve it, and resolved threads are **hidden from the default view**. Hiding is the view's job, not a deletion — the ledger keeps all of it (no contradiction with G3's zero loss) |
 
-비-목표: 실시간 공동편집 · WYSIWYG · 호스팅 서비스 · 코드 리뷰(스펙/산문 문서가 대상 —
-코드는 PR 도구가 이미 잘한다).
+Non-goals: real-time co-editing · WYSIWYG · a hosted service · code review (the
+target is spec and prose documents — PR tools already do code well).
 
-## 3. 결정된 것
+## 3. Decided
 
-- **라이선스 = MIT** (2026-08-06 확정)
-- **공개 기본어 = 영어** (사용자 결정 2026-08-06, CLI 리뷰 코멘트): README 등 사용자
-  대면 문서의 기본값은 영어다. 한국어는 `-ko` 부록으로. 이 SPEC 자신과 포맷 문서의
-  영어화는 `docs-english` 항목으로 이관한다.
-- **미해결 스레드는 reply 로 이어간다** (사용자 결정 2026-08-06, resolve 리뷰 코멘트,
-  **2026-08-06 구현으로 확정**): resolve 전의 코멘트는 사람↔에이전트가 reply 이벤트로
-  왕복하는 대화다 — 원장에는 이미 있고, CLI `reply`/`resolve`/`reopen` verb 와 스레드
-  렌더가 `thread-reply` 항목이다. resolve 는 그 대화의 종결이지 응답의 대체가 아니다.
-  구현이 확정한 것 하나: **resolved 스레드에는 회신할 수 없다**(I11 — reopen 이 먼저다).
-  resolved 는 기본 뷰에서 가려지니 그 아래 붙은 회신은 기록됐는데 안 읽히는 답이 되고,
-  그것이 G3 이 막는 유실이다. 스레드 모델의 유일한 거부이고(처분·재앵커·중복 resolve 는
-  닫힌 스레드에도 그대로 붙는다) "resolve 는 응답의 대체가 아니다" 를 도구가 강제하는
-  지점이다. 상세는 `docs/ledger-format.md` §4·§6(I11).
-- **원장 = jsonl + 문서 스냅숏 — git 비의존 (H3 닫힘, 사용자 결정 2026-08-06)**. 라운드
-  열기 = 현재 문서 내용을 원장에 박제, diff 모드는 git 이 아니라 **그 스냅숏 대비**로
-  계산한다(세션 기록을 jsonl 로 남기는 에이전트 CLI 와 같은 계열 — 버전 축을 도구가 갖는다).
-- **스토어 위치 = 홈 중앙, 문서 경로 키 (사용자 결정 2026-08-06 — v0 리뷰 코멘트)**. 문서
-  곁 `.specround/` 는 기각: git 트리 안에서는 untracked 노이즈가 되고 사용자가 gitignore 를
-  일일이 처리해야 해서 "git 에서 자유롭다"(G5·G10)가 거짓이 된다. 기본은 홈 스토어에
-  문서 절대경로 키(해시)로 — 에이전트 CLI 의 세션 저장과 같은 모델. 팀 공유가 필요할 때만
-  스토어를 repo 안으로 두는 옵트인.
-  git notes 는 git 결합이라 탈락. PR/Gerrit 계열과 갈라지는 지점이 정확히 여기다: 그들의
-  리뷰 대상은 커밋이라 피드백의 커밋 결합이 필연이지만, 우리 대상은 문서다 — 문서는
-  git 밖(untracked, 비-repo)에 있어도 전 기능이 돌아야 한다.
+- **License = MIT** (settled 2026-08-06)
+- **Public default language = English** (user decision 2026-08-06, in a CLI
+  review comment): the default for user-facing documents such as the README is
+  English. Korean goes in `-ko` appendices. Translating this spec and the format
+  docs was handed to the `docs-english` item (carried out 2026-08-07).
+- **An unresolved thread carries on through reply** (user decision 2026-08-06,
+  in a resolve review comment, **settled by the implementation 2026-08-06**):
+  before resolve, a comment is a conversation a person and an agent go back and
+  forth on with reply events — it is already in the ledger, and the CLI
+  `reply`/`resolve`/`reopen` verbs plus the thread render are the `thread-reply`
+  item. Resolve is that conversation's ending, not a substitute for answering.
+  One thing the implementation settled: **a resolved thread cannot be replied
+  to** (I11 — reopen comes first). Resolved is hidden from the default view, so
+  a reply underneath it is an answer that got recorded and does not get read,
+  and that is the loss G3 prevents. It is the thread model's only refusal
+  (dispositions, re-anchors, and a repeated resolve all attach to a closed
+  thread as before) and it is where the tool enforces "resolve is not a
+  substitute for answering". Details in `docs/ledger-format.md` §4·§6 (I11).
+- **Ledger = jsonl + document snapshots — no git (H3 closed, user decision
+  2026-08-06)**. Opening a round freezes the document's current content into the
+  ledger, and diff mode is computed **against that snapshot** rather than
+  against git (the same family as an agent CLI that keeps its session record in
+  jsonl — the tool owns the version axis).
+- **Store location = central home, keyed by document path (user decision
+  2026-08-06 — v0 review comment)**. A `.specround/` beside the document is
+  rejected: inside a git tree it becomes untracked noise and the user has to
+  handle gitignore one entry at a time, which makes "free of git" (G5·G10) a
+  lie. The default is the home store, keyed by the document's absolute path
+  (hashed) — the same model as an agent CLI's session storage. Only when a team
+  needs to share does the store opt into the repo.
+  git notes are out because they are git coupling. This is exactly where we part
+  from the PR/Gerrit family: their review target is a commit, so coupling
+  feedback to commits is inevitable, but ours is a document — and a document has
+  to work fully outside git (untracked, non-repo).
 
-- **코어+CLI = Python** (uv/uvx 배포). 축은 "계약이 언어가 아니라 **포맷**에 있다"(G5 —
-  원장 스키마가 곧 계약)라서, 언어는 나중에 갈아탈 수 있는 가벼운 결정이다.
-- **뷰 = 일시적 로컬 웹뷰** — 브라우저가 이미 모두에게 있는 GUI 다. **3모드: 렌더 · raw ·
-  라운드 diff(base 대비)** 를 한 페이지에서 토글하고, 어느 모드에서 코멘트를 달아도 **같은
-  문서 앵커**로 수렴한다(diff 라인 → 앵커 변환은 G1 의 re-anchor 기계가 겸임).
-  호스팅이 아니다 — 로컬 프로세스이고 상태는 원장에만 남는다(G5 상충 없음).
-  근거: "렌더 + 가터 코멘트 + diff" 셋의 조합은 native shell 로 불가 — 낱개는 되지만
-  한 화면 토글 + 어느 뷰에서든 코멘트는 안 된다.
-  **2026-08-06 구현으로 확정.** 구현이 확정한 것 둘:
-  **① 앵커 공간은 3모드 전부 라운드의 base 다.** 렌더·raw 가 보여주는 텍스트는 디스크의
-  파일이 아니라 그 라운드가 박제한 스냅숏이고, 파일이 앞서 나갔다는 사실은 diff 모드가
-  드러낸다. 선택지가 아니라 I7 이 정한 것이다 — 코멘트 앵커는 자기 라운드의 base 에 대해
-  검증되고, 그 스냅숏이 이 라운드가 리뷰하는 대상이기 때문이다.
-  **② 개정본에만 있는 줄은 추측해서 붙이지 않고 거부한다.** diff 의 추가된 줄을 선택하면
-  사다리를 **거꾸로** 돌려(개정본에서 잘라 base 에서 찾는다) base 앵커를 얻는데, 못 찾으면
-  고아가 아니라 **거부**다 — 코멘트를 쓰려는 참이라서 고아로 기록할 자리가 없다. 대신 두
-  출구를 문구에 담는다(문서 전체 코멘트 · 개정본에 새 라운드). fuzzy·quote 로 옮겨 붙은
-  경우는 `ext.view` 에 어느 단으로 왔는지 남긴다 — 닫힌 필드집합에 자리가 없고, 안 남기면
-  base 에서 직접 고른 코멘트와 구별되지 않는다(§4 가 fuzzy 를 사람이 볼 것으로 정한 이유).
-  H8(제안 stale)은 **필요해지지 않았다** — 뷰는 제안을 접수만 하고 적용하지 않는다.
-  **③ 줄번호 클릭 = 그 줄 스팬 (2026-08-07 첫 실사용 라운드에서 인입)**. raw·diff 의
-  줄번호를 누르면 그 줄이 스팬이 된다 — 드래그로 그 줄을 훑은 것과 **같은 앵커**다(줄 하나가
-  런 하나라서 산술이 같다). 새 공간·새 거부를 만들지 않는다: 개정본 전용 줄은 위 ②의 거부로
-  가고, 빈 줄은 폭 0 스팬 = 삽입점(§5)이다. 사용자가 스팬 선택보다 먼저 시도한 제스처이고
-  ("이 줄 이상함" 류에 드래그는 비싸다), 렌더 모드는 줄번호가 없어 대상이 아니다.
-- **vim/에디터는 플러그인 없이 1급** — raw 를 에디터로 고치면 working tree diff 가 제안으로
-  접수되고(G8 "고치면 곧 제출"), 인라인 주석(CriticMarkup 류)을 raw 에 치면 수확기가
-  코멘트로 흡수한다(G6). 전용 플러그인은 후순위 어댑터다.
-  **2026-08-07 구현으로 확정**(`specround harvest`, 4형 `{>>…<<}`·`{++…++}`·`{--…--}`·
-  `{~~…~>…~~}`). 구현이 확정한 것 셋:
-  **① 수확된 본문이 문서고 마커는 그 문서에 대한 제안이다** — `{--x--}` 는 `x` 를 파일에
-  남기고 제거 제안을 원장에 적고, `{++x++}` 는 파일에 넣지 않는다(아직 없는 텍스트다).
-  파일을 읽는 것이 제안을 조용히 **적용**하면 안 되고, 적용은 처분(`applied`)이다.
-  **② 앵커 기준은 마커를 뺀 텍스트**이고, 두 실제 워크플로는 계산으로 정확하다 — 라운드를
-  열고 주석을 쳤으면 마커 제거가 base 를 복원하고, 이미 주석이 있는 문서로 라운드를 열었으면
-  스팬이 마커 안(오프너 3칸 오른쪽)에 있다. 산문까지 움직인 경우만 재앵커 사다리를 거꾸로
-  탄다(§5.1 — 두 번째 매처를 만들지 않는다). 이 두 번째 경우가 최적화가 아닌 이유: 없으면
-  주변에 다른 마커가 있는 삽입점이 전부 고아가 되고(리뷰된 문단의 통상 형태다) 거부가
-  안내하는 출구가 실제로 동작하지 않았다.
-  **③ 못 붙는 마커 하나는 수확 전체를 거부한다**(dry-run 에서도) — 마커를 하나 남기면 그
-  뒤 오프셋이 전부 밀려서 "나머지만 수확" 은 이 연산의 작은 버전이 아니다. 반면 닫히지 않은
-  오프너·미지원 5번째 형(`{==…==}`)은 **파일에 남기고 보고**한다: 조용히 버리는 것은 G3 이
-  막는 유실이고, 그 둘은 애초에 주석인지도 확실하지 않다.
-  파일을 되쓰는 verb 라서 dry-run 이 기본이고 `--apply` 가 게이트다.
-  **④ 코드 안의 마커는 표본이지 지시가 아니다** — 펜스 블록과 인라인 백틱 스팬은 읽지
-  않는다(`markdown.code_spans`). 이건 문법 확장이 아니라 **인식 범위**이고, 없으면 자기
-  문법을 설명하는 문서가 자기 도구에 훼손된다. 실측이 근거다: 규칙 전에 이 repo 의
-  `SPEC.md` 를 수확하면 자기 표본 8개가 리뷰 코멘트로 잡히고 그 텍스트가 산문에서
-  삭제됐으며, `README.md` 6개, `docs/research/prior-art.md` 는 문법 표의 `{~~old~>new~~}`
-  줄 때문에 **수확 자체가 불가**였다(빈 치환으로 거부). G5 의 "첫 실전 고객은 이 도구 자신의
-  스펙 리뷰" 가 성립하려면 이 규칙이 필요하다. 판정 축은 사람이 눈으로 적용할 수 있는
-  것("이 줄에서 백틱 사이인가")으로 좁혔다 — 놓치면 표본이 수확되고 dry-run 이 보여주지만,
-  과하게 잡으면 진짜 주석을 조용히 삼킨다. 범위 계산은 문서 타입의 몫이라 파서에는
-  오프셋으로 들어간다(H11 이 그 자리에 렌더러를 넣는다).
-- **resolve / reopen = 원장 이벤트** (사용자 결정 2026-08-06, **2026-08-06 구현으로 확정**).
-  스레드 종결은 처분(G3)과 다른 축이다 — 처분은 코멘트 하나의 결과(반영/기각/답변/보류)고,
-  resolve 는 "이 대화는 끝났다" 는 스레드 상태다. 누가 닫았는지(사람/에이전트)를 이벤트에
-  기록하고, 잘못 닫았으면 reopen 을 append 한다(append-only 라 자연스럽다). 모든 뷰(웹뷰
-  3모드·CLI 목록)는 resolved 를 기본 숨김 + 토글로 보인다.
-  구현이 확정한 것 셋: **스레드 = 루트 코멘트 + 회신 사슬**이고 회신이 평면이라 별도 객체
-  없이 루트 id 가 스레드 id 다 · **재선언은 멱등**(처분은 재처분을 거부하는데 스레드는
-  안 한다 — 다른 판정은 모순이지만 같은 선언은 동의다) · **`round.close` 의 미처분 계산은
-  resolve 를 안 본다**(봤다면 대화를 닫는 것이 미처분을 조용히 지나치는 수단이 된다).
-  상세는 `docs/ledger-format.md` §4·§7.1.
-- **suggestion** = 본문이 패치인 코멘트 (`kind: comment | suggestion`). 에이전트 수확 시
-  comment 는 답/반영, suggestion 은 apply/기각 — 어느 쪽이든 처분+사유가 원장에 append 된다.
-- **앵커 생존 = 4단 사다리 + 고아 보존 (H4 닫힘, 2026-08-06 구현으로 확정)**. 개정본에서
-  `position → quote → normalized → fuzzy` 순으로 찾고, 어느 단의 결과든 개정본에서 다시
-  잘라내 검증한다. 못 찾으면 **추측해서 붙이지 않고 고아로 기록**한다 — 조용히 사라지는
-  코멘트가 없다는 것이 G1 과 G3 이 만나는 지점이다. 재앵커·고아는 앵커를 덮어쓰지 않고
-  **새 원장 이벤트**(`anchor.reanchor`/`anchor.orphan`)로 남아서, 코멘트가 어느 개정에서
-  어디로 갔는지가 이력으로 읽힌다. 상세는 `docs/ledger-format.md` §5.1.
-- **외부 코멘트 흡수 = 포맷이 경계다 (H9 닫힘, 2026-08-07 구현으로 확정)**. `specround
-  import <doc> --file <json>` 이 **문서화된 범용 계약**(`specround.import/v0`,
-  `docs/import-format.md`)만 읽는다 — 코어에는 cmux 를 아는 코드가 없고, 도구별 변환기는
-  패키지 밖 `adapters/` 에서 이 파일만 뱉는다. 코어가 특정 뷰어의 스토어를 알면 뷰어가
-  늘 때마다 코어가 바뀐다. 구현이 확정한 것 셋: **항목은 자기가 말하는 텍스트를 인용한다**
-  (오프셋만으로는 접수하지 않는다 — 검증할 것이 없는 오프셋은 지금 그 자리에 있는 것에
-  코멘트를 붙인다) · **출처는 `ext.import` 에 남고 `(source, id)` 가 멱등 키다**(같은 파일을
-  두 번 넣으면 한 번 들어간다) · **거부는 항목 단위이고 종료코드는 0 이다**(`reanchor` 가
-  못 붙인 코멘트를 다루는 그 모양 — 한 문단이 움직였다고 나머지 스무 개가 실패가 되지
-  않는다). dry-run 이 기본이고 기록은 `--apply`.
+- **Core + CLI = Python** (shipped with uv/uvx). The axis is that "the contract
+  is in the **format**, not in the language" (G5 — the ledger schema is the
+  contract), which makes the language a light decision we can change later.
+- **View = an ephemeral local web view** — the browser is the GUI everybody
+  already has. **Three modes: render · raw · round diff (against the base)**
+  toggle on one page, and a comment made in any mode converges on the **same
+  document anchor** (the diff-line → anchor conversion is the same re-anchor
+  machine G1 needs). It is not hosting — it is a local process, and its state
+  lives only in the ledger (no conflict with G5).
+  Rationale: the combination "render + gutter comments + diff" is impossible in
+  a native shell — each part alone works, one-screen toggling plus commenting
+  from any view does not.
+  **Settled by the implementation 2026-08-06.** Two things the implementation
+  settled:
+  **① The anchor space is the round's base in all three modes.** The text
+  render and raw show is not the file on disk but the snapshot that round froze,
+  and the fact that the file has moved ahead is what diff mode reveals. This is
+  not a choice but what I7 decided — a comment's anchor is verified against its
+  own round's base, because that snapshot is what this round is a review of.
+  **② A line only the revision has is refused, not guessed at.** Selecting an
+  added line in the diff runs the ladder **backwards** (cut from the revision,
+  found in the base) to get a base anchor, and when nothing is found it is a
+  **refusal**, not an orphan — a comment is about to be written, so there is no
+  place to record an orphan. The two ways out go in the wording instead
+  (comment on the whole document · open a new round on the revision). When
+  `fuzzy` or `quote` carried it over, which rung it came through is recorded in
+  `ext.view` — the field set is closed and has no room for it, and without it
+  the comment is indistinguishable from one picked directly on the base (the
+  reason §4 has `fuzzy` be something a person looks at).
+  H8 (stale suggestions) **never became necessary** — the view only takes
+  suggestions in, it does not apply them.
+  **③ Clicking a line number = that line's span (came in from the first real
+  round, 2026-08-07)**. Clicking a line number in raw or diff makes that line
+  the span — the **same anchor** as dragging across it (one line is one run, so
+  the arithmetic is the same). It creates no new space and no new refusal: a
+  revision-only line goes to ②'s refusal above, and an empty line is a
+  zero-width span = an insertion point (§5). It is the gesture the user reached
+  for before span selection ("this line is off" makes dragging expensive), and
+  render mode has no line numbers, so it is not a target.
+- **vim and other editors are first-class without a plugin** — fix the raw text
+  in an editor and the working-tree diff is taken in as a suggestion (G8, "fix
+  it and it is submitted"), and type inline annotations (the CriticMarkup
+  family) into the raw text and the harvester absorbs them as comments (G6). A
+  dedicated plugin is a later adapter.
+  **Settled by the implementation 2026-08-07** (`specround harvest`, four forms
+  `{>>…<<}`·`{++…++}`·`{--…--}`·`{~~…~>…~~}`). Three things the implementation
+  settled:
+  **① The harvested text is the document, and a marker is a proposal about it**
+  — `{--x--}` leaves `x` in the file and records a removal proposal in the
+  ledger, and `{++x++}` does not put it in the file (it is text that is not
+  there yet). Reading a file must not quietly **apply** a proposal; applying is
+  a disposition (`applied`).
+  **② The anchor basis is the text with the markers gone**, and the two real
+  workflows are exact by arithmetic — annotate after opening a round and
+  removing the markers restores the base; open a round on an
+  already-annotated document and the span sits inside the marker (three
+  characters right of the opener). Only when the prose moved as well does the
+  re-anchor ladder run backwards (§5.1 — no second matcher gets built). Why
+  that second case is not an optimization: without it every insertion point
+  with another marker near it becomes an orphan (the ordinary shape of a
+  reviewed paragraph), and the way out the refusal names would not actually
+  work.
+  **③ One marker that cannot be placed refuses the whole harvest** (in a dry
+  run too) — leaving one marker in shifts every offset after it, so "harvest
+  the rest" is not a smaller version of this operation. An unclosed opener and
+  the unsupported fifth form (`{==…==}`), by contrast, are **left in the file
+  and reported**: dropping them quietly is the loss G3 prevents, and neither one
+  is even certainly an annotation.
+  A dry run is the default because this verb rewrites the file, and `--apply` is
+  the gate.
+  **④ Markers inside code are specimens, not instructions** — fenced blocks and
+  inline backtick spans are not read (`markdown.code_spans`). This is not a
+  syntax extension but a matter of **recognition scope**, and without it a
+  document explaining its own syntax gets damaged by its own tool. The evidence
+  is measured: before the rule, harvesting this repo's `SPEC.md` read eight of
+  its own specimens as review comments and deleted that text from the prose,
+  `README.md` six, and `docs/research/prior-art.md` **could not be harvested at
+  all** because of the `{~~old~>new~~}` line in its syntax table (refused on the
+  empty substitution). G5's "the first real customer is this tool's own spec
+  review" needs this rule to hold. The test was narrowed to something a person
+  can apply by eye ("is this between backticks on this line") — miss it and a
+  specimen gets harvested but the dry run shows it, whereas over-catching
+  swallows a real annotation quietly. Computing the scope belongs to the
+  document type, so it reaches the parser as offsets (H11 puts a renderer in
+  that place).
+- **resolve / reopen = ledger events** (user decision 2026-08-06, **settled by
+  the implementation 2026-08-06**). Ending a thread is a different axis from
+  disposition (G3) — a disposition is one comment's outcome (applied/rejected/
+  answered/deferred), and resolve is the thread state "this conversation is
+  over". Who closed it (a person or an agent) is recorded on the event, and a
+  wrong close is an appended reopen (natural, since this is append-only). Every
+  view (the web view's three modes, the CLI listings) hides resolved by default
+  and shows it on a toggle.
+  Three things the implementation settled: **a thread = a root comment + the
+  chain of replies**, and because replies are flat the root id is the thread id
+  with no separate object · **re-declaring is idempotent** (a disposition
+  refuses re-disposition, a thread does not — a different verdict is a
+  contradiction, the same declaration is agreement) · **`round.close`'s
+  undisposed count does not look at resolve** (if it did, closing a
+  conversation would become a way to walk past an undisposed comment quietly).
+  Details in `docs/ledger-format.md` §4·§7.1.
+- **suggestion** = a comment whose body is a patch (`kind: comment |
+  suggestion`). When an agent harvests, a comment gets answered or applied and a
+  suggestion gets applied or rejected — either way the disposition and its
+  reason are appended to the ledger.
+- **Anchor survival = a four-rung ladder + orphans kept (H4 closed, settled by
+  the implementation 2026-08-06)**. Search the revision in the order
+  `position → quote → normalized → fuzzy`, and whichever rung answers, cut the
+  result out of the revision again to verify it. When nothing is found, the
+  comment is **recorded as an orphan rather than guessed into place** — that no
+  comment disappears quietly is where G1 and G3 meet. Re-anchors and orphans do
+  not overwrite the anchor: they stay as **new ledger events**
+  (`anchor.reanchor`/`anchor.orphan`), so where a comment went in which revision
+  reads as history. Details in `docs/ledger-format.md` §5.1.
+- **Absorbing outside comments = the format is the boundary (H9 closed, settled
+  by the implementation 2026-08-07)**. `specround import <doc> --file <json>`
+  reads one **documented general contract** (`specround.import/v0`,
+  `docs/import-format.md`) and nothing else — the core has no code that knows
+  cmux, and a per-tool converter lives outside the package in `adapters/` and
+  emits only that file. If the core knew one viewer's storage, the core would
+  change every time a viewer was added. Three things the implementation settled:
+  **an item quotes the text it is talking about** (offsets alone are not
+  accepted — an offset with nothing to check comments on whatever is at that
+  place now) · **the origin is recorded in `ext.import` and `(source, id)` is
+  the idempotency key** (put the same file in twice and it goes in once) ·
+  **a refusal is per item and the exit code is 0** (the shape `reanchor` already
+  has for a comment it could not place — one paragraph moving does not make the
+  other twenty a failure). A dry run is the default and `--apply` records.
 
-## 4. 열린 것 (심화는 결정이 막힐 때 — 예측으로 파지 않는다)
+## 4. Open (deepen when a decision is blocked — do not dig on prediction)
 
-- H5 선행 사례 리서치: git-appraise · git-bug · reviewdog · CriticMarkup · Hypothesis —
-  **있는 것을 다시 만들지 않는다.** 차별점 가설 = "스펙 산문 + 에이전트 1급 + 앵커 생존 +
-  렌더/raw/diff 3모드" 조합
-- H8 제안 diff 의 stale — **기계는 H4 로 갖췄다**(제안 앵커도 코멘트와 같이 개정을 건넌다).
-  남은 것은 정책: 옮겨간 앵커에 옛 패치를 그대로 적용해도 되는지, `fuzzy` 로 옮겨간 제안은
-  사람 확인을 받아야 하는지. 라운드 잠금(제안 있는 동안 head 동결)은 그래서 후순위다
-- H11 파일 타입 일반화 (사용자 제안 2026-08-06) — raw/렌더 이원 뷰를 마크다운 밖으로:
-  타입별 렌더러를 플러그인 층으로 두면(코드·표 데이터·노트북·이미지…) 온보딩 문서·스펙 문의
-  같은 임의 산출물이 같은 리뷰 루프를 탄다. 앵커·원장·라운드는 타입 무관이라 코어는 그대로.
-  트리거 = 마크다운 루프가 실전에서 정착한 뒤 (그 전에 짓지 않는다)
-- H10 중앙 스토어의 경로 키는 문서 이동·개명 시 이력이 미아가 된다 — **방향 확정
-  (첫 실사용 라운드 c-b5c77df9, 2026-08-07)**: 2층 재결속. 정본 오라클 = **내용 해시
-  대조**(스토어의 스냅숏과 옮겨진 파일 내용이 일치하면 같은 문서 — git 없어도 동작),
-  가속기 = **git rename detection**(repo 안이면 `git log --follow` 로 이동 후보 제시,
-  옵트인 힌트일 뿐 정본 아님 — G5 유지). 남은 것: verb 이름(`mv`/`relink`)과 자동 제안
-  시점. 산 사례 = 워크트리 경로에 키된 라운드가 워크트리 회수로 미아가 되는 이번 라운드
-- H12 git 상태의 관찰-기록 (첫 실사용 라운드 c-e725500f, 2026-08-07) — 문서가 git repo
-  안이면 round open/close 이벤트에 {HEAD 커밋, dirty 여부}를 ext 로 남긴다. **의존이
-  아니라 관찰이다**(G5 — git 없으면 그냥 비고, 어떤 판정도 이 필드에 걸지 않는다).
-  "회수 후 나중에 커밋됐나" 는 스냅숏 sha ↔ git blob sha 대조로 사후 판정 가능
-- H13 스토어 수명 관리 (첫 실사용 라운드 c-b04090ca, 2026-08-07) — 원장은 무한 누적이
-  맞다(문서당 수십 KB). 원칙 충돌: append-only vs GC → **삭제가 아니라 아카이브**.
-  ① `store status` 로 크기·문서·마지막 활동 표면화 ② `store archive` 는 "경로 소멸 +
-  N일 무활동" 만 tar 로 접어 옆에 두기(dry-run 기본, `--apply` 게이트). 자동 GC 는
-  두지 않는다 — 조용한 이력 소실이 이 도구가 막으려는 그 클래스다
-- H14 인라인 주석 문법의 확장 (수확기 구현 2026-08-07) — 4형으로 루프가 닫혔고 나머지는
-  **필요해질 때** 판다. 남긴 자리: **중첩**(현행은 각 오프너가 자기 형의 첫 닫힘에서 닫혀
-  코멘트 본문 안의 마커는 리터럴) · **`{==하이라이트==}`**(코멘트가 가리키는 스팬을
-  명시하는 CriticMarkup 방식 — 지금은 코멘트가 0폭 앵커라 앞 32자 문맥이 그 역할을 한다) ·
-  **인접 코멘트를 편집의 사유로 묶기**(`{--x--}{>>왜<<}` 는 지금 이벤트 둘이다 — 묶는 것은
-  의도 추측이라 안 한다, 오프셋이 인접을 드러낸다) · **`ext.view`/`ext.harvest` 통합**
-  (안쪽 모양이 같다 — 합치는 것은 필드 승격이고 major 를 올린다, `docs/ledger-format.md` §2)
+- H5 prior-art research: git-appraise · git-bug · reviewdog · CriticMarkup ·
+  Hypothesis — **do not rebuild what exists.** The differentiator hypothesis =
+  the combination "spec prose + agents first-class + anchor survival +
+  render/raw/diff in three modes"
+- H8 stale suggestion diffs — **the machinery is there via H4** (a suggestion's
+  anchor crosses revisions along with the comments). What is left is policy:
+  whether an old patch may be applied as-is to an anchor that moved, and whether
+  a suggestion carried by `fuzzy` needs a person's confirmation. Round locking
+  (freezing head while suggestions are open) is later for that reason
+- H11 generalizing the file type (user suggestion 2026-08-06) — take the
+  raw/render pair beyond markdown: put per-type renderers in a plugin layer
+  (code, tabular data, notebooks, images…) and arbitrary artifacts such as
+  onboarding docs or spec notes ride the same review loop. Anchors, the ledger,
+  and rounds are type-agnostic, so the core is unchanged. Trigger = after the
+  markdown loop has settled in real use (do not build it before)
+- H10 a central store's path key orphans the history when a document is moved or
+  renamed — **direction settled (first real round c-b5c77df9, 2026-08-07)**:
+  re-binding in two layers. The authoritative oracle = **content-hash
+  comparison** (if the store's snapshot matches the moved file's content it is
+  the same document — works without git), the accelerator = **git rename
+  detection** (inside a repo, `git log --follow` offers move candidates; an
+  opt-in hint only, never authoritative — G5 holds). What is left: the verb name
+  (`mv`/`relink`) and when to offer it. The live case = this very round, whose
+  key is a worktree path that a worktree reclaim orphans
+- H12 recording git state as an observation (first real round c-e725500f,
+  2026-08-07) — when the document is inside a git repo, record {HEAD commit,
+  dirty or not} on round open/close events as `ext`. **It is an observation, not
+  a dependency** (G5 — without git it is simply a blank, and no judgement hangs
+  on this field). "Was it committed later, after a reclaim" stays answerable
+  after the fact by comparing the snapshot sha against the git blob sha
+- H13 store lifetime management (first real round c-b04090ca, 2026-08-07) —
+  unbounded accumulation is right for the ledger (tens of KB per document). The
+  principle conflict: append-only vs GC → **archive, not delete**. ① `store
+  status` surfaces size, documents, and last activity ② `store archive` folds
+  only "path gone + N days idle" into a tar beside it (dry run by default,
+  `--apply` gate). No automatic GC — history disappearing quietly is the very
+  class this tool exists to prevent
+- H14 extending the inline annotation syntax (harvester implementation
+  2026-08-07) — four forms closed the loop and the rest gets dug **when it
+  becomes necessary**. The places held open: **nesting** (today each opener
+  closes at the first close of its own form, so a marker inside a comment body
+  is a literal) · **`{==highlight==}`** (CriticMarkup's way of naming the span a
+  comment points at — for now a comment is a zero-width anchor and the 32
+  characters of leading context play that part) · **tying an adjacent comment to
+  an edit as its reason** (`{--x--}{>>why<<}` is two events today — tying them
+  is guessing at intent, so it is not done; the offsets reveal the adjacency) ·
+  **merging `ext.view`/`ext.harvest`** (the inside shape is the same — merging
+  is a field promotion and bumps major, `docs/ledger-format.md` §2)
 
-## 5. 완료판정 (스펙 단계의)
+## 5. Done-ness (of the spec stage)
 
-H5 리서치가 "이미 있다" 를 반증하고, 코멘트 라운드가 한 번 이상 돌고, G1~G11 에 항목이
-귀속되면 스펙 단계를 닫고 구현에 들어간다. 첫 실전 고객은 이 도구 자신의 스펙 리뷰다.
+Once H5 research disproves "it already exists", a comment round has run at least
+once, and every item is attributed to G1–G11, the spec stage closes and
+implementation starts. The first real customer is this tool's own spec review.
