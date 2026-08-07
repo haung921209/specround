@@ -73,7 +73,7 @@ HUMAN = "human"
 AGENT = "agent"
 ACTORS = (HUMAN, AGENT)
 
-#: Disposition vocabulary (G3). Korean reading: 반영 / 기각 / 답변 / 보류.
+#: Disposition vocabulary (G3). A closed set — an arbitrary verdict is refused.
 APPLIED = "applied"
 REJECTED = "rejected"
 ANSWERED = "answered"

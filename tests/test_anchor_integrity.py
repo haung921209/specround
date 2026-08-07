@@ -31,8 +31,9 @@ ABSENT_BASE = "sha256:" + "ab" * 32
 def handwrite(store, record):
     """Append a record straight to the file, past every gate the API applies.
 
-    This is the participant the format is written for: "이 줄들을 쓸 수 있으면
-    어떤 언어·에디터·에이전트든 참여자". The reader is what has to hold the line.
+    This is the participant the format is written for: "anything that can write
+    these lines is a participant — any language, any editor, any agent". The
+    reader is what has to hold the line.
     """
     path = store.ledger.path
     lines = path.read_text(encoding="utf-8").splitlines()

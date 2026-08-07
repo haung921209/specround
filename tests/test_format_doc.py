@@ -70,10 +70,12 @@ def test_the_config_file_and_its_modes_are_documented(doc_text):
 
 
 def test_the_resolution_order_is_stated(doc_text):
-    assert "인자 > 설정 > 기본" in doc_text
-    korean = {"argument": "인자", "config": "설정", "default": "기본"}
+    # The document names the layers with the code's own words now, so the
+    # translation table this test used to carry is gone — the order is asserted
+    # against SOURCES directly, which is stronger than the prose was.
+    assert " > ".join(SOURCES) in doc_text
     for source in SOURCES:
-        assert korean[source] in doc_text
+        assert f"| {source} |" in doc_text
 
 
 def test_the_origin_record_is_documented_with_its_own_schema(doc_text):

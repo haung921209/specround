@@ -163,4 +163,4 @@ uv run pytest
 ```
 
 Docs default to English; Korean guides may appear later as separate `-ko`
-files. The spec itself is being migrated.
+files.

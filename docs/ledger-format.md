@@ -1,45 +1,58 @@
-# 원장 포맷 — `specround.ledger/v0`
+# Ledger format — `specround.ledger/v0`
 
-> 이 포맷이 계약이다. 코어·CLI·웹뷰는 갈아탈 수 있는 구현이고, 남는 것은 이 파일
-> 스키마다(SPEC.md G5). 그래서 포맷 문서가 구현 문서보다 상위에 있다.
+> This format is the contract. The core, the CLI, and the web view are
+> implementations we can swap out; what remains is this file's schema
+> (SPEC.md G5). That is why the format document sits above the implementation
+> documents.
 
-계약의 최소 문장: **한 줄 = 한 이벤트 = 하나의 JSON 객체.** 이 줄들을 쓸 수 있으면
-어떤 언어·에디터·에이전트든 참여자이고, 읽는 도구가 없어도 `cat` 이 유효한 리더다.
+The contract's minimum sentence: **one line = one event = one JSON object.**
+Anything that can write these lines is a participant — any language, any editor,
+any agent — and with no tool to read them, `cat` is a valid reader.
 
-## 1. 어디에 사는가
+## 1. Where it lives
 
-원장·스냅숏·`origin` 은 **스토어 디렉토리 하나**에 같이 산다. 기본 자리는 문서 곁이
-아니라 **홈 중앙**이다.
+The ledger, the snapshots, and `origin` live together in **one store
+directory**. Its default place is not beside the document but the **central
+home**.
 
 ```
 $XDG_DATA_HOME/specround/docs/5a/cdd8cb…/
-  origin                   ← 이 스토어가 무엇을 위해 만들어졌는지 (평문 한 줄)
-  ledger.jsonl             ← 이벤트 로그 (append-only)
-  objects/35/c081dd…       ← 문서 스냅숏 (내용주소, sha256)
+  origin                   ← what this store was made for (one plain-text line)
+  ledger.jsonl             ← the event log (append-only)
+  objects/35/c081dd…       ← document snapshots (content-addressed, sha256)
 ```
 
-- **키 = 문서 절대경로(정규화 후)의 sha256.** 상대표기도 심볼릭 링크도 같은 스토어로
-  모인다 — 한 문서, 한 이력. 키가 경로라서 문서를 **고쳐도** 이력은 그 자리에 있다.
-  정규화는 `resolve()` 에서 한 걸음 더 간다: **경로의 각 조각을 디스크에 적힌 철자로
-  바꾼다.** `resolve()` 는 링크와 `..` 만 펴고 대소문자는 안 건드려서, 대소문자를 안 가리는
-  파일시스템(macOS 기본)에서는 `Real.md` 와 `real.md` 가 **한 파일인데 키가 갈렸다** — 탭
-  완성이나 다른 케이스로 친 `cd` 하나면 빈 이력이 새로 생기고 도구는 그것을 "라운드 0" 이라고
-  사실처럼 답한다. 규칙은 한 줄이고 양쪽 파일시스템에서 다 맞는다: **디스크에 있는 철자가
-  정답이고, 정확히 일치하는 항목이 있으면 그것이 이긴다**(대소문자를 가리는 파일시스템에서
-  둘은 실제로 다른 파일이다).
-- **데이터 홈** = `$XDG_DATA_HOME`(절대경로일 때만) · 없으면 `~/.local/share`. 스토어는
-  데이터다 — 캐시는 축출될 수 있고 설정은 손편집하는 것이라 둘 다 아니다. 플랫폼별 규약
-  (macOS `~/Library/Application Support`) 대신 한 규칙을 쓴다: 사람이 외워서 칠 수 있는
-  경로여야 "`cat` 이 유효한 리더" 가 성립한다.
-- **문서 곁 `.specround/` 는 기본이 아니다.** git 트리 안에서 untracked 노이즈가 되고
-  gitignore 숙제를 만들어서, 하필 그 자리에서 "git 없이 돈다"(G5·G10)가 거짓이 된다.
-- **git 호출 0.** 원장·스냅숏은 평문 파일이다. 문서가 untracked 든 repo 밖이든 전 기능이
-  돈다. 원장을 커밋하는 것은 공유·내구의 선택층일 뿐이고 기록의 전제가 아니다(G5·G10).
+- **The key = sha256 of the document's absolute path (after normalization).**
+  A relative spelling and a symlink both land in the same store — one document,
+  one history. Because the key is the path, **editing** the document leaves the
+  history where it was. Normalization goes one step past `resolve()`: **each
+  segment of the path is replaced with the spelling written on disk.**
+  `resolve()` only unfolds links and `..` and leaves case alone, so on a
+  case-insensitive filesystem (the macOS default) `Real.md` and `real.md` are
+  **one file whose key split in two** — one tab completion, or one `cd` typed in
+  another case, and a new empty history appears while the tool answers "round 0"
+  as though it were a fact. The rule is one line and is right on both kinds of
+  filesystem: **the spelling on disk is the correct one, and an exactly matching
+  entry wins when there is one** (on a case-sensitive filesystem the two really
+  are different files).
+- **The data home** = `$XDG_DATA_HOME` (only when absolute), otherwise
+  `~/.local/share`. A store is data — a cache may be evicted and config is what
+  you hand-edit, so it is neither. Instead of the per-platform convention (macOS
+  `~/Library/Application Support`) it uses one rule: "`cat` is a valid reader"
+  only holds if the path is one a person can type from memory.
+- **A `.specround/` beside the document is not the default.** Inside a git tree
+  it becomes untracked noise and creates gitignore homework, which makes "it
+  runs without git" (G5·G10) a lie in exactly that place.
+- **Zero git calls.** The ledger and the snapshots are plain files. Everything
+  works whether the document is untracked or outside a repo. Committing the
+  ledger is an optional layer for sharing and durability, never a precondition
+  for the record (G5·G10).
 
-### 1.1 스토어를 repo 안으로 (옵트인)
+### 1.1 Putting the store in the repo (opt-in)
 
-팀이 이력을 공유하려면 되돌린다. 문서 디렉토리에서 위로 올라가며 찾은 **가장 가까운**
-`.specround.json` 이 정한다(없으면 기본).
+A team that wants to share history reverses this. The **nearest**
+`.specround.json` found while walking up from the document's directory decides
+(the default applies when there is none).
 
 ```json
 {"store": {"mode": "beside"}}
@@ -47,476 +60,560 @@ $XDG_DATA_HOME/specround/docs/5a/cdd8cb…/
 {"store": {"mode": "central"}}
 ```
 
-| mode | 스토어 위치 | `doc` 키의 기준(base) |
+| mode | store location | base for the `doc` key |
 |---|---|---|
-| `central` | 중앙 (기본과 같음) | 그 문서의 폴더 |
-| `beside` | `<문서 폴더>/.specround` | 문서 폴더 |
-| `path` | `<설정파일 폴더>/<path>` (절대경로면 그대로) | 설정파일 폴더 |
+| `central` | central (same as the default) | that document's folder |
+| `beside` | `<document folder>/.specround` | the document's folder |
+| `path` | `<config file's folder>/<path>` (used as-is when absolute) | the config file's folder |
 
-`path` 가 repo 공유의 실제 답이다 — 여러 폴더의 문서가 원장 하나를 쓰고, 키가 설정파일
-기준이라 clone 해도 같은 파일이 같은 뜻으로 읽힌다.
+`path` is the real answer for sharing in a repo — documents in several folders
+use one ledger, and because the key is relative to the config file, a clone
+reads the same file with the same meaning.
 
-설정을 바꾸면 **그 뒤의 기록만** 새 자리에 쌓인다. 이미 있는 이력은 옛 스토어에 그대로
-남고 자동으로 따라오지 않는다 — 이력을 옮기는 일은 H10 과 같은 계열이고 아직 없다.
+Changing the setting only stacks **records made after it** in the new place. The
+history that exists stays in the old store and does not follow automatically —
+moving history is the same family of work as H10 and does not exist yet.
 
-설정은 TOML 이 아니라 JSON 이다: `tomllib` 은 3.11 부터인데 이 패키지는 3.10 을 무의존으로
-지원해서, TOML 은 의존성이나 "지원하는 인터프리터에서 사라지는 기능" 중 하나를 비용으로
-문다. **모르는 키는 거부한다** — 원장과 같은 이유로, 조용히 무시되는 설정은 켜져 있다고
-믿는 설정이다.
+The config is JSON, not TOML: `tomllib` arrived in 3.11 while this package
+supports 3.10 with no dependencies, so TOML costs either a dependency or a
+feature that vanishes on a supported interpreter. **Unknown keys are refused** —
+for the ledger's reason, a setting that is ignored quietly is a setting you
+believe is in effect.
 
-### 1.2 해석 우선순위 — 인자 > 설정 > 기본
+### 1.2 Resolution order — argument > config > default
 
-| 계층 | 정하는 것 | base |
+| layer | what it decides | base |
 |---|---|---|
-| 인자 | 호출자가 준 스토어 경로 | 같이 준 base → 스토어가 적어 둔 `origin` → **스토어의 부모** |
-| 설정 | 가장 가까운 `.specround.json` | §1.1 표 |
-| 기본 | 중앙 스토어 | 그 문서의 폴더 |
+| argument | the store path the caller gave | the base given with it → the `origin` the store wrote down → **the store's parent** |
+| config | the nearest `.specround.json` | the §1.1 table |
+| default | the central store | that document's folder |
 
-`<폴더>/.specround` 는 인자 규칙의 특수한 경우다(부모가 base) — 규칙이 둘로 갈리지 않게
-하려고 이렇게 뒀다.
+`<folder>/.specround` is a special case of the argument rule (the parent is the
+base) — it is set up that way to keep the rule from splitting in two.
 
-인자 tier 안의 세 단은 **추측을 마지막에 둔다**. 부모는 추측이고 `origin` 은 스토어 자신의
-기록이라(§1.3), 이미 있는 스토어를 부모로 덮어 읽으면 **한 문서가 두 키로 갈린다** — 플래그
-쪽은 자기가 못 보는 이력을 "라운드 0" 이라고 사실처럼 답하고, 그 위에 두 번째 라운드를
-같은 원장에 쓴다. 그래서 호출자가 `base` 를 같이 주면 그것이 이기고(계층 순서 유지), 안 주면
-스토어의 `origin` 을 읽으며, `origin` 이 없는 스토어에서만 부모로 떨어진다.
+The three rungs inside the argument tier **put the guess last**. The parent is a
+guess and `origin` is the store's own record (§1.3), so reading an existing
+store over the parent **splits one document across two keys** — the flag's side
+answers "round 0" as if it were a fact about history it cannot see, and then
+writes a second round on top of it into the same ledger. So when the caller
+passes `base` alongside, that wins (the tier order holds); when they do not, the
+store's `origin` is read; and only in a store with no `origin` does it fall back
+to the parent.
 
-### 1.3 `doc` 키와 `origin`
+### 1.3 The `doc` key and `origin`
 
-- 이벤트의 `doc` 는 **스토어 base 기준 상대 POSIX 경로**다. 상대라서 in-tree 스토어는
-  폴더를 옮기거나 clone 해도 원장이 그대로 유효하다.
-- `origin` 은 스토어가 **무엇을 위해 만들어졌는지**를 평문 한 줄로 적는다. 중앙 스토어의
-  이름은 다이제스트이고 해시는 편도라서, 이 줄이 없으면 이력 디렉토리가 자기 주인을 못
-  말한다.
+- An event's `doc` is a **relative POSIX path against the store's base**. Being
+  relative is what keeps an in-tree store's ledger valid after the folder is
+  moved or cloned.
+- `origin` records **what the store was made for**, in one plain-text line. A
+  central store's name is a digest and a hash is one-way, so without this line a
+  history directory cannot say who it belongs to.
 
   ```json
   {"kind":"document","path":"/home/me/docs/spec.md","schema":"specround.origin/v0"}
   ```
 
-  `kind` 는 `document`(중앙 — 한 문서) 또는 `directory`(in-tree — 그 폴더의 문서 전부).
-  **한 번 쓰고 다시 쓰지 않는다** — 원 경로가 나중의 재결속(H10)이 출발할 유일한 지점이다.
-  `origin` 이 없는 스토어는 이 파일이 생기기 전에 쓰인 것으로 보고 부모 폴더를 담당한다고
-  읽는다.
-- 문서를 옮기거나 개명하면 키가 갈려 **새 스토어**가 생긴다(H10, 미구현). 옛 이력은
-  사라지지 않고 옛 스토어에 그대로 있으며 `origin` 이 원 경로를 계속 말한다.
+  `kind` is `document` (central — one document) or `directory` (in-tree — every
+  document in that folder). **It is written once and never rewritten** — the
+  original path is the only place a later re-binding (H10) can start from. A
+  store with no `origin` is taken to predate this file and read as covering its
+  parent folder.
+- Moving or renaming a document splits the key, so a **new store** appears (H10,
+  unimplemented). The old history does not disappear: it stays in the old store,
+  and `origin` goes on naming the original path.
 
-## 2. 스키마 버전과 호환 규칙
+## 2. Schema version and the compatibility rule
 
-모든 줄은 `schema` 필드를 갖는다. 형식은 `<이름>/v<major>`, 현재 값은
-**`specround.ledger/v0`**.
+Every line carries a `schema` field. The form is `<name>/v<major>` and the
+current value is **`specround.ledger/v0`**.
 
-| 상황 | 리더의 행동 |
+| situation | what the reader does |
 |---|---|
-| `schema` 없음·형식 위반 | 거부 |
-| 이름이 다름 (`other.tool/v0`) | 거부 — 남의 원장이다 |
-| major 가 다름 (`…/v1`) | **거부. 추측하지 않는다** |
-| major 안에서 모르는 최상위 키 | 거부 |
+| no `schema`, or a malformed one | refuse |
+| a different name (`other.tool/v0`) | refuse — it is somebody else's ledger |
+| a different major (`…/v1`) | **refuse. No guessing** |
+| an unknown top-level key within the major | refuse |
 
-major 안에서 필드집합은 **닫혀 있다**. 모르는 키를 조용히 통과시키면 그 순간 계약이
-아니게 되므로, 필드를 늘리는 실험은 예약 필드 **`ext`**(객체)에 담는다. `ext` 안은
-리더가 검사하지 않고 보존만 한다. `ext` 로 굴려본 뒤 승격할 때 major 를 올린다.
+Within a major the field set is **closed**. Letting an unknown key through
+quietly is the moment it stops being a contract, so experiments that add fields
+go in the reserved field **`ext`** (an object). The reader does not inspect
+inside `ext`, only preserves it. When something proven in `ext` gets promoted,
+major goes up.
 
-지금 `ext` 를 실제로 쓰는 것은 셋이다. 앞의 둘은 **앵커를 base 에서 직접 자르지 않은
-입력 표면**이다. 둘 다 남기는 사실은 같다 — "이 앵커는 base 가 아닌 텍스트에서 잘려
-사다리로 옮겨왔고, 어느 단으로 왔다". base 에서 직접 고른 코멘트와 구별이 안 되면 §4 가
-`fuzzy` 를 두는 이유가 comment.add 축에서 사라진다. `position` 이면 옮겨진 게 없으니
-안 남긴다.
+Three things use `ext` today. The first two are **input surfaces where the
+anchor was not cut from the base directly**. Both record the same fact — "this
+anchor was cut from text that is not the base and carried over by the ladder,
+and it came through this rung". If it could not be told apart from a comment
+picked on the base directly, the reason §4 keeps `fuzzy` would be gone from the
+comment.add axis. When the rung is `position` nothing moved, so nothing is
+recorded.
 
-| 키 | 쓰는 것 | `space` | 잘라낸 텍스트 |
+| key | what writes it | `space` | the text that was cut |
 |---|---|---|---|
-| `ext.view` | 웹뷰 diff 모드 | `revision` | 디스크의 문서(개정본) |
-| `ext.harvest` | 인라인 주석 수확기(`harvest`) | `clean` | 문서에서 **주석 문법을 뺀** 텍스트 |
+| `ext.view` | the web view's diff mode | `revision` | the document on disk (the revision) |
+| `ext.harvest` | the inline-annotation harvester (`harvest`) | `clean` | the document **with the annotation syntax removed** |
 
 ```json
 {"strategy":"quote","ambiguous":false,"space":"clean"}
 ```
 
-안쪽 모양이 같은데 키가 둘인 이유는 표면이 둘이라서고, `space` 값이 셋인 이유는 잘라낸
-텍스트가 셋이라서다(수확기의 것은 개정본도 base 도 아니다 — 개정본에서 마커만 뺀
-제3의 문자열이다). **하나로 합치는 것은 승격할 때의 일**이고, 승격은 major 를 올린다.
-`ext` 안은 리더가 검사하지 않으므로 지금 합쳐도 계약상 이득이 없고, 합친 채로 굴려보지
-않은 이름을 필드로 올리는 것이 `ext` 가 막으려는 바로 그것이다.
+The inside shape is the same and there are two keys because there are two
+surfaces; `space` has three values because there are three texts that get cut
+(the harvester's is neither the revision nor the base — it is a third string,
+the revision with only the markers removed). **Merging them into one is work for
+the promotion**, and promotion bumps major. The reader does not inspect inside
+`ext`, so merging now buys nothing under the contract, and promoting a name that
+has not been run in its merged form is the very thing `ext` exists to prevent.
 
-수확기는 대개 `ext` 를 안 쓴다 — 주석을 라운드 base 위에 쳤거나(마커를 빼면 base 가
-돌아온다) 이미 주석이 있는 문서로 라운드를 열었으면(base 가 마커를 들고 있어서 스팬이
-마커 안에 있다) 오프셋이 **계산으로 정확**하고 사다리가 돌지 않는다. 산문까지 움직인
-경우에만 사다리를 타고, 그때만 이 줄이 남는다.
+The harvester mostly does not use `ext` — annotate on top of a round's base
+(removing the markers brings the base back) or open a round on an
+already-annotated document (the base holds the markers, so the span sits inside
+one) and the offsets are **exact by arithmetic**, with no ladder run. Only when
+the prose moved as well does the ladder run, and only then does this line
+appear.
 
-셋째는 **외부 코멘트 흡수**(H9)다. 다른 도구에서 만들어진 코멘트를 들여올 때
-`ext.import = {"source": …, "id": …, "ts": …}` 로 출처를 남긴다. 이 쌍이 재수입의
-멱등 키라서, 같은 파일을 두 번 넣어도 한 번 들어간다. 경계 자체는 이 원장이 아니라
-별도 포맷 `specround.import/v0`(`import-format.md`)이고, 들여온 코멘트는 원장에서
-그냥 `comment.add` 다 — 종류도 필드도 늘지 않았다.
+The third is **absorbing outside comments** (H9). When a comment made in another
+tool is brought in, its origin is recorded as
+`ext.import = {"source": …, "id": …, "ts": …}`. That pair is the idempotency key
+for re-importing, so putting the same file in twice puts it in once. The
+boundary itself is not this ledger but a separate format,
+`specround.import/v0` (`import-format.md`), and an imported comment is just a
+`comment.add` here — neither a kind nor a field was added.
 
-셋 다 승격 후보이고, 아직 후보다 — 승격은 major 를 올리는 일이다.
+All three are promotion candidates, and candidates is all they are — promotion
+bumps major.
 
-**이벤트 종류도 같은 의미로 닫혀 있다** — 모르는 `type` 은 거부다. 그래서 종류를 늘리는
-것은 원칙적으로 major 를 올리는 변경이고, `anchor.reanchor`·`anchor.orphan` 두 종이
-v0 에 들어온 것은 예외가 아니라 **§10 이 비워 둔 자리를 채운 것**이다(그 항목이 "재앵커가
-들어오면 앵커 갱신을 새 이벤트로 남긴다" 고 미리 적어 두었다). v0 은 아직 고정 전이고
-이 두 종보다 앞선 v0 원장은 존재하지 않는다. **v0 이 고정된 뒤에 종류를 늘리려면 major 를
-올린다** — 구버전 리더가 그 줄에서 파일 전체를 거부하기 때문이다.
+**Event kinds are closed in the same sense** — an unknown `type` is refused. So
+adding a kind is in principle a major-bumping change, and the arrival of
+`anchor.reanchor` and `anchor.orphan` in v0 is not an exception but **filling a
+place §10 had left empty** (that entry said in advance, "when re-anchoring
+arrives, record the anchor update as a new event"). v0 is not frozen yet, and no
+v0 ledger predates these two kinds. **Once v0 is frozen, adding a kind bumps
+major** — an older reader refuses the whole file at that line.
 
-`thread.resolve`·`thread.reopen` 도 같은 창에서 들어왔다. 이쪽은 §10 이 아니라 **SPEC 의
-보장 G11 이 미리 잡아 둔 자리**다 — "끝난 대화는 resolve 로 닫는다" 는 처음부터 선언된
-보장이고, 지금 추가된 것은 그 보장의 구현이지 새 아이디어가 아니다. 창을 쓰는 조건은
-그때와 같다: v0 이 아직 고정 전이고, 이 도구 자신의 dogfooding 밖에 v0 원장이 없다.
-**창을 닫는 시점은 첫 외부 사용자**이고, 그 뒤의 종류 추가는 major 를 올린다.
+`thread.resolve` and `thread.reopen` came in through the same window. Their
+place was held not by §10 but by **the SPEC's guarantee G11** — "a conversation
+that is over is closed with resolve" was declared from the start, and what was
+added is that guarantee's implementation, not a new idea. The condition for
+using the window is the same as before: v0 is not frozen, and no v0 ledger
+exists outside this tool's own dogfooding. **The window closes at the first
+outside user**, and adding a kind after that bumps major.
 
-**스토어가 홈 중앙으로 옮겨간 개정이 major 를 올리지 않은 이유**: `doc` 의 규칙이
-"`.specround` 의 부모 기준" 에서 "스토어 base 기준" 으로 **일반화**됐을 뿐이고, in-tree
-스토어에서는 base 가 곧 `.specround` 의 부모라 기존 v0 원장의 모든 줄이 **글자 그대로 같은
-뜻**으로 읽힌다. 필드도 늘지 않았다. major 는 "읽던 것이 다르게 읽히기 시작할 때" 올리고,
-스토어가 어디에 있는지는 원장 **밖의** 사실이다. (`origin` 은 원장이 아니라 별도 파일이고
-자기 스키마 `specround.origin/v0` 를 따로 갖는다.)
+**Why the revision that moved the store to the central home did not bump
+major**: `doc`'s rule was **generalized** from "relative to `.specround`'s
+parent" to "relative to the store's base", and in an in-tree store the base *is*
+`.specround`'s parent, so every line of an existing v0 ledger reads with
+**literally the same meaning**. No field was added either. Major goes up when
+"what you were reading starts reading differently", and where the store lives is
+a fact **outside** the ledger. (`origin` is a separate file, not the ledger, and
+carries its own schema `specround.origin/v0`.)
 
-## 3. 공통 봉투
+## 3. The common envelope
 
-모든 이벤트가 공통으로 갖는다. 전부 필수.
+Every event carries these. All required.
 
-| 필드 | 타입 | 뜻 |
+| field | type | meaning |
 |---|---|---|
-| `schema` | 문자열 | `specround.ledger/v0` |
-| `seq` | 0 이상 정수 | **파일에서의 0-기반 위치.** 줄 번호와 반드시 일치한다 |
-| `ts` | 문자열 | UTC ISO8601 초 단위(`2026-02-01T09:00:00Z`). **순서에 쓰지 않는다** |
-| `type` | 문자열 | 아래 10종 중 하나 |
-| `id` | 문자열 | 이 이벤트의 식별자. 종류 접두 + 다이제스트 12자 |
-| `author` | 문자열 | 주체. 사람이든 에이전트든 같은 칸(`alice`, `agent:reviewer`) — G4 |
+| `schema` | string | `specround.ledger/v0` |
+| `seq` | integer ≥ 0 | **the 0-based position in the file.** It must equal the line number |
+| `ts` | string | UTC ISO8601 to the second (`2026-02-01T09:00:00Z`). **Not used for ordering** |
+| `type` | string | one of the ten kinds below |
+| `id` | string | this event's identifier. A kind prefix + 12 digest characters |
+| `author` | string | who is speaking. A person and an agent share the field (`alice`, `agent:reviewer`) — G4 |
 
-`author` 는 **누구**만 말하고 사람인지 에이전트인지는 말하지 않는다. `agent:` 접두는
-관습이라 리더가 검사할 수 없고, 그렇게 이름 지은 사람과 구별되지 않는다. 그 구분이
-판단에 걸리는 자리(스레드를 닫는 것)에서만 닫힌 어휘 `actor` 를 따로 요구한다 — 필요한
-곳에만 두는 비대칭이고, 봉투로 올리는 것은 major 를 올릴 때의 후보다(§10).
+`author` says only **who**, never whether that is a person or an agent. The
+`agent:` prefix is a convention, so a reader cannot check it and it is
+indistinguishable from somebody who named themselves that way. Only where that
+distinction bears on a judgement (closing a thread) is a separate closed
+vocabulary, `actor`, required — an asymmetry kept to the place that needs it,
+and lifting it into the envelope is a candidate for when major goes up (§10).
 
-`id` 는 호출자가 주지 않으면 도구가 파생한다: 접두(`r` 라운드 · `c` 코멘트 ·
-`s` 제안 · `p` 회신 · `d` 처분 · `x` 라운드 닫기 · `a` 재앵커 · `o` 고아 ·
-`v` resol**v**e · `n` reope**n**) + `sha256(id 를 뺀 나머지 전체)` 앞
-12자. 다이제스트가 `seq` 를 포함하므로 **내용이 같은 두 코멘트도 id 가 갈리고**, 같은
-순서로 재생하면 같은 id 가 나온다.
+`id` is derived by the tool when the caller does not supply one: the prefix
+(`r` round · `c` comment · `s` suggestion · `p` reply · `d` disposition ·
+`x` round close · `a` re-anchor · `o` orphan · `v` resol**v**e ·
+`n` reope**n**) plus the first 12 characters of `sha256(everything but the id)`.
+Because the digest covers `seq`, **two comments with the same content still get
+different ids**, and replaying in the same order produces the same ids.
 
-## 4. 이벤트 10종
+## 4. The ten event kinds
 
-### `round.open` — 라운드 열기
+### `round.open` — open a round
 
-문서의 현재 내용을 **박제**하고 그 스냅숏을 base 로 삼는다. 이게 G2 의 핵심이다:
-리뷰의 기준은 커밋이 아니라 도구가 박제한 스냅숏이므로, 리뷰를 열기 위해 stage·commit 할
-일이 없다(G10).
+**Freezes** the document's current content and takes that snapshot as the base.
+This is the heart of G2: review's reference is not a commit but a snapshot the
+tool froze, so opening a review never involves staging or committing (G10).
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `doc` | ✓ | 문서 경로(상대 POSIX) |
-| `base` | ✓ | 스냅숏 참조 `sha256:<64 hex>` |
-| `title` | | 라운드 이름(빈 문자열 허용) |
+| `doc` | ✓ | the document's path (relative POSIX) |
+| `base` | ✓ | the snapshot reference `sha256:<64 hex>` |
+| `title` | | the round's name (an empty string is allowed) |
 
-### `comment.add` — 코멘트
+### `comment.add` — a comment
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `round` | ✓ | 대상 라운드 id (**열려 있어야 한다**) |
-| `body` | ✓ | 본문(빈 문자열 불가) |
-| `anchor` | | 문서 앵커(§5). 없으면 문서 전체에 대한 코멘트 |
+| `round` | ✓ | the target round's id (**it must be open**) |
+| `body` | ✓ | the text (an empty string is not allowed) |
+| `anchor` | | the document anchor (§5). Without it, the comment is about the whole document |
 
-### `suggestion.add` — 제안 (G8)
+### `suggestion.add` — a suggestion (G8)
 
-본문이 패치인 코멘트. 처분 축은 코멘트와 같고(apply/기각), 실체가 diff 라서 필드가 갈린다.
+A comment whose body is a patch. The disposition axis is a comment's
+(apply/reject); the fields differ because the substance is a diff.
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `round` | ✓ | 대상 라운드 id (열려 있어야 한다) |
-| `patch` | ✓ | 패치 본문 |
-| `body` | | 제안 사유(선택 — 패치가 substance 라서) |
-| `anchor` | | 문서 앵커 |
+| `round` | ✓ | the target round's id (it must be open) |
+| `patch` | ✓ | the patch text |
+| `body` | | the reason for the suggestion (optional — the patch is the substance) |
+| `anchor` | | the document anchor |
 
-### `reply` — 회신
+### `reply` — a reply
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `target` | ✓ | 코멘트·제안 id. **평면 구조** — 회신에 회신하지 않는다 |
-| `body` | ✓ | 본문 |
+| `target` | ✓ | a comment or suggestion id. **A flat structure** — there is no replying to a reply |
+| `body` | ✓ | the text |
 
-닫힌 라운드의 코멘트에도 회신할 수 있다(늦게 답하는 것은 정상이다). **닫힌 스레드에는
-못 한다** — resolved 는 기본 뷰에서 가려지므로(§7.1) 그 아래 붙은 회신은 아무도 안 보는
-자리에 착지한다. 기록됐는데 읽히지 않는 답이 바로 G3 이 막는 유실이라, 리더가 거부하고
-`thread.reopen` 을 먼저 요구한다(I11).
+A comment in a closed round can still be replied to (answering late is normal).
+**A closed thread cannot be** — resolved is hidden from the default view
+(§7.1), so a reply underneath lands where nobody looks. An answer that got
+recorded and does not get read is exactly the loss G3 prevents, so the reader
+refuses it and asks for `thread.reopen` first (I11).
 
-### `disposition` — 처분 (G3)
+### `disposition` — a disposition (G3)
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `target` | ✓ | 코멘트·제안 id |
-| `verdict` | ✓ | `applied` 반영 · `rejected` 기각 · `answered` 답변 · `deferred` 보류 |
-| `reason` | ✓ | 사유(빈 문자열 불가) — 네 판정 전부에서 필수 |
+| `target` | ✓ | a comment or suggestion id |
+| `verdict` | ✓ | `applied` · `rejected` · `answered` · `deferred` |
+| `reason` | ✓ | the reason (an empty string is not allowed) — required on all four verdicts |
 
-어휘는 **닫혀 있다**. `wontfix` 같은 임의 값은 거부한다.
+The vocabulary is **closed**. An arbitrary value such as `wontfix` is refused.
 
-### `round.close` — 라운드 닫기
+### `round.close` — close a round
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `round` | ✓ | 대상 라운드 id (열려 있어야 한다) |
-| `unresolved` | 조건부 | 미처분으로 남기고 닫는 코멘트 id 목록(정렬). 미처분이 있으면 **필수** |
-| `note` | | 닫는 메모 |
+| `round` | ✓ | the target round's id (it must be open) |
+| `unresolved` | conditional | the list of comment ids left undisposed (sorted). **Required** when any are undisposed |
+| `note` | | a closing note |
 
-미처분을 남기고 닫는 것 자체는 막지 않는다. 막는 것은 **감추고 닫는 것**이다 — 남긴
-목록이 실제 미처분 집합과 정확히 같지 않으면 리더가 거부한다(I6). 그래서 손으로 쓴
-`round.close` 도 열린 코멘트를 조용히 지나칠 수 없다.
+Closing with things left undisposed is not blocked. What is blocked is
+**closing while hiding them** — when the list left behind is not exactly the
+real undisposed set, the reader refuses (I6). So even a hand-written
+`round.close` cannot walk past an open comment quietly.
 
-### `anchor.reanchor` — 앵커를 새 스냅숏에 다시 묶기 (G1)
+### `anchor.reanchor` — bind an anchor to a new snapshot (G1)
 
-문서가 개정되면 코멘트의 앵커를 개정본에서 다시 찾아 붙인다. **과거 줄은 고치지 않는다** —
-코멘트가 만들어질 때의 앵커는 그 자리에 그대로 남고, "지금 어디에 있나" 는 이 이벤트의
-최신값이다.
+When the document is revised, a comment's anchor is found again in the revision
+and re-attached. **Past lines are not edited** — the anchor as of the comment's
+creation stays where it was, and "where is it now" is this event's latest value.
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `target` | ✓ | 코멘트·제안 id. **앵커가 있는 것**이어야 한다(I9) |
-| `base` | ✓ | 이 앵커가 정합하는 스냅숏 참조 `sha256:<64 hex>` |
-| `anchor` | ✓ | 새 앵커(§5). 그 스냅숏에서 잘라낸 것이다 |
-| `strategy` | ✓ | 어느 단으로 찾았나 — `position`·`quote`·`normalized`·`fuzzy` |
-| `ambiguous` | | `true` 면 같은 점수의 자리가 둘 이상이었고 위치 힌트가 골랐다 |
+| `target` | ✓ | a comment or suggestion id. It must be one **that has an anchor** (I9) |
+| `base` | ✓ | the snapshot reference this anchor is consistent with, `sha256:<64 hex>` |
+| `anchor` | ✓ | the new anchor (§5). It was cut out of that snapshot |
+| `strategy` | ✓ | which rung found it — `position` · `quote` · `normalized` · `fuzzy` |
+| `ambiguous` | | `true` when two or more places scored the same and the position hint chose |
 
-`strategy` 어휘는 **닫혀 있다**. 이 값이 있어야 읽는 쪽이 "그냥 밀려난 코멘트" 와
-"본문이 다시 쓰인 코멘트" 를 구분한다 — 뒤쪽은 사람이 한 번 봐야 하는 것이고, 앞쪽은
-아니다. `ambiguous` 도 같은 목적이다: **조용히 고르지 않는다**.
+The `strategy` vocabulary is **closed**. This value is what lets the reading side
+tell "a comment that merely shifted" from "a comment whose text was rewritten" —
+the latter is something a person should look at once, the former is not.
+`ambiguous` serves the same purpose: **nothing is chosen quietly**.
 
-**점수(유사도 수치)는 싣지 않는다.** 줄은 언어와 무관하게 같은 바이트여야 하고(id 파생이
-거기에 걸려 있다) 부동소수 표기는 그 약속이 깨지는 전형적인 자리다. 더 자세한 계측이
-필요하면 `ext` 에 담는다.
+**Scores (similarity numbers) are not carried.** A line has to be the same bytes
+regardless of language (id derivation depends on it), and floating-point
+notation is the classic place that promise breaks. When finer measurement is
+needed, it goes in `ext`.
 
-라운드가 열려 있을 필요는 없다. 코멘트는 라운드보다 오래 살고, 본문을 움직이는 개정은
-대개 라운드가 닫힌 **뒤**에 온다.
+The round need not be open. Comments outlive rounds, and the revision that moves
+prose usually comes **after** a round is closed.
 
-### `anchor.orphan` — 앵커를 못 찾았다 (G1 × G3)
+### `anchor.orphan` — the anchor was not found (G1 × G3)
 
-재앵커가 실패하면 코멘트를 조용히 떨어뜨리는 대신 **못 찾았다는 사실을 기록**한다.
-이것이 유실 0 이 개정 축에서 뜻하는 바다.
+When re-anchoring fails, the comment is not dropped quietly: **the fact that it
+was not found is recorded**. This is what zero loss means on the revision axis.
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `target` | ✓ | 코멘트·제안 id. 앵커가 있는 것이어야 한다(I9) |
-| `base` | ✓ | 못 찾은 그 스냅숏 |
-| `reason` | ✓ | 왜 못 찾았는지(빈 문자열 불가) |
+| `target` | ✓ | a comment or suggestion id. It must be one that has an anchor (I9) |
+| `base` | ✓ | the snapshot it was not found in |
+| `reason` | ✓ | why it was not found (an empty string is not allowed) |
 
-고아는 **처분이 아니다**. 처분은 "이 지적을 어떻게 했나" 고 고아는 "이 코멘트를 아직
-문서 위에 놓을 수 있나" 다 — 축이 다르다. 반영된 코멘트도 고아일 수 있고(반영하면서
-본문을 지웠으니 오히려 흔한 경우다), 고아면서 미처분일 수도 있다.
+An orphan is **not a disposition**. A disposition is "what was done about this
+point" and an orphan is "can this comment still be placed on the document" —
+different axes. An applied comment can be an orphan (rather the common case,
+since applying it deleted the prose), and a comment can be both orphaned and
+undisposed.
 
-**고아는 앵커를 잃지 않는다.** 마지막으로 성공한 앵커가 그대로 현재 앵커고, 이후 개정에서
-그 본문이 돌아오면 `anchor.reanchor` 가 다시 붙는다(append 라 되살아나는 것이 자연스럽다).
+**An orphan does not lose its anchor.** The last anchor that succeeded is still
+the current one, and if that prose returns in a later revision
+`anchor.reanchor` attaches again (with append-only, coming back is natural).
 
-### `thread.resolve` — 이 대화는 끝났다 (G11)
+### `thread.resolve` — this conversation is over (G11)
 
-**스레드 = 코멘트(또는 제안) 하나 + 그 아래 회신 사슬**이다. 회신이 평면(§`reply`)이라
-스레드에 별도 객체가 없고, **루트 코멘트의 id 가 곧 스레드의 id** 다 — 그래서 `target`
-이 코멘트를 지목한다.
+**A thread = one comment (or suggestion) + the chain of replies under it.**
+Replies are flat (§`reply`), so a thread has no object of its own and **the root
+comment's id is the thread's id** — which is why `target` names a comment.
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `target` | ✓ | 스레드 루트 코멘트·제안 id |
-| `actor` | ✓ | `human` 사람 · `agent` 에이전트. **닫힌 어휘** |
-| `note` | | 닫으며 남기는 메모(빈 문자열 허용) |
+| `target` | ✓ | the thread's root comment or suggestion id |
+| `actor` | ✓ | `human` · `agent`. **A closed vocabulary** |
+| `note` | | a note left while closing (an empty string is allowed) |
 
-`actor` 가 필수인 이유는 G11 이 "사람도 에이전트도 resolve 할 수 있다" 이기 때문이다 —
-읽는 쪽에서 "에이전트가 이 논의를 끝났다고 판단했다" 와 "사람이 그렇게 했다" 는 다음
-행동이 갈리는 사실이고, `author` 의 `agent:` 접두는 관습이라 검사할 수 없다(§3).
+`actor` is required because G11 is "a person and an agent can both resolve" — to
+the reading side, "an agent judged this discussion over" and "a person did" are
+different facts that lead to different next actions, and the `agent:` prefix in
+the author string is a convention a reader cannot check (§3).
 
-라운드가 열려 있을 필요는 없다. 스레드는 라운드보다 오래 살고, 대화가 마무리되는 시점은
-대개 라운드가 닫힌 뒤다.
+The round need not be open. Threads outlive rounds, and a conversation usually
+wraps up after the round is closed.
 
-**resolve 는 처분이 아니다.** 처분(§`disposition`)은 코멘트 하나를 어떻게 했는지고,
-resolve 는 그 대화가 끝났는지다 — 축이 다르다(§7). 그래서 처분 없이 resolved 인 스레드
-(그냥 합의한 경우)도, 종결됐는데 열려 있는 스레드(반영은 됐고 논의는 이어지는 경우)도
-정상이다. **`round.close` 의 미처분 계산은 resolve 를 보지 않는다** — 봤다면 스레드를 닫는
-것이 미처분 코멘트를 조용히 지나치는 수단이 됐을 것이다(I6 가 막는 바로 그것).
+**Resolve is not a disposition.** A disposition (§`disposition`) is what was
+done about one comment, and resolve is whether that conversation is over —
+different axes (§7). So a thread that is resolved with no disposition (simply
+agreed) is normal, and so is a thread that is settled but still open (applied,
+discussion continuing). **`round.close`'s undisposed count does not look at
+resolve** — if it did, closing a thread would have become a way to walk past an
+undisposed comment quietly (exactly what I6 prevents).
 
-### `thread.reopen` — 잘못 닫았다 (G11)
+### `thread.reopen` — it was closed by mistake (G11)
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `target` | ✓ | 스레드 루트 코멘트·제안 id |
+| `target` | ✓ | the thread's root comment or suggestion id |
 | `actor` | ✓ | `human` · `agent` |
-| `reason` | ✓ | 왜 다시 여는지(빈 문자열 불가) |
+| `reason` | ✓ | why it is being reopened (an empty string is not allowed) |
 
-resolve 는 메모가 선택인데 reopen 은 사유가 필수다. **이미 원장에 있는 판단을 뒤집는
-이벤트는 사유를 진다** — `disposition`·`anchor.orphan` 과 같은 규칙이다. 닫는 쪽은
-대화 자체가 사유의 기록이라 강제하지 않는다.
+Resolve takes an optional note while reopen requires a reason. **An event that
+overturns a judgement already in the ledger owes a reason** — the same rule as
+`disposition` and `anchor.orphan`. The closing side is not held to it because
+the conversation itself is the record of the reason.
 
-되돌리기도 **append 다.** 과거 줄을 고치지 않으므로 "닫혔다 → 다시 열렸다" 가 이력으로
-읽히고, **지금 닫혀 있나** 는 이 두 종의 최신값이다.
+Undoing is **an append too.** Past lines are not edited, so "closed → reopened"
+reads as history, and **whether it is closed now** is the latest value of these
+two kinds.
 
-## 5. 앵커 (G1)
+## 5. Anchors (G1)
 
-W3C Web Annotation 셀렉터 쌍이다 — 인용(`TextQuoteSelector`)과 위치
-(`TextPositionSelector`)를 **같이** 싣는다. 하나만으로는 부실해서다: 위치는 위쪽이 한 자만
-바뀌어도 죽고, 인용은 같은 구절이 반복되면 어디인지 모른다.
+A pair of W3C Web Annotation selectors — the quote (`TextQuoteSelector`) and the
+position (`TextPositionSelector`), carried **together**. Either alone is too
+thin: a position dies when one character above it changes, and a quote does not
+know which place it means when the passage repeats.
 
-| 필드 | 필수 | 뜻 |
+| field | required | meaning |
 |---|---|---|
-| `exact` | ✓ | 인용 문자열(빈 문자열 = 삽입 지점) |
-| `start` / `end` | ✓ | 문자 offset. `end - start == len(exact)` |
-| `prefix` / `suffix` | | 앞뒤 문맥 각 32자(문서 경계에서 잘림) |
+| `exact` | ✓ | the quoted string (an empty string = an insertion point) |
+| `start` / `end` | ✓ | character offsets. `end - start == len(exact)` |
+| `prefix` / `suffix` | | 32 characters of context on each side (clipped at the document's edges) |
 
-**쓰기 시점 정합 불변식**: `text[start:end] == exact` 이고 문맥도 그 위치에서 맞아야
-한다. 어긋난 앵커는 나중에 복구가 불가능하므로 append 전에 거부한다.
+**The write-time consistency invariant**: `text[start:end] == exact`, and the
+context has to match at that position too. An anchor that disagrees cannot be
+recovered later, so it is refused before the append.
 
-검증 기준 텍스트는 **그 앵커가 명명한 스냅숏**이다. `comment.add`·`suggestion.add` 면
-그 라운드의 base(리뷰어가 읽은 텍스트), `anchor.reanchor` 면 그 이벤트의 `base` 다.
+The text it is checked against is **the snapshot that anchor names**. For
+`comment.add` and `suggestion.add` that is the round's base (the text the
+reviewer read); for `anchor.reanchor` it is that event's `base`.
 
-offset 이 바이트가 아니라 **문자**이고 스냅숏은 정규화 없이 원본 바이트를 보존한다
-(CRLF·말미 개행 포함) — 스냅숏을 건드리면 앵커가 조용히 밀린다.
+Offsets are in **characters**, not bytes, and a snapshot preserves the original
+bytes with no normalization (CRLF and a trailing newline included) — touch the
+snapshot and the anchors shift quietly.
 
-### 5.1 개정을 건너는 재앵커 (H4)
+### 5.1 Re-anchoring across a revision (H4)
 
-개정본에서 앵커를 다시 찾는 규칙이다. 네 단을 순서대로 시도하고, **어느 단의 결과든
-개정본에서 다시 잘라낸다** — 그래서 기록되는 앵커는 자기가 명명한 스냅숏에 대해 항상
-정합한다. 옛 인용·옛 문맥을 그대로 들고 가지 않는다.
+The rule for finding an anchor again in the revision. Four rungs are tried in
+order, and **whichever rung answers, the result is cut out of the revision
+again** — which is why a recorded anchor is always consistent with the snapshot
+it names. The old quote and the old context are not carried along.
 
-| 단 | `strategy` | 무엇을 잡나 |
+| rung | `strategy` | what it catches |
 |---|---|---|
-| 1 | `position` | offset 이 그대로 맞는다 — 위쪽이 안 움직였다 |
-| 2 | `quote` | 인용이 그대로 있다 — 윗줄 삽입·문단 이동 |
-| 3 | `normalized` | 따옴표·대시·공백 런·유니코드 합성을 접으면 같다 — 리플로우·타이포그래피 교정 |
-| 4 | `fuzzy` | 인용 자체가 고쳐졌다 — 근사 정렬 + 유사도 하한 |
+| 1 | `position` | the offsets still match — nothing above moved |
+| 2 | `quote` | the quote is still there — a line inserted above, a paragraph moved |
+| 3 | `normalized` | folding quotes, dashes, whitespace runs, and Unicode composition makes them equal — a reflow, a typographic fix |
+| 4 | `fuzzy` | the quote itself was edited — approximate alignment plus a similarity floor |
 
-같은 인용이 여러 번 나오면 **문맥과 옛 위치**가 고른다(그래서 앵커가 문맥을 싣는다).
-점수가 같은 자리가 둘 이상이면 위치가 결정하되 `ambiguous` 로 표시한다. 네 단이 모두
-하한을 못 넘으면 `anchor.orphan` 이다 — **추측해서 아무 데나 붙이지 않는다.**
+When the same quote appears several times, **the context and the old position**
+choose (which is why an anchor carries context). When two or more places score
+the same, position decides but it is marked `ambiguous`. When all four rungs
+fail to clear the floor it is an `anchor.orphan` — **nothing is guessed into
+place.**
 
-**하한은 네 단 전부에 걸린다.** 인용이 글자 그대로 있다는 것은 "같은 문장" 이지 "같은
-자리" 가 아니다 — 산문은 반복되고, 다른 절 아래의 같은 문장은 다른 문장이다. 그래서
-2·3 단도 앵커 문맥이 얼마나 남았는지를 보고, 못 넘으면 그 자리를 후보에서 **거부**한다
-(순위만 매기는 것이 아니다). 남는 쪽으로 재는 이유는 개정이 대개 한쪽만 지우기
-때문이다 — 위 문단을 지우면 prefix 가 죽고 suffix 는 그대로다. 양쪽 다 안 남으면
-"옮겨간 것" 이 아니라 "다른 자리" 로 본다. 붙일 자리를 못 찾은 고아는 보이는 실패지만,
-확신을 갖고 틀린 자리에 붙은 코멘트는 조용한 오답이다.
+**The floor applies on all four rungs.** A quote being there literally means
+"the same sentence", not "the same place" — prose repeats, and the same sentence
+under a different section is a different sentence. So rungs 2 and 3 also look at
+how much of the anchor's context survived, and **refuse** a place that does not
+clear it (they do not merely rank). Measuring by what survives is right because
+a revision usually deletes on one side only — delete the paragraph above and the
+prefix dies while the suffix is untouched. When neither side survives, it is not
+"the thing that moved" but "a different place". An orphan with no place to
+attach is a visible failure, while a comment attached confidently to the wrong
+place is a quiet wrong answer.
 
-비용은 문서 크기가 아니라 상수로 묶여 있다(후보 상한·정렬 창 고정). 근사 매칭은 2차라서
-그 상한이 없으면 짧고 흔한 인용 + 긴 문서에서 수 초씩 멈춘다 — Hypothesis 가 실측한
-실패모드다. **그 상한은 문서 앞이 아니라 옛 위치 주변에서 자른다** — 앞에서 자르면
-상한이 후보 집합을 정하는 데 그치지 않고 답을 정한다(참인 자리가 채점조차 못 받고,
-`ambiguous` 도 안 붙는다).
+The cost is bounded by constants rather than by document size (a candidate cap
+and a fixed alignment window). Approximate matching is quadratic, so without
+that cap a short common quote in a long document stalls for seconds — the
+failure mode Hypothesis measured. **That cap cuts around the old position, not
+from the top of the document** — cutting from the top would let the cap decide
+not just the candidate set but the answer (the true place never even gets
+scored, and `ambiguous` is not raised either).
 
-이 규칙은 **포맷이 아니라 도구의 것**이다. 원장이 요구하는 것은 `strategy` 어휘와
-"기록된 앵커는 자기 `base` 에 정합한다"(I7) 뿐이고, 하한·후보 생성 방식을 바꾸는 것은
-스키마 변경이 아니다. 그래서 점수를 안 싣는다 — 튜닝값이 계약에 새면 못 바꾼다.
+This rule belongs **to the tool, not to the format**. All the ledger requires is
+the `strategy` vocabulary and "a recorded anchor is consistent with its own
+`base`" (I7); changing the floor or how candidates are generated is not a schema
+change. That is why scores are not carried — a tuning value that leaks into the
+contract cannot be changed.
 
-## 6. 불변식
+## 6. Invariants
 
-리더가 강제한다. 위반은 예외이고, "그 줄만 건너뛰기" 같은 관용은 없다.
+The reader enforces them. A violation is an exception, and there is no leniency
+such as "skip just that line".
 
-| id | 불변식 | 어기면 |
+| id | invariant | when broken |
 |---|---|---|
-| I1 | **append-only.** 갱신·삭제 연산이 없다. 새 줄만 붙는다 | — |
-| I2 | `seq` == 파일에서의 줄 위치 | 손으로 지우거나 순서를 바꾸면 **에러**(조용한 오답 아님) |
-| I3 | `id` 는 원장 전체에서 유일 | 거부 |
-| I4 | 코멘트·제안은 **열린** 라운드를 지목한다 | 거부(새 라운드를 열라) |
-| I5 | 종결된 코멘트는 재처분 불가 | 거부 |
-| I6 | `round.close` 의 `unresolved` == 실제 미처분 집합 | 거부 |
-| I7 | 앵커는 자기가 명명한 스냅숏과 정합(코멘트=라운드 base · 재앵커=그 이벤트의 `base`) | 거부 |
-| I8 | 회신·처분·resolve·reopen 의 `target` 은 존재하는 코멘트·제안 | 거부 |
-| I9 | 재앵커·고아의 `target` 은 **앵커를 가진** 코멘트·제안 | 거부(문서 전체 코멘트는 옮길 자리가 없다) |
-| I10 | 이미 그 상태인 스레드에 대한 resolve·reopen 은 **상태를 안 바꾼다** | 거부하지 않는다 — 멱등 |
-| I11 | `reply` 의 `target` 은 **열린** 스레드 | 거부(`thread.reopen` 을 먼저) |
+| I1 | **append-only.** There is no update or delete operation. Only new lines are added | — |
+| I2 | `seq` == the line's position in the file | deleting or reordering by hand is an **error** (not a silent wrong answer) |
+| I3 | `id` is unique across the whole ledger | refused |
+| I4 | a comment or suggestion names an **open** round | refused (open a new round) |
+| I5 | a settled comment cannot be re-disposed | refused |
+| I6 | `round.close`'s `unresolved` == the real undisposed set | refused |
+| I7 | an anchor is consistent with the snapshot it names (comment = the round's base · re-anchor = that event's `base`) | refused |
+| I8 | the `target` of a reply, disposition, resolve, or reopen is an existing comment or suggestion | refused |
+| I9 | the `target` of a re-anchor or an orphan is a comment or suggestion **that has an anchor** | refused (a whole-document comment has nowhere to move) |
+| I10 | a resolve or reopen on a thread already in that state **does not change the state** | not refused — idempotent |
+| I11 | `reply`'s `target` is an **open** thread | refused (`thread.reopen` first) |
 
-**읽는 코드가 곧 쓰는 게이트다.** 쓰기는 `prior + 새 레코드` 를 fold 해보고 통과할 때만
-파일에 붙인다. 그래서 API 로 들어온 것과 손으로 쓴 것에 **같은 오라클**이 걸린다 —
-검사 로직이 두 벌이면 반드시 갈라진다.
+**The reading code is the writing gate.** A write folds `prior + the new record`
+and appends to the file only if that passes. So what arrives through the API and
+what was written by hand meet **the same oracle** — two copies of the checking
+logic would inevitably diverge.
 
-**append 는 배타 잠금 없이는 거절한다.** `seq` 를 현재 길이에서 뽑기 때문에 잠금이 없으면
-두 writer 가 같은 `seq` 를 받고, 위치가 겹친 원장은 리더가 통째로 거부한다(I2) — 이 포맷이
-막으려는 유실이 앵커 층이 아니라 파일 층으로 들어오는 경로다. 그래서 잠금 원시연산(POSIX
-`fcntl`)이 없는 인터프리터에서는 **쓰기를 거절하고 읽기는 그대로 둔다**: `cat` 이 유효한
-리더라는 약속은 모든 플랫폼에서 유지되고, append 만 POSIX 를 요구한다.
+**An append with no exclusive lock is refused.** `seq` is taken from the current
+length, so without a lock two writers get the same `seq`, and a ledger with
+overlapping positions is refused whole by the reader (I2) — the path by which
+the loss this format prevents enters at the file layer instead of the anchor
+layer. So on an interpreter without the locking primitive (POSIX `fcntl`),
+**writing is refused and reading is left alone**: the promise that `cat` is a
+valid reader holds on every platform, and only appending requires POSIX.
 
-**줄 끝 개행은 레코드가 아니라 구분자다.** 마지막 줄에 개행이 없는 파일도 리더는 받아들인다
-— 그 안의 레코드는 온전하고, 에디터가 마지막 개행을 떼는 것은 흔한 일이다. 대신 **append 가
-쓰기 전에 빠진 구분자를 채운다.** 채우지 않으면 새 레코드가 마지막 줄 꼬리에 붙어 한 물리
-줄에 객체가 둘이 되고, 그 뒤로는 `cat` 을 포함해 아무 리더도 그 원장을 못 읽는다(복구 수단
-없음). 구분자를 되돌리는 것은 갱신이 아니다(I1) — 어떤 레코드의 바이트도 변하지 않는다.
+**The newline at the end of a line is a separator, not part of the record.** A
+file whose last line has no newline is accepted by the reader — the record in it
+is intact, and an editor stripping the final newline is a common thing. Instead,
+**the append fills in the missing separator before writing.** Without that, a
+new record joins the tail of the last line, one physical line holds two objects,
+and from then on no reader — `cat` included — can read that ledger (with no way
+to recover). Restoring the separator is not an update (I1): not one byte of any
+record changes.
 
-**I7 만 fold 가 아니라 스토어가 집행한다.** 나머지는 전부 줄만 보고 판정되는데 I7 은
-스냅숏을 열어야 판정된다 — 그리고 fold 는 파일시스템을 안 보는 순수 함수다(§8). 둘 중
-하나를 포기하는 대신 **집행 층을 한 겹 밖으로** 옮겼다: 오브젝트를 가진 것은 스토어이므로,
-스토어를 통과하는 **모든 읽기**가 원장의 앵커를 자기 base 스냅숏에 대고 검증한다. 규칙의
-구현은 하나(`ReviewStore._check_anchor`)고 쓰기 경로도 같은 것을 부른다 — 예외 종류까지
-같다. §6 이 경계한 "검사 로직 두 벌" 은 **같은 조건에 두 예외**로도 성립하기 때문이다.
-스냅숏을 **열 수 없는** 경우(오브젝트 누락·다이제스트 불일치)는 원장의 주장이 틀린 것이
-아니라 오브젝트 스토어가 답을 못 하는 것이라 별도 오류로 남긴다.
+**Only I7 is enforced by the store rather than by the fold.** Everything else is
+decided from the lines alone, while I7 requires opening a snapshot — and the
+fold is a pure function that does not look at the filesystem (§8). Rather than
+give up one of the two, **the enforcement layer moved one level out**: the store
+is what holds the objects, so **every read that goes through the store** checks
+the ledger's anchors against their own base snapshots. There is one
+implementation of the rule (`ReviewStore._check_anchor`) and the write path
+calls the same one — down to the same exception type, because the "two copies of
+the checking logic" §6 warned about also holds as **two exceptions for one
+condition**. When a snapshot **cannot be opened** (a missing object, a digest
+mismatch), the ledger's claim is not wrong — the object store cannot answer — so
+that is recorded as a separate error.
 
-## 7. 처분 상태 모델
+## 7. The disposition state model
 
 ```
-(처분 없음) ──deferred──► deferred ──applied/rejected/answered──► 종결
-     │                        │
-     └──applied/rejected/answered──────────────────────► 종결 (재처분 거부)
+(no disposition) ──deferred──► deferred ──applied/rejected/answered──► settled
+      │                          │
+      └──applied/rejected/answered─────────────────────► settled (re-disposition refused)
 ```
 
-**`deferred`(보류)만 비종결이다.** 보류가 종결이면 보류한 항목이 "봐야 할 것" 목록에서
-사라져 보류라는 판정을 둘 이유가 없어진다. 그래서:
+**Only `deferred` is non-terminal.** If deferring were terminal, a deferred item
+would drop out of the "things to look at" list and there would be no reason for
+the verdict to exist. So:
 
-- **미처분** = 처분이 없음 ∪ 최신 처분이 `deferred`
-- `applied`·`rejected`·`answered` 는 최종. 뒤집으려면 새 라운드에서 새 코멘트를 단다
-  (원장을 고쳐 과거를 바꾸지 않는다)
-- 처분은 여러 번 append 될 수 있고 **최신이 현재 상태**다. 이력은 전부 남는다
+- **undisposed** = has no disposition ∪ the latest disposition is `deferred`
+- `applied` · `rejected` · `answered` are final. Overturning one means a new
+  comment in a new round (the past is not changed by editing the ledger)
+- a disposition can be appended more than once and **the latest is the current
+  state**. The whole history stays
 
-### 7.1 스레드 상태 모델 (G11)
+### 7.1 The thread state model (G11)
 
 ```
-(열림) ──resolve──► resolved ──reopen──► (열림) ──resolve──► resolved …
-   ▲                    │                                        │
-   └── reopen (무효과) ──┘                     resolve (무효과) ──┘
+(open) ──────resolve──────► resolved ──reopen──► (open) ──resolve──► resolved …
+   ▲                            │                                        │
+   └── reopen (no effect) ──────┘                   resolve (no effect) ─┘
 ```
 
-처분과 정반대의 규칙이다. **처분은 종결되면 재처분을 거부하고(I5), 스레드는 같은 상태의
-재선언을 거부하지 않는다(I10).** 이유는 두 이벤트가 하는 말이 달라서다 — 종결된 코멘트에
-다른 판정을 다시 내리는 것은 기록된 결정과 **모순**이지만, 닫힌 스레드를 또 닫는 것은
-같은 말을 두 번 하는 것이라 **동의**다. 그래서 재시도가 오류가 아니고, 오판이 사고가
-되지 않는다.
+The rule is the exact opposite of dispositions'. **A disposition refuses
+re-disposition once settled (I5), and a thread does not refuse a re-declaration
+of the same state (I10).** The reason is that the two events say different
+things — handing a settled comment a different verdict **contradicts** a
+recorded decision, while closing a closed thread says the same thing twice,
+which is **agreement**. So a retry is not an error, and a misjudgement does not
+become an accident.
 
-**중복 줄은 상태를 안 바꾸지만 이력에는 남는다** — 손으로 쓴 원장이든 두 참여자가 동시에
-닫은 것이든 리더는 받아들이고, 누가 언제 그렇게 판단했는지가 그대로 읽힌다. 도구 쪽은
-그 줄을 **만들지 않는다**(§`anchor.reanchor` 의 "변화 없음은 기록하지 않는다" 와 같은
-이유): 이미 그 상태면 append 없이 통과시킨다. 계약은 "받아준다" 이고 도구의 선택은
-"안 쓴다" 다 — 둘이 어긋나지 않는다.
+**A duplicate line does not change the state but does stay in the history** —
+whether from a hand-written ledger or two participants closing at once, the
+reader accepts it, and who judged so and when reads back as written. The tool
+side **does not make** that line (the same reason as §`anchor.reanchor`'s "no
+change is not recorded"): when it is already in that state, it passes without
+appending. The contract is "it is accepted" and the tool's choice is "it is not
+written" — the two do not disagree.
 
-**resolved 가 실제로 막는 것은 회신 하나뿐이다**(I11). 처분도, 재앵커도, 또 한 번의
-resolve 도 닫힌 스레드에 그대로 붙는다 — 그것들은 코멘트에 대한 기록이라 뷰에서 가려져도
-집계(`unresolved`·`orphans`)에 그대로 잡히기 때문이다. 회신만 다르다: 회신은 **읽히려고**
-쓰는 것이고 가려진 스레드 아래에서는 그 목적을 잃는다. 그래서 대화를 이어가려면
-`thread.reopen` 으로 먼저 연다 — resolve 는 응답의 대체가 아니라 대화의 종결이다.
+**What resolved actually blocks is one thing, the reply** (I11). A disposition, a
+re-anchor, and one more resolve all attach to a closed thread as before — those
+are records about a comment, so even hidden from the view they still count in
+the totals (`unresolved`, `orphans`). Only a reply is different: a reply is
+written **to be read**, and under a hidden thread it loses that purpose. So
+carrying the conversation on means opening it first with `thread.reopen` —
+resolve is a conversation's ending, not a substitute for answering.
 
-### 7.2 세 축은 따로 논다
+### 7.2 The three axes are independent
 
-| 축 | 묻는 것 | fold |
+| axis | what it asks | fold |
 |---|---|---|
-| 처분 | 이 지적을 어떻게 했나 | `unresolved` |
-| 앵커 | 아직 문서 위에 놓을 수 있나 | `orphans` |
-| 스레드 | 이 대화가 끝났나 | `resolved_threads` / `active_threads` |
+| disposition | what was done about this point | `unresolved` |
+| anchor | can it still be placed on the document | `orphans` |
+| thread | is this conversation over | `resolved_threads` / `active_threads` |
 
-이름이 헷갈리기 쉬운 자리다: **`unresolved`(처분)와 `resolved`(스레드)는 반의어가
-아니다.** 코멘트 하나가 이 세 축의 어느 조합에도 있을 수 있다.
+This is where the names mislead: **`unresolved` (disposition) and `resolved`
+(thread) are not opposites.** One comment can be in any combination of the three
+axes.
 
-**기본 뷰는 resolved 를 가린다**(G11). 가림은 뷰의 일이고 삭제가 아니다 — 원장에는 전부
-남고, fold 의 `comments` 에도 전부 있다. 목록에서 빠질 뿐이고 토글로 돌아온다.
+**The default view hides resolved** (G11). Hiding is the view's job and not a
+deletion — the ledger keeps everything, and so does the fold's `comments`. It
+only drops out of listings, and a toggle brings it back.
 
-## 8. fold 결정성
+## 8. Fold determinism
 
-`fold` 는 원장만 읽어 현재를 계산한다 — 열린 라운드, 미처분 코멘트. 다른 어디에도 이
-상태의 사본이 없다(어긋날 두 번째 사본을 만들지 않는다).
+`fold` reads only the ledger to compute the present — the open rounds, the
+undisposed comments. There is no copy of this state anywhere else (no second
+copy to disagree with).
 
-- **순수 함수**다. 시계·난수·파일시스템을 보지 않는다. 같은 줄 순서 → 같은 상태
-- **순서는 `seq`, `ts` 는 데이터다.** 시계가 튀거나 뒤로 가도 결과가 변하지 않는다
-- 줄이 정본이라 상태를 캐시하지 않는다. 재계산이 항상 답이다
-- 그래서 **I7 은 fold 가 아니라 스토어가 본다**(§6). 순수성을 깎아 불변식을 넣는 대신
-  불변식을 오브젝트가 있는 층으로 올린다 — fold 는 판정 못 하는 줄을 그대로 접고,
-  스토어를 통과하는 읽기가 거부한다. 스냅숏은 내용주소라 불변이므로 그 층은 읽은
-  스냅숏을 기억해도 된다(사실을 캐시하는 것이지 상태를 캐시하는 것이 아니다).
+- It is a **pure function**. It does not look at the clock, at randomness, or at
+  the filesystem. The same line order → the same state
+- **Order is `seq`, `ts` is data.** A clock that jumps or runs backwards does not
+  change the result
+- The lines are authoritative, so state is not cached. Recomputing is always the
+  answer
+- Which is why **I7 is the store's business, not the fold's** (§6). Instead of
+  shaving off purity to fit an invariant, the invariant moves up to the layer
+  that has the objects — the fold folds a line it cannot judge as it is, and the
+  read going through the store refuses. Snapshots are content-addressed and so
+  immutable, which means that layer may remember the snapshots it read (caching
+  a fact, not caching state).
 
-## 9. 실제 원장 예시
+## 9. A real ledger
 
-아래는 도구가 실제로 낸 출력이다(손으로 쓴 예가 아니다). 라운드 하나에서 코멘트 ·
-제안 · 회신 · 반영 · 보류 · 기각 · 미처분 1건을 남기고 닫은 뒤, 개정 두 번을 건너간다 —
-2차 개정에서 재앵커, 3차 개정에서 고아. 마지막으로 대화 둘을 닫고 그중 하나를 다시 연다.
+Below is output the tool actually produced (not a hand-written example). In one
+round it leaves a comment · a suggestion · a reply · an applied · a deferred · a
+rejected · one undisposed, then closes and crosses two revisions — re-anchored
+at the second, orphaned at the third. Finally two conversations are closed and
+one of them reopened.
 
 ```jsonl
 {"author":"alice","base":"sha256:35c081dd8b8aea1c491c9b6e76eb6ae8e7675e7cfceb679fc5ca2652ba8ff8e5","doc":"protocol.md","id":"r-59add8920c91","schema":"specround.ledger/v0","seq":0,"title":"round 1","ts":"2026-02-01T09:00:00Z","type":"round.open"}
@@ -537,54 +634,68 @@ resolve 도 닫힌 스레드에 그대로 붙는다 — 그것들은 코멘트�
 {"actor":"human","author":"bob","id":"n-58caec7c2b7b","reason":"the patch still reads on the new wording","schema":"specround.ledger/v0","seq":15,"target":"s-086c5beb81f0","ts":"2026-02-01T10:07:00Z","type":"thread.reopen"}
 ```
 
-이 원장을 fold 하면: 열린 라운드 0개, 미처분 1건(`c-7863abd8f91e`, `deferred`),
-고아 2건(`c-d35c1ebd2b14`·`s-086c5beb81f0`), 닫힌 스레드 1건(`c-d35c1ebd2b14`).
-보류한 코멘트가 라운드를 넘어 살아남고, 본문이 사라진 코멘트가 조용히 없어지는 대신
-고아로 남는 것이 G3 이 말하는 유실 0 이다.
+Folding this ledger gives: 0 open rounds, 1 undisposed (`c-7863abd8f91e`,
+`deferred`), 2 orphans (`c-d35c1ebd2b14`·`s-086c5beb81f0`), 1 closed thread
+(`c-d35c1ebd2b14`). A deferred comment surviving past its round, and a comment
+whose prose is gone staying as an orphan instead of quietly disappearing, is the
+zero loss G3 talks about.
 
-세 축이 따로 논다는 것도 이 예시에 있다. `c-d35c1ebd2b14` 는 `applied` 로 **종결**됐고
-3차 개정에서 **고아**이며(반영하면서 그 문장을 지웠으니 당연하다) 대화도 **닫혔다** —
-세 축이 우연히 같은 방향으로 간 경우다. `s-086c5beb81f0` 은 `rejected` 로 종결됐고
-고아인데 대화는 **열려 있다**(닫았다가 bob 이 다시 열었다). `c-7863abd8f91e` 는
-미처분이고 앵커가 없고 대화도 열려 있다. 기본 목록에 나오는 것은 뒤의 둘이다.
+The three axes being independent is in this example too. `c-d35c1ebd2b14` is
+**settled** as `applied`, is an **orphan** at the third revision (naturally —
+applying it deleted the sentence), and its conversation is **closed** as well —
+a case where all three axes happened to go the same way. `s-086c5beb81f0` is
+settled as `rejected` and is an orphan, but its conversation is **open** (it was
+closed and bob reopened it). `c-7863abd8f91e` is undisposed, has no anchor, and
+its conversation is open. The default listing shows the latter two.
 
-닫는 주체가 갈리는 것도 여기 있다: `v-08bdcb2d3b60` 은 에이전트가 닫았고
-(`actor: agent`) `v-6e5c72132f69` 는 사람이 닫았다. `author` 만 보면 `agent:reviewer`
-라는 이름일 뿐이라 구별이 안 된다.
+Who did the closing is in here as well: `v-08bdcb2d3b60` was closed by an agent
+(`actor: agent`) and `v-6e5c72132f69` by a person. Going by `author` alone, one
+is merely a name that reads `agent:reviewer`, so the two cannot be told apart.
 
-seq 9·10 의 `strategy` 가 `fuzzy` 인 것도 읽을 거리다 — "30 seconds" 가 "60 seconds" 로
-바뀌었으니 인용이 그대로 있는 것이 아니라 **본문이 고쳐진** 경우이고, 사람이 한 번 볼
-값어치가 있다는 뜻이다.
+The `strategy` on seq 9 and 10 being `fuzzy` is worth reading too — "30 seconds"
+became "60 seconds", so the quote is not still there: **the prose was edited**,
+which means it is worth a person's look.
 
-줄은 **키 정렬 + 공백 없는** canonical JSON 이다(같은 레코드 → 항상 같은 바이트, 그래서
-id 파생이 성립하고 파일 비교가 의미를 갖는다). 한글은 `\u` 이스케이프하지 않는다 — 사람이
-`cat` 으로 읽을 수 있어야 한다(G4).
+Lines are canonical JSON, **key-sorted and without whitespace** (the same record
+→ always the same bytes, which is what makes id derivation work and file
+comparison meaningful). Non-ASCII text is not `\u`-escaped — a person has to be
+able to read it with `cat` (G4).
 
-## 10. 이 포맷이 아직 정하지 않은 것
+## 10. What this format has not settled
 
-포맷에 자리는 있지만 규칙이 없는 것들. 예측으로 파지 않고 결정이 막힐 때 채운다.
+Things with a place in the format but no rule. They are not dug on prediction;
+they get filled when a decision is blocked.
 
-- **H8 제안의 stale** — 재앵커가 들어왔으니 **기계는 갖췄다**: 제안의 앵커도 코멘트와
-  똑같이 개정을 건넌다(§5.1). 남은 것은 포맷이 아니라 정책이다 — 옮겨간 앵커에 옛 패치를
-  그대로 적용해도 되는지, `fuzzy` 로 옮겨간 제안은 사람 확인을 받아야 하는지. 라운드 동결이
-  아니라 재앵커 계열로 푼 선례가 있다(Gerrit 3.11+).
-- **고아·모호 재앵커의 처리 정책** — 원장은 `anchor.orphan` 과 `ambiguous` 로 **보고**만
-  한다. "누가 언제 보나" 는 이제 답이 있다: CLI `comments` 의 꼬리와 웹뷰의 스레드 목록이
-  둘 다 고아·`fuzzy`·`ambiguous` 를 표시로 달고, 목록을 읽는 사람이 그 사람이다.
-  안 정한 것은 **무엇을 하나** 다 — 고아를 어딘가에 모아 보일지, 다음 라운드에서 다시
-  물을지. 표시만 하는 현행은 결정이 아니라 아직 안 한 것이다.
-- ~~**H9 외부 코멘트 흡수**~~ — **닫혔다**(2026-08-07). 경계는 별도 포맷
-  `specround.import/v0`(`import-format.md`)이고, 이 원장 쪽에서 늘어난 것은 `ext.import`
-  하나다: `{"source": …, "id": …, "ts": …}` 로 출처를 남겨 재수입을 멱등으로 만든다.
-  §2 가 예약한 `ext` 를 쓰는 두 번째 자리이고 승격 후보다 — 승격은 major 를 올리는 일이다.
-  종류도 필드도 늘지 않았다(외부 코멘트는 그냥 `comment.add` 다).
-- **원장 병합** — 두 사람이 각자 append 한 원장을 합치는 규칙(현재는 파일 하나 · 같은
-  디렉토리 · 락 기준). git 으로 공유하면 정렬·중복제거 병합이 필요해진다.
-- **`actor` 를 봉투로 올릴 것인가** — 지금은 스레드 이벤트 2종에만 있다(§3). 사람/에이전트
-  구분이 다른 이벤트에서도 판단에 걸린다면 봉투 필수 필드가 맞고, 그건 기존 모든 줄이
-  무효가 되는 변경이라 major 를 올린다. 그 전에 필요한 것은 예측이 아니라 **어느 뷰가
-  실제로 그 구분을 쓰는지**의 실측이다.
-- **resolved 인데 미처분인 스레드를 라운드가 어떻게 닫는가** — 포맷은 정했다(resolve 는
-  `round.close` 의 계산에 안 들어간다, §4). 안 정한 것은 흐름이다: 합의로 끝난 스레드에
-  `answered` 처분을 요구할지, 아니면 close 가 그런 스레드를 따로 보여줄지는 CLI·뷰의
-  몫이다.
+- **H8, stale suggestions** — re-anchoring arrived, so **the machinery is
+  there**: a suggestion's anchor crosses a revision exactly as a comment's does
+  (§5.1). What is left is policy, not format — whether an old patch may be
+  applied as-is to an anchor that moved, and whether a suggestion carried by
+  `fuzzy` needs a person's confirmation. There is precedent for solving this
+  with the re-anchor family rather than by freezing the round (Gerrit 3.11+).
+- **The handling policy for orphans and ambiguous re-anchors** — the ledger only
+  **reports**, through `anchor.orphan` and `ambiguous`. "Who looks, and when"
+  now has an answer: the tail of the CLI's `comments` and the web view's thread
+  list both flag orphans, `fuzzy`, and `ambiguous`, and whoever reads the list
+  is that person. What is unsettled is **what to do** — whether to collect
+  orphans somewhere, or to ask again in the next round. Flagging only, as it
+  stands, is not a decision but something not yet done.
+- ~~**H9, absorbing outside comments**~~ — **closed** (2026-08-07). The boundary
+  is a separate format, `specround.import/v0` (`import-format.md`), and the only
+  thing that grew on this ledger's side is `ext.import`: the origin is recorded
+  as `{"source": …, "id": …, "ts": …}`, which makes re-importing idempotent. It
+  is the second place to use the `ext` §2 reserved, and a promotion candidate —
+  promotion bumps major. Neither a kind nor a field was added (an outside
+  comment is just a `comment.add`).
+- **Merging ledgers** — the rule for combining ledgers two people appended to
+  separately (today it is one file · one directory · a lock). Sharing over git
+  makes a sort-and-dedupe merge necessary.
+- **Whether to lift `actor` into the envelope** — today it is on the two thread
+  events only (§3). If the person/agent distinction bears on judgements in other
+  events too then it belongs as a required envelope field, and since that
+  invalidates every existing line it bumps major. What is needed first is not a
+  prediction but a measurement of **which view actually uses the distinction**.
+- **How a round closes a thread that is resolved but undisposed** — the format
+  settled it (resolve does not enter `round.close`'s count, §4). What is
+  unsettled is the flow: whether a thread that ended in agreement should be made
+  to take an `answered` disposition, or whether close should show such threads
+  separately, belongs to the CLI and the view.
