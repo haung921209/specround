@@ -20,16 +20,32 @@ from specround.anchors import Anchor
 from specround.fold import Anchoring, Comment, Disposition, Reply, Resolution, Round, State
 
 __all__ = [
+    "EMPTY_SUMMARY",
     "anchor_json",
     "anchoring_json",
     "comment_json",
     "comments_on",
     "disposition_json",
+    "document_summary",
     "reply_json",
     "resolution_json",
     "round_json",
     "rounds_on",
 ]
+
+#: What a document with no history looks like, in the shape
+#: :func:`document_summary` returns. A document nobody has reviewed is a normal
+#: answer, not a missing one, and a listing that left it out would be a listing
+#: of stores rather than of documents.
+EMPTY_SUMMARY: dict[str, Any] = {
+    "rounds": 0,
+    "open_rounds": 0,
+    "comments": 0,
+    "unresolved": 0,
+    "orphans": 0,
+    "resolved": 0,
+    "last_activity": None,
+}
 
 
 def rounds_on(state: State, key: str) -> list[Round]:
@@ -40,6 +56,42 @@ def rounds_on(state: State, key: str) -> list[Round]:
 def comments_on(state: State, key: str) -> list[Comment]:
     """Every comment on one document, across all its rounds."""
     return [c for c in state.comments.values() if state.rounds[c.round].doc == key]
+
+
+def document_summary(state: State, key: str) -> dict[str, Any]:
+    """One document seen from outside it: how much review, not what it says.
+
+    This is what a listing of documents needs and the per-document payload does
+    not answer — the counts are over *every* round on the document rather than
+    the one a view is writing to. It lives here with the rest of the wire shapes
+    because a navigation bar and a ``--json`` caller must not learn two different
+    definitions of "unresolved"; the counts below are the same ones
+    :func:`round_json` and :func:`comment_json` derive, read off the same fold.
+
+    ``last_activity`` is the latest timestamp on anything recorded about this
+    document. It is **display only**. The ledger is explicit that timestamps
+    never order anything (a second's resolution and a clock nobody controls),
+    so nothing here or above may sort by it — it answers "has this gone quiet",
+    which is a question a reader asks and a machine must not.
+    """
+    rounds = rounds_on(state, key)
+    comments = comments_on(state, key)
+    stamps = [r.ts for r in rounds]
+    for comment in comments:
+        stamps.append(comment.ts)
+        stamps.extend(reply.ts for reply in comment.replies)
+        stamps.extend(d.ts for d in comment.dispositions)
+        stamps.extend(r.ts for r in comment.resolutions)
+        stamps.extend(a.ts for a in comment.anchorings)
+    return {
+        "rounds": len(rounds),
+        "open_rounds": sum(1 for r in rounds if r.open),
+        "comments": len(comments),
+        "unresolved": sum(1 for c in comments if c.unresolved),
+        "orphans": sum(1 for c in comments if c.orphaned),
+        "resolved": sum(1 for c in comments if c.resolved),
+        "last_activity": max(stamps) if stamps else None,
+    }
 
 
 def anchor_json(anchor: Anchor | None) -> dict[str, Any] | None:
