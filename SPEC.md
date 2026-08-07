@@ -257,6 +257,14 @@ target is spec and prose documents — PR tools already do code well).
   is guessing at intent, so it is not done; the offsets reveal the adjacency) ·
   **merging `ext.view`/`ext.harvest`** (the inside shape is the same — merging
   is a field promotion and bumps major, `docs/ledger-format.md` §2)
+- H15 workspace view (docs-english round c-1579c766, 2026-08-07) — the view
+  serves one document, and that is a deliberate v0 boundary (rounds, anchors,
+  and the server are all per-document axes). A workspace mode — a navigation
+  bar on the left over a set of documents, each showing its rounds and
+  unresolved counts, click to switch — is worth building as a layer: the
+  servers are already independent per document and all state lives in the
+  ledger, so the core does not change. Trigger = reviewing document sets in
+  practice (same "not before it is needed" rule as H11)
 
 ## 5. Done-ness (of the spec stage)
 
