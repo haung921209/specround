@@ -164,6 +164,26 @@ def _string(payload: Mapping[str, Any], key: str, what: str, *, required: bool) 
     return value
 
 
+def _verbatim(payload: Mapping[str, Any], key: str, what: str) -> str | None:
+    """A field taken exactly as written — no trimming.
+
+    ``quote`` is the one field whose whitespace is data. It has to match the
+    base character for character, so trimming it would quietly change what the
+    item said it was about: an indented line would anchor to its un-indented
+    middle, and a quote whose trailing space was the point would look for
+    something that is not there. Absent is fine; present and empty is not,
+    because a field that says nothing is a converter that failed to fill it.
+    """
+    if key not in payload:
+        return None
+    value = payload[key]
+    if not isinstance(value, str):
+        raise BatchError(f"{what}: {key!r} must be a string")
+    if not value:
+        raise BatchError(f"{what}: {key!r} must not be empty")
+    return value
+
+
 def _span(payload: Mapping[str, Any], what: str) -> tuple[int, int] | None:
     if "span" not in payload:
         return None
@@ -198,7 +218,7 @@ def _parse_item(payload: Any, index: int) -> Item:
     if not isinstance(whole, bool):
         raise BatchError(f"{what}: 'whole' must be true or false")
 
-    quote = _string(raw, "quote", what, required=False)
+    quote = _verbatim(raw, "quote", what)
     span = _span(raw, what)
     occurrence = raw.get("occurrence")
     if occurrence is not None:

@@ -69,6 +69,12 @@ at, same rule and same reason.
 record's `ts` is when it was appended, and rewriting that to the source's clock
 would make the log's order and its timestamps disagree. It goes to `ext` (§4).
 
+**`quote` is taken exactly as written.** Every other string field is trimmed;
+this one is not, because its whitespace is data — it has to match the base
+character for character. Trimming would anchor an indented line to its
+un-indented middle, silently naming a different span than the item did. A
+`quote` that is present and empty is refused rather than read as "no anchor".
+
 **An anchored item without a `quote` is refused, not defaulted.** Silently
 treating it as a comment on the whole document would turn a converter bug into
 a successful-looking import — exit 0, comment recorded, anchor gone. Saying

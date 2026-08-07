@@ -165,6 +165,24 @@ def test_a_repeated_source_id_in_one_file_is_refused():
         parse_batch(batch(item("dup", quote="30 seconds"), item("dup", "other", whole=True)))
 
 
+def test_the_quote_is_taken_exactly_as_written(doc, store):
+    # Whitespace in a quote is data: it has to match the base character for
+    # character. Trimming would anchor an indented line to its un-indented
+    # middle, which is a different span than the item named.
+    doc.write_text("intro\n    indented line\n", encoding="utf-8")
+    indented = store.open_round(doc, author="alice")
+    parsed = parse_batch(batch(item(quote="    indented line")))
+    assert parsed.items[0].quote == "    indented line"
+
+    plan = plan_import(store, indented, store.doc_key(doc), parsed)
+    assert plan.planned[0].anchor.exact == "    indented line"
+
+
+def test_a_quote_that_is_present_but_empty_is_refused():
+    with pytest.raises(BatchError, match="'quote' must not be empty"):
+        parse_batch(batch(item(quote="")))
+
+
 def test_an_empty_comment_list_is_a_valid_file():
     assert parse_batch(batch()).items == ()
 
