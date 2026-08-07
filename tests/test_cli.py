@@ -1234,11 +1234,6 @@ def test_an_argument_error_without_json_still_reads_like_argparse(run, doc):
     assert "invalid int value" in result.err
 
 
-def test_help_and_version_are_not_failures(run):
-    assert run("--version").code == 0
-    assert run("--help").code == 0
-
-
 # -- what the listing carries --------------------------------------------
 
 

@@ -58,7 +58,10 @@ from specround.locations import (
 )
 from specround.store import ReviewStore
 
-__version__ = "0.0.1"
+# The one place the version is written. ``pyproject.toml`` reads it from here
+# (``[tool.hatch.version]``), so the distribution metadata, ``specround
+# --version``, and the release tarball's name cannot drift apart.
+__version__ = "0.1.0"
 
 __all__ = [
     "ACTORS",

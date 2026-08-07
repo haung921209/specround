@@ -1,6 +1,7 @@
 [project]
 name = "specround"
-version = "0.0.1"
+# One version, in src/specround/__init__.py — see [tool.hatch.version] below.
+dynamic = ["version"]
 description = "Spec review rounds for humans and AI agents — anchored comments, suggestion diffs, and an append-only disposition ledger. No server, no git dependency."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,7 +24,7 @@ dependencies = []
 specround = "specround.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/specround/specround"
+Homepage = "https://github.com/haung921209/specround"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
@@ -32,8 +33,29 @@ dev = ["pytest>=8.0"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The version is read out of the package, not repeated here. A Homebrew formula
+# asserts `specround --version` prints the version brew resolved from the
+# tarball name, so a metadata version that drifts from ``__version__`` is a
+# failed install, not a cosmetic mismatch.
+[tool.hatch.version]
+path = "src/specround/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/specround"]
+
+[tool.hatch.build.targets.sdist]
+# What a source build needs, and nothing else: the package, its tests, and the
+# documents the README points at. Everything else is repository furniture.
+include = [
+  "/src",
+  "/tests",
+  "/docs",
+  "/adapters",
+  "/README.md",
+  "/SPEC.md",
+  "/LICENSE",
+  "/pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
