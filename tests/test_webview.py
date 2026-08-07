@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -44,14 +45,21 @@ def opened(view, round_id):
     return view
 
 
-def call(view, path, body=None, *, token=None, origin=None, method=None):
-    """One request. Returns ``(status, payload)`` — an error is a payload too."""
+def call(view, path, body=None, *, token=None, origin=None, method=None, params=None):
+    """One request. Returns ``(status, payload)`` — an error is a payload too.
+
+    ``params`` goes into the query beside the token, which is the only way to
+    send one: the token is a query parameter too, so a caller that spelled its
+    own ``?doc=…`` into ``path`` would push the token out of the query and get a
+    403 for what it meant as a 400.
+    """
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"}
     if origin is not None:
         headers["Origin"] = origin
     chosen = view.token if token is None else token
-    url = f"http://{view.host}:{view.port}{path}?t={chosen}"
+    query = urllib.parse.urlencode({"t": chosen, **(params or {})})
+    url = f"http://{view.host}:{view.port}{path}?{query}"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=10) as response:

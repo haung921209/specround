@@ -66,6 +66,7 @@ from specround.wire import (
     round_json,
     rounds_on,
 )
+from specround.workspace import MARKDOWN_SUFFIXES, Workspace
 
 #: Exit codes. See the module docstring — these are the contract, not the prose.
 OK = 0
@@ -1061,7 +1062,11 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     others are "there is less to write than you might expect"; this one is "what
     you asked for is not here", and serving something else under that name would
     be the quiet wrong answer the exit codes exist to separate.
+
+    A directory is the same verb over a tree (H15) and takes the branch below.
     """
+    if Path(args.doc).expanduser().is_dir():
+        return _view_workspace(args)
     target = _target(args, missing_ok=True)
     view = WebView(
         store=target.store,
@@ -1100,14 +1105,99 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
         lines.append(f"note   {blocked}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
 
+    return payload, lines, _serving(view, args.open)
+
+
+def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable[[], None]]:
+    """Serve a whole tree from one process — one server, a bar, three modes (H15).
+
+    A spec is never one file. The workspace layer is navigation and nothing
+    else: the document a request names decides which per-document projection
+    answers it, so rounds, anchors, and the ledger stay exactly where they were.
+
+    The view starts on the **first document in path order**. Not the most
+    recently active one, tempting as that is: the only thing that could rank
+    "recent" is a timestamp, and this project's timestamps order nothing (they
+    are seconds off a clock nobody controls). A default that shuffles with the
+    ledger is a default nobody can predict, and the bar is one click away.
+
+    Two refusals, both because the alternative is a quiet wrong answer. A tree
+    with no markdown in it has nothing to serve. And ``--round`` names a round,
+    which belongs to one document — honouring it here would mean picking a
+    document for the caller and hiding that under a flag about rounds.
+    """
+    root = canonical_path(Path(args.doc).expanduser())
+    if args.round:
+        raise UsageError(
+            f"--round names a round, and a round belongs to one document — point view at "
+            f"that file to use it, or drop the flag to serve {root}"
+        )
+    space = Workspace(root=root, store=Path(args.store) if args.store else None)
+    listing = space.list()
+    if not listing.documents:
+        suffixes = " or ".join(MARKDOWN_SUFFIXES)
+        raise UsageError(
+            f"{root}: no markdown documents under it ({suffixes}, dotted names skipped) — "
+            "there is nothing to review here"
+        )
+    opening = listing.documents[0]
+    store = space.store_for(opening.path)
+    view = WebView(
+        store=store,
+        path=opening.path,
+        author=_author(args),
+        actor=_actor(args),
+        host=args.host,
+        port=args.port,
+        workspace=space,
+        doc=opening.key,
+    ).bind()
+    counts = listing.to_json()["counts"]
+    payload = {
+        "doc": view.key,
+        "path": str(opening.path),
+        "store": str(store.root),
+        "root": str(root),
+        "url": view.url,
+        "host": view.host,
+        "port": view.port,
+        "token": view.token,
+        "workspace": {**listing.to_json(), "selected": opening.key},
+    }
+    # The URL first and alone, exactly as the single-document view promises: a
+    # consumer that places this view reads one line and does not learn a second
+    # shape because the argument was a directory.
+    lines = [
+        view.url,
+        f"serving {counts['documents']} document(s) under {root} — "
+        f"{counts['active']} with review activity, {counts['unresolved']} unresolved",
+        f"open   {opening.key}",
+    ]
+    stores = {document.store for document in listing.documents}
+    if len(stores) == 1:
+        lines.append(f"store  {stores.pop()}")
+    else:
+        # The default layout gives every document its own central store, so
+        # naming one of them would be naming the wrong one for every other
+        # document in the bar.
+        lines.append(f"stores {len(stores)} — one per document, listed in the workspace payload")
+    if listing.note:
+        lines.append(f"note   {listing.note}")
+    lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
+    return payload, lines, _serving(view, args.open)
+
+
+def _serving(view: WebView, open_browser: bool) -> Callable[[], None]:
+    """What to do once the URL has been delivered — the two views' one answer."""
+
     def serve() -> None:
-        if args.open:
+        if open_browser:
             import webbrowser
 
             webbrowser.open(view.url)
         view.serve_forever()
 
-    return payload, lines, serve
+    return serve
 
 
 # -- parser --------------------------------------------------------------
@@ -1325,9 +1415,16 @@ def build_parser() -> argparse.ArgumentParser:
     viewing = verbs.add_parser(
         "view",
         parents=[common, writing],
-        help="serve the document to a browser — render, raw, and round diff",
+        help="serve a document — or a whole directory of them — to a browser",
     )
-    viewing.add_argument("doc")
+    viewing.add_argument(
+        "doc",
+        metavar="DOC|DIR",
+        help=(
+            "the document to serve, or a directory: one server for the tree, with a "
+            "bar listing its markdown and the review each document has"
+        ),
+    )
     viewing.add_argument(
         "--port", type=int, default=0, metavar="N", help="pin the port (default: any free one)"
     )

@@ -26,6 +26,13 @@ because that snapshot is the text this round is a review of. When the file on
 disk has moved on, the diff mode is where that shows — and a selection on a line
 only the revision has is carried into the base by the re-anchor ladder, or
 refused with a reason. It is never guessed onto a nearby span.
+
+**A directory is served the same way, from one process (H15).** The workspace
+layer adds navigation and nothing else: every request names the document it is
+about, and the answer is the same per-document projection a file view gives.
+The selection is the *caller's*, never the server's — a process that remembered
+which document was open would be state, and this one has none by design. That
+is also what lets two browser tabs on one port read two documents at once.
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ from specround.fold import Round, State
 from specround.reanchor import POSITION
 from specround.store import ReviewStore
 from specround.wire import comment_json, comments_on, round_json, rounds_on
+from specround.workspace import Workspace
 
 __all__ = ["BASE", "REVISION", "Refusal", "WebView", "VIEW_SCHEMA"]
 
@@ -124,6 +132,15 @@ class WebView:
     host: str = DEFAULT_HOST
     port: int = 0
     token: str = ""
+    #: The tree this view navigates, when it was started on a directory (H15).
+    #: ``None`` is the file view, unchanged in every respect.
+    workspace: Workspace | None = None
+    #: This view's document as the *workspace* names it — a path relative to the
+    #: root. Empty without a workspace. Kept apart from :attr:`key`, which is
+    #: how the *store* names the same document; the two spaces differ (a central
+    #: store keys ``docs/sub/a.md`` as ``a.md``) and mixing them would read one
+    #: document's history under another's name.
+    doc: str = ""
 
     def __post_init__(self) -> None:
         self.key = self.store.doc_key(self.path)
@@ -132,6 +149,10 @@ class WebView:
         self._thread: threading.Thread | None = None
         #: Whether a serving loop is running and can acknowledge a shutdown.
         self._serving = False
+        #: Views onto the workspace's other documents, made when first asked
+        #: for. They are projections, not sessions: each one re-folds its own
+        #: ledger on every request, so keeping them can never serve stale state.
+        self._bound: dict[str, "WebView"] = {}
 
     # -- lifecycle -------------------------------------------------------
 
@@ -213,6 +234,65 @@ class WebView:
         # a mismatch never is.
         return origin in (None, "", f"http://{self.host}:{self.port}")
 
+    # -- navigation ------------------------------------------------------
+
+    def select(self, key: str | None) -> "WebView":
+        """The view for the document a request named (H15).
+
+        Every route goes through here, which is what keeps the workspace layer
+        navigation only: what comes back is an ordinary :class:`WebView` over one
+        document, and everything after this point is the code a file view runs.
+
+        A file view refuses a name that is not its own rather than ignoring it.
+        Serving this document under that name is the quiet wrong answer — the
+        caller would read one review believing it was another's.
+
+        The round hint does not travel. ``--round`` names a round, a round
+        belongs to one document, and carrying the hint onto a sibling would
+        turn every other document in the tree into "no round X on Y".
+        """
+        if self.workspace is None:
+            if key and key != self.key:
+                raise _usage(
+                    f"this view serves {self.key!r}, not {key!r} — start it on the directory "
+                    "with 'specround view <dir>' to move between documents"
+                )
+            return self
+        if not key or key == self.doc:
+            return self
+        bound = self._bound.get(key)
+        if bound is None:
+            try:
+                path = self.workspace.resolve(key)
+            except SpecroundError as exc:
+                raise _usage(str(exc)) from exc
+            bound = WebView(
+                store=self.workspace.store_for(path),
+                path=path,
+                author=self.author,
+                actor=self.actor,
+                round_hint=None,
+                host=self.host,
+                port=self.port,
+                token=self.token,
+                workspace=self.workspace,
+                doc=key,
+            )
+            self._bound[key] = bound
+        return bound
+
+    def workspace_payload(self) -> dict[str, Any] | None:
+        """The navigation bar's whole answer, or ``None`` for a file view.
+
+        It rides in :meth:`state_payload` rather than on a route of its own.
+        A route no page calls is an undocumented surface — the same rule that
+        keeps a dead button from surviving here — and a listing fetched apart
+        from the document it sits beside is a listing that can disagree with it.
+        """
+        if self.workspace is None:
+            return None
+        return {**self.workspace.list().to_json(), "selected": self.doc}
+
     # -- reading ---------------------------------------------------------
 
     def live_text(self) -> str | None:
@@ -281,6 +361,12 @@ class WebView:
         page paint comments against a base it has not loaded yet, and the
         documents this reviews are small enough that the saving would be
         theoretical.
+
+        ``workspace`` carries the navigation bar for the same reason, and it is
+        ``None`` for a file view. One answer means a comment posted here repaints
+        the bar's badges and the thread list together — two requests would let
+        the bar say "no unresolved" about a document the panel beside it is
+        showing an open thread on.
         """
         state = self.store.fold()
         round_, blocked = self.resolve_round(state)
@@ -293,6 +379,7 @@ class WebView:
             "doc": self.key,
             "path": str(self.path),
             "store": str(self.store.root),
+            "workspace": self.workspace_payload(),
             "author": self.author,
             "actor": self.actor,
             "actors": list(ACTORS),
@@ -549,6 +636,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _dispatch(self, routes: Mapping[str, Callable[["_Handler"], None]]) -> None:
         split = urlsplit(self.path)
         query = parse_qs(split.query)
+        #: Which document this request is about, for the routes that read it off
+        #: the query rather than a body. Per request, like everything else on a
+        #: handler instance — the *server* holds no selection (H15).
+        self.doc = (query.get("doc") or [None])[0]
         token = (query.get("t") or [None])[0] or self.headers.get("X-Specround-Token")
         if not self.view.authorised(token, self.headers.get("Origin")):
             # Deliberately the same answer for a wrong token and a wrong origin:
@@ -614,10 +705,21 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, page(), "text/html")
 
     def _state(self) -> None:
-        self._json(self.view.state_payload())
+        self._json(self.view.select(self.doc).state_payload())
 
-    def _write(self, method: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
-        payload = method(self._body())
+    def _write(self, method: Callable[["WebView", Mapping[str, Any]], dict[str, Any]]) -> None:
+        """Run a writing verb on the document the body named.
+
+        The body is read before the view is chosen, because ``doc`` is in it.
+        The method arrives unbound for that reason — binding it to
+        ``self.view`` at route-table time would nail every write to the document
+        the process started on.
+        """
+        body = self._body()
+        named = body.get("doc")
+        if named is not None and not isinstance(named, str):
+            raise _usage("'doc' names a document in this workspace and must be a string")
+        payload = method(self.view.select(named or self.doc), body)
         self._json({"schema": VIEW_SCHEMA, **payload})
 
 
@@ -627,9 +729,9 @@ _GETS: dict[str, Callable[[_Handler], None]] = {
 }
 
 _POSTS: dict[str, Callable[[_Handler], None]] = {
-    "/api/comment": lambda h: h._write(h.view.add_comment),
-    "/api/suggestion": lambda h: h._write(h.view.add_suggestion),
-    "/api/reply": lambda h: h._write(h.view.reply),
-    "/api/dispose": lambda h: h._write(h.view.dispose),
-    "/api/thread": lambda h: h._write(h.view.thread),
+    "/api/comment": lambda h: h._write(WebView.add_comment),
+    "/api/suggestion": lambda h: h._write(WebView.add_suggestion),
+    "/api/reply": lambda h: h._write(WebView.reply),
+    "/api/dispose": lambda h: h._write(WebView.dispose),
+    "/api/thread": lambda h: h._write(WebView.thread),
 }
