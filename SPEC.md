@@ -257,14 +257,18 @@ target is spec and prose documents — PR tools already do code well).
   is guessing at intent, so it is not done; the offsets reveal the adjacency) ·
   **merging `ext.view`/`ext.harvest`** (the inside shape is the same — merging
   is a field promotion and bumps major, `docs/ledger-format.md` §2)
-- H15 workspace view (docs-english round c-1579c766, 2026-08-07) — the view
-  serves one document, and that is a deliberate v0 boundary (rounds, anchors,
-  and the server are all per-document axes). A workspace mode — a navigation
-  bar on the left over a set of documents, each showing its rounds and
-  unresolved counts, click to switch — is worth building as a layer: the
-  servers are already independent per document and all state lives in the
-  ledger, so the core does not change. Trigger = reviewing document sets in
-  practice (same "not before it is needed" rule as H11)
+- H15 directory view — **direction settled (user, 2026-08-07)**: a spec is
+  never one file, and one server per file is a real burden, so `view` accepts
+  a **directory** — one server for the tree, a navigation bar on the left
+  listing the files, documents with review activity marked (open rounds,
+  unresolved counts) and a filter that shows only them. Clicking a file swaps
+  the main panel to the existing per-document three-mode view — the workspace
+  layer is navigation only; rounds, anchors, and the ledger stay per-document
+  axes and the core does not change. Several servers may overlap the same
+  file (a directory server and a file server, say) — that is fine, because
+  servers hold no state of their own and every write folds into the same
+  ledger; what has to be managed is reclamation, and it already is (the
+  state-file / process-group machinery)
 
 ## 5. Done-ness (of the spec stage)
 
