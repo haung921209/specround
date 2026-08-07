@@ -16,6 +16,29 @@ harvester landed.** The contract is
 live in [docs/ledger-format.md](docs/ledger-format.md). This tool's first
 customer is the review of its own spec.
 
+## Install
+
+Python 3.10 or newer and nothing else — the package is standard library only,
+so an install is one download with no dependency resolution to go wrong.
+
+It is not on PyPI yet, so an install says where it comes from:
+
+```bash
+uv tool install git+https://github.com/haung921209/specround
+pipx install git+https://github.com/haung921209/specround
+```
+
+From a checkout, `uv tool install --editable .` puts `specround` on your PATH
+and leaves it pointing at the working tree.
+
+Homebrew is prepared and not yet published: [`packaging/homebrew/`](packaging/homebrew)
+holds the formula and the release checklist. Once a release exists,
+
+```bash
+brew tap haung921209/specround
+brew install specround
+```
+
 ## One round
 
 Inside this repo use `uv run specround …`; once installed, plain `specround …`.
