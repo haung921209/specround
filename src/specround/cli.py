@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from specround import __version__
-from specround.anchors import Anchor
+from specround.anchors import Anchor, count_occurrences
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
 from specround.fold import Comment, Round, State
@@ -313,24 +313,6 @@ def _body(args: argparse.Namespace, what: str = "comment") -> str:
     return text
 
 
-def _occurrences(text: str, quote: str) -> int:
-    """How many appearances of ``quote`` ``--occurrence`` can address.
-
-    Stepping by one character rather than by the length of the quote, because
-    that is exactly how :func:`~specround.anchors.anchor_for_quote` walks them:
-    ``str.count`` skips overlaps, so ``"aa"`` in ``"aaa"`` would read as unique
-    here and still be addressable as occurrence 1 there. A count that disagrees
-    with the indexer is a count that lets the ambiguity check wave through the
-    one case it exists to catch.
-    """
-    total = 0
-    at = text.find(quote)
-    while at != -1:
-        total += 1
-        at = text.find(quote, at + 1)
-    return total
-
-
 def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | None) -> Anchor:
     """Cut an anchor out of the round's base — the text the reviewer read.
 
@@ -341,7 +323,7 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
     if not quote:
         raise UsageError("--quote must not be empty")
     text = store.base_text(round_.id)
-    total = _occurrences(text, quote)
+    total = count_occurrences(text, quote)
     if total == 0:
         raise UsageError(
             f"--quote {quote!r} is not in the snapshot round {round_.id} froze "
