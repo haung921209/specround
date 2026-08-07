@@ -117,6 +117,18 @@ target is spec and prose documents — PR tools already do code well).
   zero-width span = an insertion point (§5). It is the gesture the user reached
   for before span selection ("this line is off" makes dragging expensive), and
   render mode has no line numbers, so it is not a target.
+  **④ A directory is one server, and the bar is navigation only (H15, landed
+  2026-08-07)**. `view <dir>` serves the tree from one process, with a bar
+  listing the markdown under it and what review each document has. Every
+  request names the document it is about and gets back the *same per-document
+  projection* a file view gives: no workspace round, no shared anchor space, no
+  second definition of "unresolved". The selection is the **caller's, never the
+  server's** — a process that remembered which document was open would be
+  state, which the view does not have (that is also what lets two tabs on one
+  port read two documents). One store per document throughout, so the bar reads
+  each document's own history rather than merging them. What the walk holds
+  back is counted and said; a mistyped or stale key is refused rather than
+  resolved to some other file's history.
 - **vim and other editors are first-class without a plugin** — fix the raw text
   in an editor and the working-tree diff is taken in as a suggestion (G8, "fix
   it and it is submitted"), and type inline annotations (the CriticMarkup
@@ -268,7 +280,13 @@ target is spec and prose documents — PR tools already do code well).
   file (a directory server and a file server, say) — that is fine, because
   servers hold no state of their own and every write folds into the same
   ledger; what has to be managed is reclamation, and it already is (the
-  state-file / process-group machinery)
+  state-file / process-group machinery).
+  **Landed 2026-08-07** — the decisions the implementation settled are §3 ④.
+  Two the direction did not name: the tree opens on the **first document in
+  path order**, because the only thing that could rank "most recently active"
+  is a timestamp and this project's timestamps order nothing; and the listing's
+  limit holds back documents with **no** review activity first, never one that
+  has some, or the filter would be lying about the set it was asked to find
 
 ## 5. Done-ness (of the spec stage)
 

@@ -114,12 +114,27 @@ safe.
 ```bash
 specround view SPEC.md          # prints a URL; nothing opens
 specround view SPEC.md --open   # ...unless you ask
+specround view docs/            # the whole tree, from one server
 ```
 
 The URL is the first line of stdout and no browser is opened, because the
 first-class consumer is an embedder — a terminal multiplexer's browser pane takes
 that line and places the view where you already are. `--open` is for when you are
 the one at the shell.
+
+A spec is never one file, so `view` also takes a **directory**: one server for
+the tree, and a bar down the left listing the markdown under it. Each file
+carries what its own review looks like — open rounds, unresolved comments,
+orphans — with a toggle for "only the ones with review activity on them". Dotted
+names are skipped whole (`.git`, `.specround`), a directory link is followed once
+and never twice, and anything the listing holds back is counted and said rather
+than dropped in silence.
+
+Clicking a file swaps the panel to the same three modes over that document. The
+bar is navigation and nothing else: rounds, anchors, and the ledger stay
+per-document, one store per document, exactly as they are for a file view. Two
+servers may overlap the same file — a directory one and a file one — and that is
+fine, because neither holds any state and every write folds into the same ledger.
 
 One page, three modes, one anchor space: **render** (the markdown), **raw** (the
 text), and **diff** (the document as it is now, against the snapshot this round
