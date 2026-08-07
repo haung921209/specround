@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from specround.anchors import Anchor, anchor_for_quote
+from specround.anchors import Anchor, anchor_for, anchor_for_quote
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import (
     ANCHOR_ORPHAN,
@@ -47,7 +47,7 @@ from specround.locations import (
     resolve_location,
     write_origin,
 )
-from specround.reanchor import MIN_SIMILARITY, POSITION, reanchor
+from specround.reanchor import MIN_SIMILARITY, POSITION, Rebind, reanchor
 from specround.snapshots import SnapshotStore
 
 LEDGER_FILENAME = "ledger.jsonl"
@@ -261,6 +261,37 @@ class ReviewStore:
     def anchor_in_round(self, round_id: str, quote: str, *, occurrence: int = 0) -> Anchor:
         """Build an anchor by quoting the round's base snapshot."""
         return anchor_for_quote(self.base_text(round_id), quote, occurrence=occurrence)
+
+    def anchor_span_in_round(self, round_id: str, start: int, end: int) -> Anchor:
+        """Build an anchor from character offsets into the round's base.
+
+        The offsets form a view reports back. A quote is what a shell caller has
+        (there is nothing to point at in a terminal); a span is what a selection
+        in a browser already is, and going through a quote would reintroduce the
+        ambiguity the offsets had already settled.
+        """
+        return anchor_for(self.base_text(round_id), start, end)
+
+    def carry_span_into_round(
+        self, round_id: str, revised: str, start: int, end: int
+    ) -> Rebind:
+        """Where a span of a *revised* document sits in this round's base.
+
+        The diff view shows the revision beside the frozen base, so a reviewer
+        can select a line the base does not have. The comment still has to
+        anchor in the round's base (I7) — that is the text this round is a review
+        of — so the span is cut from the revision and carried backwards by the
+        same ladder that carries comments forwards across an edit (§5.1). The
+        direction is new; the machine is not, which is what SPEC §3 means by the
+        re-anchor machine doubling as the diff-line-to-anchor conversion.
+
+        Returns the :class:`~specround.reanchor.Rebind` as it comes: an anchor
+        when a rung placed the text, and an orphan with a reason when the
+        revision's text has no home in the base — the honest answer for a line
+        the revision added. Nothing is guessed onto a neighbouring span, here
+        least of all, because the caller is about to write a comment on it.
+        """
+        return reanchor(anchor_for(revised, start, end), self.base_text(round_id))
 
     # -- writing ---------------------------------------------------------
 

@@ -10,7 +10,7 @@ no gitignore homework. A team that wants shared history can opt the store back
 into the repo with `.specround.json`. Committing the ledger is an optional
 layer for sharing and durability, never a precondition for the tool to work.
 
-**Status: ledger core + CLI landed · web view not started.** The contract is
+**Status: ledger core, CLI, and the local web view landed.** The contract is
 [SPEC.md](SPEC.md) (guarantees G1–G11); the ledger format and store location
 live in [docs/ledger-format.md](docs/ledger-format.md). This tool's first
 customer is the review of its own spec.
@@ -47,6 +47,37 @@ specround round close SPEC.md --allow-unresolved --note "retries move to round 2
 # After a revision: carry the comments over, and say which ones lost their text.
 specround reanchor SPEC.md
 ```
+
+## In a browser
+
+```bash
+specround view SPEC.md          # prints a URL; nothing opens
+specround view SPEC.md --open   # ...unless you ask
+```
+
+The URL is the first line of stdout and no browser is opened, because the
+first-class consumer is an embedder — a terminal multiplexer's browser pane takes
+that line and places the view where you already are. `--open` is for when you are
+the one at the shell.
+
+One page, three modes, one anchor space: **render** (the markdown), **raw** (the
+text), and **diff** (the document as it is now, against the snapshot this round
+froze — not a git diff). Select text in any of them and the comment lands on the
+same document anchor, so a comment made on the rendered prose is the comment the
+CLI lists. Edit in raw mode and the submission is a suggestion diff (G8).
+Threads carry their replies, verdicts, and resolve/reopen, and resolved ones are
+hidden with a toggle rather than deleted (G11).
+
+The anchor space is the round's base in every mode, because that snapshot is the
+text the round is a review of (I7). In the diff, a line only the revision has has
+no place in the base — selecting it carries the text back through the re-anchor
+ladder, and when the ladder finds nothing the view says so and names the two ways
+on (comment on the whole document, or open a new round on the revision). It never
+guesses a nearby span.
+
+It is a local process, not hosting: loopback only, a token in the URL, no state
+of its own, and everything it records goes into the same ledger `specround
+comments` reads. Closing the window loses nothing.
 
 `--author` (or `$SPECROUND_AUTHOR`) says who is speaking — a person or
 `agent:reviewer`, same field, same commands (G4). On `resolve` and `reopen`,

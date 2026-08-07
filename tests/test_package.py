@@ -35,3 +35,15 @@ def test_schema_and_invariant_errors_are_ledger_errors():
     # Callers catch LedgerError to mean "this log rejected the record".
     assert issubclass(SchemaError, LedgerError)
     assert issubclass(InvariantError, LedgerError)
+
+
+def test_the_view_page_ships_with_the_package():
+    """The page is package data, not a file beside the source tree.
+
+    ``specround view`` reads it through the package, so a wheel that left it out
+    would answer the first route a browser asks for with a 500 — and the source
+    checkout would keep working, which is the worst place for that to hide.
+    """
+    from specround.webview import page
+
+    assert page().startswith(b"<!doctype html>")

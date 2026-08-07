@@ -1,0 +1,635 @@
+"""A temporary local web view — the browser as the GUI everyone already has (G6, G7).
+
+Three modes over one document — rendered markdown, the raw text, and the round
+diff — and **one anchor space under all of them**: whichever mode a comment is
+made in, it lands on the same document anchor (SPEC §3). That is not a
+convenience. It is what keeps the view and the CLI one review instead of two.
+
+**This is not hosting.** The process is temporary, it binds loopback only, it
+keeps no state of its own, and everything it records goes into the ledger the CLI
+reads (G5). Closing the window loses nothing.
+
+**The URL is printed and no browser is opened.** Embedding is the first-class
+consumer: a terminal multiplexer's browser pane takes the URL and places it.
+``--open`` is the opt-in for a person sitting at a shell.
+
+Every route here either folds the ledger or appends to it through the same
+:class:`~specround.store.ReviewStore` methods the CLI calls, and it answers in
+:mod:`specround.wire`'s shapes. Nothing re-implements a rule: a view carrying its
+own copy of "a reply needs an open thread" would be a second oracle, and the
+format is explicit that two oracles drift (§6). So the refusals a caller sees
+here are the ledger's own, translated to status codes and nothing more.
+
+The anchor space is the round's base, for both of the modes that show one text.
+It has to be: a comment's anchor is verified against the round's base (I7),
+because that snapshot is the text this round is a review of. When the file on
+disk has moved on, the diff mode is where that shows — and a selection on a line
+only the revision has is carried into the base by the re-anchor ladder, or
+refused with a reason. It is never guessed onto a nearby span.
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+import secrets
+import threading
+from dataclasses import dataclass
+from functools import lru_cache
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable, Mapping
+from urllib.parse import parse_qs, urlsplit
+
+from specround import __version__, markdown
+from specround.diffs import changed_span, diff, unified_patch
+from specround.errors import AnchorError, InvariantError, SpecroundError
+from specround.events import ACTORS, HUMAN, VERDICTS
+from specround.fold import Round, State
+from specround.reanchor import POSITION
+from specround.store import ReviewStore
+from specround.wire import comment_json, comments_on, round_json, rounds_on
+
+__all__ = ["BASE", "REVISION", "Refusal", "WebView", "VIEW_SCHEMA"]
+
+#: The payload's own version, for the reason the ledger lines carry one: a
+#: consumer should be able to tell that the shape it parses is the shape it was
+#: written against.
+VIEW_SCHEMA = "specround.view/v0"
+
+#: Which text a selection's offsets count in. ``base`` is the snapshot the round
+#: froze — the render and raw modes, and the diff's unchanged and removed lines.
+#: ``revision`` is the document as it is now, which only the diff mode can show.
+BASE = "base"
+REVISION = "revision"
+SPACES = (BASE, REVISION)
+
+DEFAULT_HOST = "127.0.0.1"
+#: How often the serving loop checks whether it has been told to stop.
+#: :meth:`~socketserver.BaseServer.shutdown` waits for one of these, so the
+#: default half-second is half a second of a view that has been closed and has
+#: not let go. Twenty wakeups a second of an otherwise sleeping thread is not a
+#: cost worth keeping that for.
+POLL_INTERVAL = 0.05
+#: A body larger than this is not a review comment.
+MAX_BODY = 8 * 1024 * 1024
+_ASSETS = "assets"
+_PAGE = "app.html"
+
+
+class Refusal(SpecroundError):
+    """An answer the view gives instead of doing what was asked.
+
+    ``kind`` uses the CLI's vocabulary — ``usage`` for a request that cannot be
+    carried out as sent, ``state`` for one the recorded history refuses — so a
+    caller reading both surfaces learns one set of words. The status code is the
+    same distinction for anything speaking HTTP.
+    """
+
+    def __init__(self, status: HTTPStatus, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.kind = kind
+
+
+def _usage(message: str) -> Refusal:
+    return Refusal(HTTPStatus.BAD_REQUEST, "usage", message)
+
+
+def _state(message: str) -> Refusal:
+    return Refusal(HTTPStatus.CONFLICT, "state", message)
+
+
+@lru_cache(maxsize=1)
+def page() -> bytes:
+    """The single static page. One file, no build step, no CDN."""
+    from importlib.resources import files
+
+    return (files("specround") / _ASSETS / _PAGE).read_bytes()
+
+
+@dataclass
+class WebView:
+    """One document, served to one browser for as long as the process lives."""
+
+    store: ReviewStore
+    path: Path
+    author: str
+    actor: str = HUMAN
+    #: The round to write to. ``None`` means "the one open round", resolved per
+    #: request rather than at startup: a CLI in another terminal can close a
+    #: round while this view is open, and the view should notice.
+    round_hint: str | None = None
+    host: str = DEFAULT_HOST
+    port: int = 0
+    token: str = ""
+
+    def __post_init__(self) -> None:
+        self.key = self.store.doc_key(self.path)
+        self.token = self.token or secrets.token_urlsafe(16)
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        #: Whether a serving loop is running and can acknowledge a shutdown.
+        self._serving = False
+
+    # -- lifecycle -------------------------------------------------------
+
+    def bind(self) -> "WebView":
+        """Take the port, so the URL is knowable before anything is served."""
+        if self._server is None:
+            self._server = _Server((self.host, self.port), _Handler)
+            self._server.view = self
+            self.port = self._server.server_address[1]
+        return self
+
+    @property
+    def url(self) -> str:
+        """The address to hand to a browser — token included.
+
+        The token is not a login. It is what keeps any page in the browser from
+        posting to this port behind the reviewer's back: a local server that
+        writes to a ledger is reachable by every tab, and an unguessable path is
+        the cheap half of the answer. The other half is the ``Origin`` check in
+        the handler.
+        """
+        return f"http://{self.host}:{self.port}/?t={self.token}"
+
+    def serve_forever(self) -> None:  # pragma: no cover - the CLI's blocking path
+        self.bind()
+        assert self._server is not None
+        self._serving = True
+        try:
+            self._server.serve_forever(poll_interval=POLL_INTERVAL)
+        finally:
+            self.shutdown()
+
+    def start(self) -> threading.Thread:
+        """Serve in a background thread, leaving the caller in control.
+
+        :meth:`serve_forever` is what the CLI wants, having nothing else to do.
+        This is for a caller that does — and for the tests, which have to speak
+        to a real socket: the routes are the contract a browser meets, and
+        checking the methods behind them would leave the token, the status codes,
+        and the JSON envelope untested.
+        """
+        self.bind()
+        assert self._server is not None
+        self._serving = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": POLL_INTERVAL},
+            name="specround-view",
+            daemon=True,
+        )
+        self._thread.start()
+        return self._thread
+
+    def shutdown(self) -> None:
+        """Stop serving and release the port. Safe from either thread, and twice.
+
+        ``shutdown`` on the socket server waits for the serving loop to
+        acknowledge, and that acknowledgement only ever comes from the loop —
+        so asking a server that was bound but never served would wait for a
+        thread that does not exist. A view that binds and then fails on its way
+        to serving is a real case (``--open`` raising, an interrupt in between),
+        and there the port is released by closing alone.
+        """
+        server, thread, serving = self._server, self._thread, self._serving
+        self._server, self._thread, self._serving = None, None, False
+        if server is not None:
+            if serving:
+                server.shutdown()
+            server.server_close()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
+
+    def authorised(self, token: str | None, origin: str | None) -> bool:
+        """Both halves: the caller knows the token and is not another origin."""
+        if not token or not hmac.compare_digest(token, self.token):
+            return False
+        # A same-origin fetch may or may not send Origin depending on the
+        # browser; a cross-origin one always does. Absent is therefore fine and
+        # a mismatch never is.
+        return origin in (None, "", f"http://{self.host}:{self.port}")
+
+    # -- reading ---------------------------------------------------------
+
+    def live_text(self) -> str | None:
+        """The document as it is on disk, or ``None`` if it is not there.
+
+        A document can be renamed or deleted while its history stays where it
+        was, and the view still has something to show — the base is in the store.
+        """
+        if not self.path.is_file():
+            return None
+        try:
+            return self.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def resolve_round(self, state: State) -> tuple[Round | None, str | None]:
+        """The round this view acts on, and why it cannot write if it cannot.
+
+        Deliberately more permissive than the CLI's ``_live_round``: with no
+        open round this returns the latest closed one instead of refusing, so
+        the history of a finished review is still readable. Only the two verbs
+        the format ties to an open round (I4) are blocked, and the reason says
+        which command opens one.
+        """
+        rounds = rounds_on(state, self.key)
+        if self.round_hint:
+            named = state.rounds.get(self.round_hint)
+            if named is None or named.doc != self.key:
+                return None, f"no round {self.round_hint!r} on {self.key}"
+            if not named.open:
+                return named, (
+                    f"round {named.id} is closed — reading only. Open a new one with "
+                    "'specround round open' to add comments"
+                )
+            return named, None
+        live = [r for r in rounds if r.open]
+        if len(live) == 1:
+            return live[0], None
+        if len(live) > 1:
+            names = ", ".join(sorted(r.id for r in live))
+            return None, (
+                f"{len(live)} rounds are open ({names}) — restart the view with "
+                "--round to say which one this view writes to"
+            )
+        if rounds:
+            return rounds[-1], (
+                f"no open round on {self.key} — reading only. Open one with "
+                "'specround round open'"
+            )
+        return None, (
+            f"no rounds on {self.key} yet — open one with 'specround round open'"
+        )
+
+    def _writable(self, state: State) -> Round:
+        round_, blocked = self.resolve_round(state)
+        if round_ is None or not round_.open:
+            assert blocked is not None
+            raise _state(blocked)
+        return round_
+
+    def state_payload(self) -> dict[str, Any]:
+        """Everything the page draws, in one answer.
+
+        One request rather than several, because the three modes and the thread
+        list are one consistent reading of one fold. Splitting them would let the
+        page paint comments against a base it has not loaded yet, and the
+        documents this reviews are small enough that the saving would be
+        theoretical.
+        """
+        state = self.store.fold()
+        round_, blocked = self.resolve_round(state)
+        live = self.live_text()
+        base = self.store.base_text(round_.id) if round_ is not None else None
+        comments = comments_on(state, self.key)
+        payload: dict[str, Any] = {
+            "schema": VIEW_SCHEMA,
+            "version": __version__,
+            "doc": self.key,
+            "path": str(self.path),
+            "store": str(self.store.root),
+            "author": self.author,
+            "actor": self.actor,
+            "actors": list(ACTORS),
+            "verdicts": list(VERDICTS),
+            "round": round_json(state, round_) if round_ is not None else None,
+            "rounds": [round_json(state, r) for r in rounds_on(state, self.key)],
+            "comments": [comment_json(c) for c in comments],
+            "commentable": round_ is not None and round_.open,
+            "blocked": blocked,
+            "base": base,
+            "live": live,
+            "render": markdown.render(base) if base is not None else "",
+            "diff": self._diff_payload(base, live),
+            "counts": {
+                "comments": len(comments),
+                "unresolved": sum(1 for c in comments if c.unresolved),
+                "orphans": sum(1 for c in comments if c.orphaned),
+                "resolved": sum(1 for c in comments if c.resolved),
+                "events": state.count,
+            },
+        }
+        return payload
+
+    def _diff_payload(self, base: str | None, live: str | None) -> dict[str, Any]:
+        if base is None or live is None:
+            # No base means no round; no live means the file is gone. Either way
+            # there are two texts to compare and only one of them exists.
+            return {
+                "rows": [],
+                "identical": False,
+                "available": False,
+                "added": 0,
+                "removed": 0,
+                "only_terminator": False,
+            }
+        computed = diff(base, live)
+        return {
+            "rows": [
+                {
+                    "op": row.op,
+                    "text": row.text,
+                    "base_line": row.base_line,
+                    "live_line": row.live_line,
+                    "base_start": row.base_start,
+                    "live_start": row.live_start,
+                }
+                for row in computed.rows
+            ],
+            "identical": computed.identical,
+            "available": True,
+            "added": computed.added,
+            "removed": computed.removed,
+            "only_terminator": computed.only_terminator,
+        }
+
+    # -- writing ---------------------------------------------------------
+
+    def add_comment(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Record a comment made in any of the three modes (G6)."""
+        state = self.store.fold()
+        round_ = self._writable(state)
+        text = _text(body, "body")
+        anchor = None
+        carried: dict[str, Any] | None = None
+        ext: dict[str, Any] | None = None
+        if not body.get("whole"):
+            space = str(body.get("space", BASE))
+            if space not in SPACES:
+                raise _usage(f"unknown space {space!r}: use {' or '.join(SPACES)}")
+            start, end = _span(body)
+            if space == BASE:
+                anchor = self._cut(round_, start, end)
+            else:
+                anchor, carried = self._carry(round_, start, end)
+                if carried["strategy"] != POSITION:
+                    # Where a comment came from is provenance the closed field
+                    # set has no room for, and it is exactly the kind of thing
+                    # the format reserves ``ext`` for (§2). Losing it would leave
+                    # a comment that reached the base through the fuzzy rung
+                    # indistinguishable from one selected on the base itself —
+                    # and §4 is explicit that the first is worth a look.
+                    ext = {"view": {"space": space, **carried}}
+        comment_id = self.store.add_comment(
+            round_.id, author=_author(body, self.author), body=text, anchor=anchor, ext=ext
+        )
+        return {
+            "comment": comment_json(self.store.fold().comments[comment_id]),
+            "carried": carried,
+        }
+
+    def add_suggestion(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Take an edit of the raw text as a suggestion diff (G8).
+
+        The edit is against the round's base, which is the text the raw mode
+        shows and the only text a comment on this round may anchor in. The patch
+        is stored, never applied: applying one is a disposition somebody records,
+        and whether a patch may still be applied once its anchor has moved is
+        H8 — open, and not decided by a view.
+        """
+        state = self.store.fold()
+        round_ = self._writable(state)
+        proposed = body.get("text")
+        if not isinstance(proposed, str):
+            raise _usage("a suggestion needs the edited text in 'text'")
+        base = self.store.base_text(round_.id)
+        span = changed_span(base, proposed)
+        if span is None:
+            raise _usage("the text is unchanged — there is nothing to propose")
+        suggestion_id = self.store.add_suggestion(
+            round_.id,
+            author=_author(body, self.author),
+            patch=unified_patch(base, proposed, label=self.key),
+            body=str(body.get("body", "")).strip(),
+            anchor=self._cut(round_, *span),
+        )
+        return {"comment": comment_json(self.store.fold().comments[suggestion_id])}
+
+    def reply(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        target = _text(body, "target")
+        answered = self.store.reply(
+            target, author=_author(body, self.author), body=_text(body, "body")
+        )
+        del answered
+        return {"comment": comment_json(self.store.fold().comments[target])}
+
+    def dispose(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        target = _text(body, "target")
+        verdict = _text(body, "verdict")
+        if verdict not in VERDICTS:
+            raise _usage(f"unknown verdict {verdict!r}: use {', '.join(VERDICTS)}")
+        self.store.dispose(
+            target,
+            author=_author(body, self.author),
+            verdict=verdict,
+            reason=_text(body, "reason"),
+        )
+        return {"comment": comment_json(self.store.fold().comments[target])}
+
+    def thread(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Close or re-open a conversation (G11) — one call with a sign.
+
+        Re-stating the state a thread is already in records nothing and is not an
+        error, exactly as the ledger has it (I10): a retry has to be safe for the
+        agents this is for, and a button somebody clicked twice is a retry.
+        """
+        target = _text(body, "target")
+        actor = str(body.get("actor") or self.actor)
+        if actor not in ACTORS:
+            raise _usage(f"unknown actor {actor!r}: use {' or '.join(ACTORS)}")
+        author = _author(body, self.author)
+        if body.get("resolved"):
+            event = self.store.resolve(
+                target, author=author, actor=actor, note=str(body.get("note", "")) or None
+            )
+        else:
+            event = self.store.reopen(
+                target, author=author, actor=actor, reason=_text(body, "reason")
+            )
+        return {
+            "comment": comment_json(self.store.fold().comments[target]),
+            "event": event,
+            "changed": event is not None,
+        }
+
+    # -- anchoring -------------------------------------------------------
+
+    def _cut(self, round_: Round, start: int, end: int) -> Any:
+        try:
+            return self.store.anchor_span_in_round(round_.id, start, end)
+        except AnchorError as exc:
+            raise _usage(f"that span is not in the base round {round_.id} froze: {exc}") from exc
+
+    def _carry(self, round_: Round, start: int, end: int) -> tuple[Any, dict[str, Any]]:
+        """Carry a selection made on the revision into the round's base."""
+        live = self.live_text()
+        if live is None:
+            raise _usage(f"{self.path} is not readable — nothing to select in the revision")
+        try:
+            rebind = self.store.carry_span_into_round(round_.id, live, start, end)
+        except AnchorError as exc:
+            raise _usage(f"that span is not in {self.path}: {exc}") from exc
+        if rebind.orphaned:
+            raise _state(
+                f"that text has no place in the base round {round_.id} froze "
+                f"({rebind.reason}) — comment on the whole document instead, or open a "
+                "new round on the revised document to review it as it is now"
+            )
+        return rebind.anchor, {"strategy": rebind.strategy, "ambiguous": rebind.ambiguous}
+
+
+def _author(body: Mapping[str, Any], fallback: str) -> str:
+    """Who is speaking — the viewer's own name when the page says so (G4).
+
+    The page carries a name because a view is a place two participants meet:
+    the person who started it and an agent posting through the same routes. The
+    launcher's ``--author`` is the default, not a lock.
+    """
+    given = str(body.get("author", "")).strip()
+    return given or fallback
+
+
+def _text(body: Mapping[str, Any], field: str) -> str:
+    value = body.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise _usage(f"{field!r} is required and must not be empty")
+    return value.strip()
+
+
+def _span(body: Mapping[str, Any]) -> tuple[int, int]:
+    values = []
+    for field in ("start", "end"):
+        value = body.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise _usage(f"{field!r} must be a non-negative integer offset")
+        values.append(value)
+    start, end = values
+    if end < start:
+        raise _usage("'end' must not precede 'start'")
+    return start, end
+
+
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    view: WebView
+
+
+class _Handler(BaseHTTPRequestHandler):
+    """The routes. Each one is a call into :class:`WebView` and a status code."""
+
+    server_version = f"specround/{__version__}"
+    protocol_version = "HTTP/1.1"
+
+    @property
+    def view(self) -> WebView:
+        return self.server.view  # type: ignore[attr-defined]
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Quiet. The URL on stdout is the interface, not an access log.
+
+        Left in place rather than removed so the reason is here: this process
+        shares stderr with the CLI's error channel, and a request log there would
+        interleave with the one thing a caller is meant to read from it.
+        """
+
+    def do_GET(self) -> None:
+        self._dispatch(_GETS)
+
+    def do_POST(self) -> None:
+        self._dispatch(_POSTS)
+
+    # -- plumbing --------------------------------------------------------
+
+    def _dispatch(self, routes: Mapping[str, Callable[["_Handler"], None]]) -> None:
+        split = urlsplit(self.path)
+        query = parse_qs(split.query)
+        token = (query.get("t") or [None])[0] or self.headers.get("X-Specround-Token")
+        if not self.view.authorised(token, self.headers.get("Origin")):
+            # Deliberately the same answer for a wrong token and a wrong origin:
+            # this is not an account, and telling a caller which half it failed
+            # is telling it what to fix.
+            self._send(HTTPStatus.FORBIDDEN, b"specround: not this view's token\n", "text/plain")
+            return
+        route = routes.get(split.path)
+        if route is None:
+            self._send(HTTPStatus.NOT_FOUND, b"specround: no such route\n", "text/plain")
+            return
+        try:
+            route(self)
+        except Refusal as exc:
+            self._error(exc.status, exc.kind, str(exc))
+        except InvariantError as exc:
+            # The ledger refused. It is the same class of answer the CLI exits 3
+            # for, and the message is the ledger's own — the view does not
+            # paraphrase a rule it did not enforce.
+            self._error(HTTPStatus.CONFLICT, "state", str(exc))
+        except (SpecroundError, OSError) as exc:
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "error", str(exc))
+
+    def _body(self) -> dict[str, Any]:
+        length = self.headers.get("Content-Length")
+        try:
+            size = int(length or 0)
+        except ValueError as exc:
+            raise _usage("Content-Length is not a number") from exc
+        if size > MAX_BODY:
+            raise _usage(f"body is larger than {MAX_BODY} bytes")
+        raw = self.rfile.read(size) if size else b"{}"
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _usage(f"the request body is not JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise _usage("the request body must be a JSON object")
+        return parsed
+
+    def _send(self, status: HTTPStatus, payload: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        # A temporary view of a file that changes under it caches nothing.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _json(self, payload: Mapping[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        self._send(status, body, "application/json")
+
+    def _error(self, status: HTTPStatus, kind: str, message: str) -> None:
+        self._json(
+            {"schema": VIEW_SCHEMA, "error": {"kind": kind, "status": int(status), "message": message}},
+            status,
+        )
+
+    # -- routes ----------------------------------------------------------
+
+    def _page(self) -> None:
+        self._send(HTTPStatus.OK, page(), "text/html")
+
+    def _state(self) -> None:
+        self._json(self.view.state_payload())
+
+    def _write(self, method: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
+        payload = method(self._body())
+        self._json({"schema": VIEW_SCHEMA, **payload})
+
+
+_GETS: dict[str, Callable[[_Handler], None]] = {
+    "/": _Handler._page,
+    "/api/state": _Handler._state,
+}
+
+_POSTS: dict[str, Callable[[_Handler], None]] = {
+    "/api/comment": lambda h: h._write(h.view.add_comment),
+    "/api/suggestion": lambda h: h._write(h.view.add_suggestion),
+    "/api/reply": lambda h: h._write(h.view.reply),
+    "/api/dispose": lambda h: h._write(h.view.dispose),
+    "/api/thread": lambda h: h._write(h.view.thread),
+}

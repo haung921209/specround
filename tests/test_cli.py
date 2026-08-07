@@ -19,6 +19,7 @@ vanish without anyone noticing, and the consumers of this output are programs.
 import getpass
 import io
 import json
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ import pytest
 
 from specround.cli import CLI_SCHEMA, main
 from specround.store import ReviewStore
+from specround.webview import WebView
 
 REVISED = """# Widget protocol
 
@@ -1206,3 +1208,126 @@ def test_a_negative_occurrence_is_refused_by_the_one_rule_that_owns_it(run, doc,
     )
     assert result.code == 2
     assert "negative" in result.err
+
+
+# -- the view verb -------------------------------------------------------
+#
+# The routes have their own tests over a real socket (test_webview.py). What is
+# under test here is the shell contract: the URL is the first line of stdout, the
+# payload names what an embedder needs, and nothing opens a browser uninvited.
+
+
+@pytest.fixture
+def served(monkeypatch):
+    """Keep ``view`` from blocking, and record that it would have served.
+
+    The sockets get closed on the way out. ``serve_forever`` releases the port in
+    its own ``finally``, so standing in for it means standing in for that too — a
+    test that left a listener behind would walk off with a port.
+    """
+    urls: list[str] = []
+    views: list[WebView] = []
+
+    def record(self) -> None:
+        urls.append(self.url)
+        views.append(self)
+
+    monkeypatch.setattr(WebView, "serve_forever", record)
+    yield urls
+    for view in views:
+        view.shutdown()
+
+
+def test_view_prints_the_url_as_the_first_line_and_then_serves(run, doc, opened, served):
+    """An embedder reads one line. It has to be the first one, and only the URL."""
+    result = run("view", doc, "--author", "alice")
+    assert result.code == 0
+    assert result.lines[0].startswith("http://127.0.0.1:")
+    assert served == [result.lines[0]]
+    assert opened in result.out
+
+
+def test_view_json_names_what_an_embedder_needs(run, doc, opened, served):
+    result = run("view", doc, "--author", "alice", "--json")
+    assert result.code == 0
+    payload = result.json
+    assert set(payload) == {
+        "schema", "verb", "doc", "path", "store",
+        "url", "host", "port", "token", "round", "commentable", "blocked",
+    }
+    assert payload["schema"] == CLI_SCHEMA
+    assert payload["verb"] == "view"
+    assert payload["port"] > 0
+    assert payload["token"] and payload["token"] in payload["url"]
+    assert payload["round"]["id"] == opened
+    assert payload["commentable"] is True
+    assert payload["blocked"] is None
+    assert served == [payload["url"]]
+
+
+def test_view_does_not_open_a_browser(run, doc, opened, served, monkeypatch):
+    """Off by default: the URL goes to a pane, not to whatever `open` decides."""
+    opens: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url, *a, **k: opens.append(url))
+    assert run("view", doc, "--author", "alice").code == 0
+    assert opens == []
+
+
+def test_view_open_is_the_opt_in(run, doc, opened, served, monkeypatch):
+    opens: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url, *a, **k: opens.append(url))
+    result = run("view", doc, "--author", "alice", "--open")
+    assert result.code == 0
+    assert opens == [result.lines[0]]
+
+
+def test_view_serves_a_document_with_no_round_and_says_what_to_do(run, doc, served):
+    """A view is a reader first: nothing to write is not nothing to show."""
+    result = run("view", doc, "--author", "alice", "--json")
+    assert result.code == 0
+    assert result.json["round"] is None
+    assert result.json["commentable"] is False
+    assert "specround round open" in result.json["blocked"]
+    assert served
+
+
+def test_view_takes_the_round_it_was_given(run, doc, opened, served):
+    result = run("view", doc, "--author", "alice", "--round", opened, "--json")
+    assert result.code == 0
+    assert result.json["round"]["id"] == opened
+
+
+def test_view_refuses_a_round_that_is_not_there(run, doc, opened, served):
+    """The one ``2`` here: what was asked for does not exist."""
+    result = run("view", doc, "--author", "alice", "--round", "r-000000000000")
+    assert result.code == 2
+    assert "r-000000000000" in result.err
+    assert served == []
+
+
+def test_view_on_a_closed_round_is_read_only_rather_than_refused(run, doc, opened, served):
+    assert run("round", "close", doc, "--author", "alice").code == 0
+    result = run("view", doc, "--author", "alice", "--json")
+    assert result.code == 0
+    assert result.json["commentable"] is False
+    assert "reading only" in result.json["blocked"]
+
+
+def test_view_pins_the_port_when_told_to(run, doc, opened, served):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        free = probe.getsockname()[1]
+    result = run("view", doc, "--author", "alice", "--port", free, "--json")
+    assert result.code == 0
+    assert result.json["port"] == free
+
+
+def test_view_stopping_with_ctrl_c_is_a_clean_exit(run, doc, opened, monkeypatch):
+    """Ctrl-c is how this verb ends. It is not a failure."""
+    def interrupt(self):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(WebView, "serve_forever", interrupt)
+    result = run("view", doc, "--author", "alice")
+    assert result.code == 0
+    assert "stopped" in result.err
