@@ -479,6 +479,23 @@ def test_the_gutter_looks_clickable_only_where_a_click_records_something(tmp_pat
     assert "#doc.live .line .ln" in page().decode("utf-8")
 
 
+# -- focus: the highlight, and which side of the screen moves ------------
+
+
+def test_the_focus_highlight_covers_both_kinds_of_anchor(tmp_path):
+    """A caret is an anchor, so focusing one has to look like focusing a span.
+
+    Both halves are asserted together because they drifted apart: `here` was put
+    on carets by a selector that listed them and taken off by one that did not,
+    which showed as nothing for as long as no style and no reader cared about the
+    class. Now the scroll target is read off it, and a `here` that never goes out
+    is a card pointing at somebody else's mark.
+    """
+    html = page().decode("utf-8")
+    assert "mark.anch.here, .caret.here { outline" in html
+    assert 'querySelectorAll("mark.anch.here, .caret.here")' in html
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 

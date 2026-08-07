@@ -110,8 +110,11 @@
   .line .sign { flex: 0 0 2ch; color: var(--dim); user-select: none; -webkit-user-select: none; }
   mark.anch { background: var(--mark); color: inherit; border-radius: 2px; cursor: pointer; }
   mark.anch.open { background: var(--markopen); }
-  mark.anch.here { outline: 2px solid var(--accent); }
   .caret { color: var(--accent); font-weight: 700; cursor: pointer; }
+  /* One highlight for both kinds of anchor. A run of text and an insertion point
+     are the same claim about where a comment sits, and a focused caret that lit
+     up nothing left the reviewer hunting for a mark the document never had. */
+  mark.anch.here, .caret.here { outline: 2px solid var(--accent); }
   aside {
     position: sticky; top: 49px; max-height: calc(100vh - 49px); overflow-y: auto;
     border-left: 1px solid var(--line); background: var(--panel); padding: 12px;
@@ -807,7 +810,11 @@ function focus(id) {
 }
 
 function markFocus() {
-  document.querySelectorAll("mark.anch.here").forEach((m) => m.classList.remove("here"));
+  // Cleared with the selector it is set with. Carets were being marked and never
+  // unmarked, which showed as nothing while the style covered spans alone — and
+  // would show as a highlight on a comment nobody is looking at the moment it
+  // did not, or as the wrong place to scroll to for anything reading `here`.
+  document.querySelectorAll("mark.anch.here, .caret.here").forEach((m) => m.classList.remove("here"));
   document.querySelectorAll(".card.here[data-comment]").forEach((c) => c.classList.remove("here"));
   if (!state.focused) return;
   document.querySelectorAll("mark.anch, .caret").forEach((mark) => {
