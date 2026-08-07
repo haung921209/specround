@@ -48,12 +48,13 @@ from typing import Any, Callable, Mapping, Sequence
 
 from specround import __version__
 from specround.anchors import Anchor
+from specround.critic import COMMENT, DELETE, INSERT, Annotation, MarkupError
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
 from specround.fold import Comment, Round, State
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
-from specround.store import ReviewStore
+from specround.store import HarvestReport, Placement, ReviewStore
 from specround.webview import DEFAULT_HOST, WebView
 from specround.wire import (
     anchor_json,
@@ -791,6 +792,147 @@ def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, lines
 
 
+def _harvest(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Take the inline markers out of the document and into the ledger (G6).
+
+    A dry run by default, and this is the one verb where that is not caution for
+    its own sake: it rewrites the reviewer's file. So the default answer is what
+    *would* happen — every event, every anchor, and whether the document changes
+    — and ``--apply`` is the sentence somebody typed.
+
+    Both modes refuse the same things. A marker that cannot be placed in the
+    round's base fails on the preview too, because a preview that is easier to
+    pass than the real run is not a preview.
+    """
+    target = _target(args)
+    state = target.store.fold()
+    round_ = _live_round(state, target.key, args.round, verb="harvest into")
+    try:
+        report = target.store.harvest_document(
+            target.path, round_.id, author=_author(args), apply=args.apply
+        )
+    except MarkupError as exc:
+        # The document is what has to change, not the command line — but it is
+        # still the caller's input, and 2 is the code that says "fix your input
+        # and run it again". A 3 would send them to the ledger, which is fine.
+        raise UsageError(str(exc)) from exc
+
+    state = target.store.fold()
+    payload = {
+        **target.envelope(),
+        "round": round_json(state, round_),
+        "base": report.base,
+        "applied": report.applied,
+        "rewrite": report.rewrite,
+        "annotations": [_placement_json(p) for p in report.placements],
+        "skipped": [
+            {
+                "reason": s.reason,
+                "opener": s.opener,
+                "start": s.start,
+                "line": s.line,
+                "text": s.text,
+            }
+            for s in report.skipped
+        ],
+        "counts": {
+            "comments": len(report.comments),
+            "suggestions": len(report.suggestions),
+            "skipped": len(report.skipped),
+        },
+    }
+    return payload, _harvest_lines(target, report)
+
+
+def _placement_json(placement: Placement) -> dict[str, Any]:
+    annotation = placement.annotation
+    return {
+        "kind": annotation.kind,
+        "event": placement.event,
+        "body": annotation.body,
+        "removed": annotation.removed,
+        "added": annotation.added,
+        "anchor": anchor_json(placement.anchor),
+        "strategy": placement.strategy,
+        "ambiguous": placement.ambiguous,
+        "line": annotation.source_line,
+    }
+
+
+def _harvest_detail(annotation: Annotation) -> str:
+    """What this marker says, in one cell."""
+    if annotation.kind == COMMENT:
+        return _clip(annotation.body, _BODY_WIDTH)
+    if annotation.kind == INSERT:
+        return f"add {_clip(annotation.added, _QUOTE_WIDTH)!r}"
+    if annotation.kind == DELETE:
+        return f"remove {_clip(annotation.removed, _QUOTE_WIDTH)!r}"
+    return f"{_clip(annotation.removed, _QUOTE_WIDTH)!r} → {_clip(annotation.added, _QUOTE_WIDTH)!r}"
+
+
+def _harvest_lines(target: Target, report: HarvestReport) -> list[str]:
+    """The preview — or the receipt, which is the same table with ids in it."""
+    mood = "harvested" if report.applied else "would harvest"
+    head = (
+        f"{mood} {len(report.comments)} comment(s) and {len(report.suggestions)} "
+        f"suggestion(s) from {target.key} into {report.round}"
+    )
+    if not report.found and not report.skipped:
+        return [f"no inline annotations in {target.key}", f"store  {target.store.root}"]
+    lines = [head]
+    if report.found:
+        lines.append("")
+        lines.extend(
+            _table(
+                ["LINE", "KIND", "ANCHOR", "WHAT", "EVENT"],
+                [
+                    [
+                        str(p.annotation.source_line),
+                        p.annotation.kind,
+                        _clip(p.anchor.exact, _QUOTE_WIDTH) if p.anchor.exact else "(point)",
+                        _harvest_detail(p.annotation),
+                        p.event or "—",
+                    ]
+                    for p in report.placements
+                ],
+                right=frozenset({0}),
+            )
+        )
+    footers = []
+    carried = [p for p in report.placements if p.carried]
+    if carried:
+        # The document had moved on as well, so these anchors are where the
+        # ladder put them rather than where the marker was. §4's reason for
+        # recording a strategy at all is that this is worth a person's time.
+        footers.append(
+            f"{len(carried)} carried into the base by the ladder — worth a look: "
+            + ", ".join(
+                f"line {p.annotation.source_line} ({p.strategy}"
+                + (", ambiguous" if p.ambiguous else "")
+                + ")"
+                for p in carried
+            )
+        )
+    if report.skipped:
+        footers.append(f"{len(report.skipped)} marker(s) left in the document:")
+        footers.extend(
+            f"  line {s.line}  {s.reason:<13}{_clip(s.text, _BODY_WIDTH)}"
+            for s in report.skipped
+        )
+    if report.found and not report.applied:
+        footers.append(
+            "nothing recorded and the file is untouched — re-run with --apply"
+            if report.rewrite
+            else "nothing recorded — re-run with --apply"
+        )
+    elif report.applied and report.rewrite:
+        footers.append(f"rewrote {target.path} without the markers")
+    if footers:
+        lines.append("")
+        lines.extend(footers)
+    return lines
+
+
 def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     state = target.store.fold()
@@ -1033,6 +1175,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rebind.add_argument("doc")
     rebind.set_defaults(handler=_reanchor, verb_name="reanchor")
+
+    reaping = verbs.add_parser(
+        "harvest",
+        parents=[common, writing],
+        help="take CriticMarkup markers out of the document and into the ledger",
+        description="Read {>>comments<<}, {++insertions++}, {--deletions--} and "
+        "{~~substitutions~>replacements~~} out of the document, record them against the "
+        "open round, and rewrite the file without them. A dry run unless --apply.",
+    )
+    reaping.add_argument("doc")
+    reaping.add_argument(
+        "--round", metavar="ID", help="harvest into this round rather than the open one"
+    )
+    reaping.add_argument(
+        "--apply",
+        action="store_true",
+        help="record the annotations and rewrite the document (default: preview only)",
+    )
+    reaping.set_defaults(handler=_harvest, verb_name="harvest")
 
     dispose = verbs.add_parser(
         "dispose", parents=[common, writing], help="settle a comment, with a reason"
