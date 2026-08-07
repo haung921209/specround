@@ -51,6 +51,7 @@ from specround.anchors import Anchor, count_occurrences
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
 from specround.fold import Comment, Round, State
+from specround.imports import BatchError, apply_plan, load_batch, parse_text, plan_import
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import ReviewStore
@@ -773,6 +774,113 @@ def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, lines
 
 
+def _import(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Absorb comments made in another tool, through a documented file (H9).
+
+    Dry run by default. What an import does is write somebody else's judgement
+    into this ledger under a round, and the anchoring is the part that can be
+    wrong — so the plan is the thing you read first, and ``--apply`` is a second
+    sentence you type.
+
+    Refusals are per-item and the exit stays ``0``, the same shape ``reanchor``
+    already has for a comment it could not place: the run did what it could and
+    says what it could not, rather than turning one moved paragraph into a
+    failure that hides the twenty comments that were fine.
+    """
+    target = _target(args)
+    state = target.store.fold()
+    round_ = _live_round(state, target.key, args.round, verb="import into")
+    if args.file == "-":
+        batch = parse_text(sys.stdin.read())
+    else:
+        path = Path(args.file).expanduser()
+        if not path.is_file():
+            raise UsageError(f"{path}: not a file — --file names the import JSON")
+        batch = load_batch(path)
+    plan = plan_import(target.store, round_.id, target.key, batch)
+
+    written: list[tuple[Any, str]] = []
+    if args.apply:
+        written = apply_plan(plan, target.store, author=_author(args))
+
+    payload = {
+        **target.envelope(),
+        "source": plan.source,
+        "round": round_.id,
+        "applied": bool(args.apply),
+        "imported": [
+            {
+                "source_id": item.id,
+                "comment": comment_id,
+                "how": entry.how,
+            }
+            for (item, comment_id), entry in zip(written, plan.planned)
+        ],
+        "planned": [
+            {
+                "source_id": entry.item.id,
+                "how": entry.how,
+                "quote": entry.anchor.exact if entry.anchor else None,
+                "body": entry.item.body,
+                "author": entry.item.author,
+                "ts": entry.item.ts,
+            }
+            for entry in plan.planned
+        ],
+        "skipped": [
+            {"source_id": entry.item.id, "comment": entry.comment} for entry in plan.skipped
+        ],
+        "rejected": [
+            {"source_id": entry.item.id, "reason": entry.reason} for entry in plan.rejected
+        ],
+        "counts": {
+            "total": plan.total,
+            "planned": len(plan.planned),
+            "skipped": len(plan.skipped),
+            "rejected": len(plan.rejected),
+        },
+    }
+
+    verb = "imported" if args.apply else "would import"
+    lines = [
+        f"{verb} {len(plan.planned)} of {plan.total} from {plan.source!r} "
+        f"into {round_.id} on {target.key}"
+    ]
+    rows: list[list[str]] = []
+    landed = dict(zip((entry.item.id for entry in plan.planned), (cid for _, cid in written)))
+    for entry in plan.planned:
+        rows.append(
+            [
+                landed.get(entry.item.id, "import"),
+                _clip(entry.item.id, _QUOTE_WIDTH),
+                entry.how,
+                _clip(entry.anchor.exact, _QUOTE_WIDTH) if entry.anchor else "(document)",
+                _clip(entry.item.body, _BODY_WIDTH),
+            ]
+        )
+    for entry in plan.skipped:
+        rows.append(
+            ["skip", _clip(entry.item.id, _QUOTE_WIDTH), "", "", f"already imported as {entry.comment}"]
+        )
+    for entry in plan.rejected:
+        rows.append(
+            ["refuse", _clip(entry.item.id, _QUOTE_WIDTH), "", "", _clip(entry.reason, _BODY_WIDTH)]
+        )
+    if rows:
+        lines.append("")
+        lines.extend(_table(["RESULT", "SOURCE ID", "VIA", "ANCHOR", "NOTE"], rows))
+    if plan.rejected:
+        lines.append("")
+        # Full text, not the clipped cell: a refusal names what to change, and a
+        # reason cut off at the column width is a reason nobody can act on.
+        lines.append(f"{len(plan.rejected)} refused — nothing was guessed at:")
+        lines.extend(f"  {entry.item.id}: {entry.reason}" for entry in plan.rejected)
+    if not args.apply and plan.planned:
+        lines.append("")
+        lines.append("nothing written — run again with --apply")
+    return payload, lines
+
+
 def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     state = target.store.fold()
@@ -1031,6 +1139,28 @@ def build_parser() -> argparse.ArgumentParser:
     dispose.add_argument("--why", required=True, help="the reason — required for every verdict")
     dispose.set_defaults(handler=_dispose, verb_name="dispose")
 
+    importing = verbs.add_parser(
+        "import",
+        parents=[common, writing],
+        help="take in comments made in another tool, from a specround.import/v0 file",
+    )
+    importing.add_argument("doc")
+    importing.add_argument(
+        "--file",
+        required=True,
+        metavar="PATH",
+        help="the import JSON (docs/import-format.md), or - for stdin",
+    )
+    importing.add_argument(
+        "--round", metavar="ID", help="import into this round rather than the open one"
+    )
+    importing.add_argument(
+        "--apply",
+        action="store_true",
+        help="record the comments (without this, the plan is printed and nothing is written)",
+    )
+    importing.set_defaults(handler=_import, verb_name="import")
+
     viewing = verbs.add_parser(
         "view",
         parents=[common, writing],
@@ -1082,7 +1212,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     verb = getattr(args, "verb_name", args.verb)
     try:
         payload, lines, *rest = args.handler(args)
-    except UsageError as exc:
+    except (UsageError, BatchError) as exc:
+        # A malformed import file is the caller's to fix, like a malformed
+        # command line — the history has not been consulted yet and refuses
+        # nothing. Per-item refusals are a different thing entirely and never
+        # arrive here; they are part of a successful plan.
         return _fail(args, verb, exc, USAGE, "usage")
     except InvariantError as exc:
         return _fail(args, verb, exc, STATE, "state")
