@@ -536,6 +536,46 @@ def test_a_side_that_is_not_on_screen_is_not_scrolled_to(tmp_path):
     assert in_node('focusScroll("card", {mark: false, card: true})', None, tmp_path) == ""
 
 
+def test_a_comment_the_document_lost_is_told_about_rather_than_left_silent(tmp_path):
+    """Two ways to have no mark, and they are not the same event.
+
+    A mode that is not drawing this anchor is the page's own business and says
+    nothing. Orphaning is the ledger's — a revision hid the text — and a click
+    that gets the same silence for both teaches a reviewer that cards sometimes
+    just do nothing, which is how the missing half of this round trip read for
+    as long as it was missing.
+    """
+    orphan = 'focusScroll("card", {mark: false, card: true, orphaned: true})'
+    quiet = 'focusScroll("card", {mark: false, card: true, orphaned: false})'
+    assert in_node(orphan, None, tmp_path) == "orphan"
+    assert in_node(quiet, None, tmp_path) == ""
+
+
+def test_an_orphan_the_page_can_still_place_is_scrolled_to_like_any_other(tmp_path):
+    """Orphaning keeps the last good anchor (§4), so a mark for one is real.
+
+    Announcing the state instead of going to that mark would have the page tell a
+    reviewer something the card is already telling them, in place of the one
+    thing only the document can show — where the text used to sit.
+    """
+    both = 'focusScroll("card", {mark: true, card: true, orphaned: true})'
+    assert in_node(both, None, tmp_path) == "anchor"
+
+
+def test_the_orphan_emphasis_lands_on_the_badge_the_card_already_writes(tmp_path):
+    """No second vocabulary for a state the card has a word for.
+
+    Three names have to agree for the emphasis to reach anything, and each is a
+    place someone could rename half of: the class the card writes, the selector
+    that finds it, and the rule that animates it. A miss is a click that silently
+    does nothing — the exact failure this path was added to stop.
+    """
+    html = page().decode("utf-8")
+    assert 'tag("orphaned", "bad orphan")' in html
+    assert 'querySelector(".tag.orphan")' in html
+    assert ".tag.orphan.flash { animation:" in html
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 

@@ -141,6 +141,15 @@
   .tag.open { color: var(--accent); border-color: var(--accent); }
   .tag.warn { color: var(--warn); border-color: var(--warn); }
   .tag.bad { color: var(--bad); border-color: var(--bad); }
+  /* The badge saying itself again, for a card asked to point at a document that
+     no longer holds its text. Twice and slowly: three times a second is where a
+     flash stops being emphasis and starts being a hazard, and a reviewer who has
+     asked not to be moved still gets the one fade. */
+  @keyframes orphanflash { from { background: var(--del); } to { background: transparent; } }
+  .tag.orphan.flash { animation: orphanflash .6s ease-out 2; }
+  @media (prefers-reduced-motion: reduce) {
+    .tag.orphan.flash { animation-iteration-count: 1; animation-duration: 1.2s; }
+  }
   .acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
   textarea { width: 100%; min-height: 60px; resize: vertical; padding: 6px 8px;
     border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
@@ -380,8 +389,17 @@ function focusScroll(origin, present) {
   // be filtered out of the list, and an anchor can sit on a line the diff is
   // hiding or in a mode that does not draw it. Nothing is wrong in either case
   // and there is nowhere to go, so the page stays where the reviewer put it.
+  //
+  // "orphan" is the one absence worth saying out loud, and what makes it worth
+  // saying is that it is the ledger's word rather than the screen's: a comment
+  // the document lost is a standing fact about the review, not a mode this view
+  // happens to be in. An orphan the page can still place is scrolled to like any
+  // other — orphaning keeps the last good anchor rather than forgetting it (§4),
+  // so there is somewhere to go, and going there beats announcing a state the
+  // card is already showing.
   if (origin !== "card") return present.card ? "card" : "";
-  return present.mark ? "anchor" : "";
+  if (present.mark) return "anchor";
+  return present.orphaned ? "orphan" : "";
 }
 
 // -- end of the pure part -------------------------------------------------
@@ -669,7 +687,10 @@ function card(comment) {
   element.dataset.comment = comment.id;
   const tags = [tag(comment.kind), tag(comment.state, comment.unresolved ? "open" : "")];
   if (comment.resolved) tags.push(tag("resolved"));
-  if (comment.orphaned) tags.push(tag("orphaned", "bad"));
+  // `orphan` beside `bad` names what the badge is rather than how it looks, so
+  // the one place that draws attention to it has something to aim at that will
+  // not move when the colour does.
+  if (comment.orphaned) tags.push(tag("orphaned", "bad orphan"));
   if (comment.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
   if (comment.ambiguous) tags.push(tag("ambiguous", "warn"));
   if (comment.ext && comment.ext.view) tags.push(tag("from " + comment.ext.view.space));
@@ -832,13 +853,33 @@ function focus(id, origin) {
   markFocus();
   const anchor = document.querySelector("mark.anch.here, .caret.here");
   const card = document.querySelector('.card[data-comment="' + id + '"]');
-  const where = focusScroll(origin, { mark: !!anchor, card: !!card });
+  const comment = state.data ? state.data.comments.find((c) => c.id === id) : null;
+  const where = focusScroll(origin, {
+    mark: !!anchor, card: !!card, orphaned: !!(comment && comment.orphaned),
+  });
   // `nearest` for the card because the thread column scrolls on its own and a
   // card already in view should not jump; `center` for the anchor because an
   // anchor pinned to the top or bottom edge shows the reviewer the sentence
   // without the paragraph it has to be read against.
   if (where === "card") card.scrollIntoView({ block: "nearest" });
   else if (where === "anchor") anchor.scrollIntoView({ block: "center" });
+  else if (where === "orphan") flashOrphan(card);
+}
+
+function flashOrphan(card) {
+  // A click that asks "where is this?" about a comment the document lost has to
+  // answer something, and the answer is the badge the card already carries. A
+  // second way to say "orphaned" would leave a reviewer deciding whether the two
+  // mean the same state; this only points at the word that is on screen.
+  const badge = card ? card.querySelector(".tag.orphan") : null;
+  if (!badge) return;
+  // Dropping the class and reading the layout back before setting it again is
+  // what restarts a running animation. Without it a second click during the
+  // first flash is indistinguishable from a click that did nothing — which is
+  // the exact reading this whole path exists to stop giving.
+  badge.classList.remove("flash");
+  void badge.offsetWidth;
+  badge.classList.add("flash");
 }
 
 function markFocus() {
