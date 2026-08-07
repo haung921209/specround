@@ -639,7 +639,7 @@ class _Handler(BaseHTTPRequestHandler):
         #: Which document this request is about, for the routes that read it off
         #: the query rather than a body. Per request, like everything else on a
         #: handler instance — the *server* holds no selection (H15).
-        self.doc = (query.get("doc") or [None])[0]
+        self.named_doc = (query.get("doc") or [None])[0]
         token = (query.get("t") or [None])[0] or self.headers.get("X-Specround-Token")
         if not self.view.authorised(token, self.headers.get("Origin")):
             # Deliberately the same answer for a wrong token and a wrong origin:
@@ -705,7 +705,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, page(), "text/html")
 
     def _state(self) -> None:
-        self._json(self.view.select(self.doc).state_payload())
+        self._json(self.view.select(self.named_doc).state_payload())
 
     def _write(self, method: Callable[["WebView", Mapping[str, Any]], dict[str, Any]]) -> None:
         """Run a writing verb on the document the body named.
@@ -719,7 +719,7 @@ class _Handler(BaseHTTPRequestHandler):
         named = body.get("doc")
         if named is not None and not isinstance(named, str):
             raise _usage("'doc' names a document in this workspace and must be a string")
-        payload = method(self.view.select(named or self.doc), body)
+        payload = method(self.view.select(named or self.named_doc), body)
         self._json({"schema": VIEW_SCHEMA, **payload})
 
 

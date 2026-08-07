@@ -170,7 +170,7 @@ class Workspace:
         use, and the document under it was never reachable anyway.
         """
         keys: list[str] = []
-        seen = {self.root}
+        seen = {self.root.resolve()}
         revisits = 0
         queue: deque[tuple[Path, str]] = deque([(self.root, "")])
         while queue:
@@ -190,7 +190,16 @@ class Workspace:
                         # the name that reached it. Following a link is worth
                         # doing — a docs tree that points at a shared folder is
                         # ordinary — and following it twice is a loop.
-                        real = canonical_path(path)
+                        #
+                        # ``resolve`` and not :func:`canonical_path`: the spelling
+                        # a case-insensitive filesystem prefers matters when a
+                        # *person* types a path, and nobody types these. Every
+                        # name here came from ``scandir``, which hands each entry
+                        # back once under the name on disk, so the only way to
+                        # reach one directory twice is a link — which is exactly
+                        # what ``resolve`` collapses, and it does it without
+                        # walking the tree a second time to ask about case.
+                        real = path.resolve()
                         if real in seen:
                             revisits += 1
                             continue
