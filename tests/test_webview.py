@@ -509,19 +509,17 @@ def test_focusing_moves_the_side_the_click_did_not_come_from(tmp_path):
     assert in_node('focusScroll("card", {mark: true, card: true})', None, tmp_path) == "anchor"
 
 
-def test_focusing_never_scrolls_both_sides(tmp_path):
-    """One answer, so the caller cannot move two viewports on one click.
+def test_a_focus_that_does_not_say_where_it_came_from_keeps_the_old_behaviour(tmp_path):
+    """Two listeners call this today, and a third is one feature away.
 
-    Scrolling the document and the thread column together would take the pane
-    the reviewer is reading with and hand it back somewhere else; where the two
-    share a scroll parent it is a fight rather than a jump. A function that
-    returns one name is the shape of that guarantee, not a comment about it.
+    One answer for one click is what stops both panes moving at once, so the
+    question is only ever which — and a caller that does not say gets what the
+    page did before there was a choice, the thread card, rather than nothing.
+    Silence is the hardest of the three outcomes to notice from outside, so the
+    default is decided here instead of by whatever `undefined` happens to fall
+    through to at the call site.
     """
-    for origin in ("mark", "card"):
-        answer = in_node(
-            'focusScroll(input, {mark: true, card: true})', origin, tmp_path
-        )
-        assert answer in {"card", "anchor"}
+    assert in_node("focusScroll(undefined, {mark: true, card: true})", None, tmp_path) == "card"
 
 
 def test_a_side_that_is_not_on_screen_is_not_scrolled_to(tmp_path):
@@ -574,6 +572,25 @@ def test_the_orphan_emphasis_lands_on_the_badge_the_card_already_writes(tmp_path
     assert 'tag("orphaned", "bad orphan")' in html
     assert 'querySelector(".tag.orphan")' in html
     assert ".tag.orphan.flash { animation:" in html
+
+
+def test_the_document_is_drawn_before_the_threads_that_point_into_it():
+    """A card becomes clickable only after the marks it scrolls to exist.
+
+    This is what lets the navigation bar and the focus round trip coexist. One
+    answer from the server redraws both halves, and because the document half
+    goes first there is no moment where a card for the newly opened file sits
+    beside the previous file's text. Focus finds its target by reading the DOM,
+    so the order in `load` is the guarantee rather than a coincidence of how it
+    happens to be written today — reversed, a click straight after switching
+    files would quietly find nothing and look like a dead card.
+    """
+    html = page().decode("utf-8")
+    body = html[html.index("async function load()") :]
+    document_half = re.search(r"\bdraw\(\);", body)
+    thread_half = re.search(r"\bdrawThreads\(\);", body)
+    assert document_half is not None and thread_half is not None
+    assert document_half.start() < thread_half.start()
 
 
 # -- suggestions (G8) ----------------------------------------------------
