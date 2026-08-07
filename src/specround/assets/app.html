@@ -74,6 +74,12 @@
     flex: 0 0 4.5ch; text-align: right; padding-right: 1.2ch; color: var(--dim);
     user-select: none; -webkit-user-select: none;
   }
+  /* The gutter is a comment target, so it has to look like one — a reader who
+     does not know a selection can be commented on still knows a line number can
+     be clicked. Gated on `.live` because a pointer over a round that cannot take
+     comments would promise a click that goes nowhere. */
+  #doc.live .line .ln { cursor: pointer; }
+  #doc.live .line .ln:hover { background: var(--line); color: var(--ink); }
   .line .body { white-space: pre-wrap; word-break: break-word; flex: 1; min-width: 0; }
   .line.added { background: var(--add); }
   .line.removed { background: var(--del); }
@@ -235,6 +241,12 @@ function offsetIn(holder, node, offset) {
   return seen;
 }
 
+function textIn(space) {
+  // The text a span's offsets count in. One lookup for every converter below, so
+  // that two of them cannot disagree about which document they are measuring.
+  return (space === "base" ? state.data.base : state.data.live) || "";
+}
+
 function selectedSpan() {
   if (!state.data) return null;
   const selection = window.getSelection();
@@ -248,9 +260,56 @@ function selectedSpan() {
   const start = Number(head.dataset.s) + offsetIn(head, range.startContainer, range.startOffset);
   const end = Number(tail.dataset.s) + offsetIn(tail, range.endContainer, range.endOffset);
   if (end <= start) return null;
-  const source = space === "base" ? state.data.base : state.data.live;
-  return { space, start, end, quote: source ? source.slice(start, end) : "" };
+  return { space, start, end, quote: textIn(space).slice(start, end) };
 }
+
+function commentOnLine(space, start, text) {
+  // The cheap gesture: one click on a line number instead of a drag across the
+  // line. It goes through the same composer and the same route a selection does,
+  // so a line the revision alone has meets the refusal that was already there
+  // rather than a second one written for this path.
+  commentBox(spanOfRun(space, start, text, textIn(space)));
+}
+
+// -- the pure part --------------------------------------------------------
+//
+// These three touch neither the DOM nor `state`, and the tests lift this block
+// out and run it. Everything else on this page needs a browser to mean anything;
+// this is the part a machine can hold to account, and the line-to-anchor
+// conversion belongs in it because it is the one offset the page works out for
+// itself rather than receiving from the server.
+
+function rawLines(text) {
+  // One entry per line, each carrying the offset its first character sits at.
+  // A document that ends with a break has an empty line after it, and that line
+  // is real: its gutter is where a reviewer says something belongs at the end.
+  const out = [];
+  let at = 0;
+  for (;;) {
+    const stop = text.indexOf("\n", at);
+    const cut = stop === -1 ? text.length : stop;
+    out.push({ start: at, text: text.slice(at, cut) });
+    if (stop === -1) return out;
+    at = stop + 1;
+  }
+}
+
+function spanOfRun(space, start, text, source) {
+  // A line is a whole run: `lineRow` gives every line exactly one `data-s`
+  // holder, so "this line" is that holder's extent and there is nothing new to
+  // measure. The quote comes off the source rather than the run for the reason
+  // `selectedSpan` does the same — the offsets are the claim, and the text on
+  // screen is only ever a copy of what they name. An empty line therefore yields
+  // a zero-width span, which is an insertion point (§5) and not a mistake.
+  const end = start + text.length;
+  return { space, start, end, quote: source.slice(start, end) };
+}
+
+function modeClass(mode, commentable) {
+  return commentable ? mode + " live" : mode;
+}
+
+// -- end of the pure part -------------------------------------------------
 
 // -- painting anchors ------------------------------------------------------
 
@@ -318,23 +377,15 @@ function drawRender(host, data) {
 }
 
 function drawRaw(host, data) {
-  host.className = "raw";
+  host.className = modeClass("raw", data.commentable);
   host.textContent = "";
-  const text = data.base || "";
-  let at = 0;
-  let number = 0;
-  while (at <= text.length) {
-    const stop = text.indexOf("\n", at);
-    const cut = stop === -1 ? text.length : stop;
-    number += 1;
-    host.appendChild(lineRow(String(number), "", text.slice(at, cut), at, "base", ""));
-    if (stop === -1) break;
-    at = stop + 1;
-  }
+  rawLines(data.base || "").forEach((line, index) => {
+    host.appendChild(lineRow(String(index + 1), "", line.text, line.start, "base", ""));
+  });
 }
 
 function drawDiff(host, data) {
-  host.className = "diff";
+  host.className = modeClass("diff", data.commentable);
   host.textContent = "";
   const diff = data.diff;
   if (!diff.available) {
@@ -360,14 +411,17 @@ function drawDiff(host, data) {
 function lineRow(left, right, text, start, space, cls, sign) {
   const line = document.createElement("div");
   line.className = "line" + (cls ? " " + cls : "");
+  const gutters = [];
   const gutterLeft = document.createElement("span");
   gutterLeft.className = "ln";
   gutterLeft.textContent = left;
+  gutters.push(gutterLeft);
   line.appendChild(gutterLeft);
   if (right !== "" || sign !== undefined) {
     const gutterRight = document.createElement("span");
     gutterRight.className = "ln";
     gutterRight.textContent = right;
+    gutters.push(gutterRight);
     line.appendChild(gutterRight);
   }
   if (sign !== undefined) {
@@ -382,6 +436,22 @@ function lineRow(left, right, text, start, space, cls, sign) {
   body.dataset.space = space;
   body.textContent = text;
   line.appendChild(body);
+  // Both numbers act on the row they number: a diff row is one text in one space,
+  // whichever side of the gutter counted it. Wired only where a comment can be
+  // recorded, off the same reading of the state that puts `.live` on the host —
+  // one rule, one place. If the round closes under a page that is still open the
+  // click posts anyway and the ledger refuses it in its own words; a check here
+  // would be a second oracle for a rule this page does not own.
+  //
+  // The text is captured rather than read back off the element, because by the
+  // time anyone clicks, `paint` may have inserted a caret into it — the offsets
+  // are the record of what this line is, and the DOM is not.
+  if (state.data && state.data.commentable) {
+    gutters.forEach((gutter) => {
+      gutter.title = "comment on this line";
+      gutter.addEventListener("click", () => commentOnLine(space, start, text));
+    });
+  }
   return line;
 }
 
@@ -430,7 +500,8 @@ function drawThreads() {
   if (!shown.length) {
     host.innerHTML = '<p class="empty">'
       + (hidden ? hidden + " resolved thread(s), hidden by default — tick the box above."
-                : "No comments yet. Select text in any mode to leave one.")
+                : "No comments yet. Select text in any mode, or click a line "
+                  + "number in raw or diff, to leave one.")
       + "</p>";
     return;
   }
