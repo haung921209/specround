@@ -18,7 +18,7 @@ class Specround < Formula
   #   curl -sL <the url above> | shasum -a 256
   # or, equivalently, from the file the release was built from:
   #   shasum -a 256 dist/specround-0.1.0.tar.gz
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "a05c3813668ccd8a76b16c78ca07cabfed5a69236627fa127bb63ac66d23fdfb"
   license "MIT"
 
   # The package needs >= 3.10; this pins which interpreter the virtualenv is
