@@ -1443,6 +1443,87 @@ def test_view_pins_the_port_when_told_to(run, doc, opened, served):
     assert result.json["port"] == free
 
 
+# -- the view verb over a directory (H15) --------------------------------
+#
+# The tree's own behaviour is tested in test_workspace.py, over a socket. What
+# is under test here is the shell contract again: one server, the URL still
+# first and alone, and the two refusals that keep a directory from being served
+# as something it is not.
+
+
+@pytest.fixture
+def tree(tmp_path, doc):
+    """The fixture document, with two more beside it and one in a folder."""
+    (tmp_path / "second.md").write_text("# Second\n\nAnother document.\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "third.md").write_text("# Third\n\nOne more.\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_view_on_a_directory_serves_the_tree_from_one_server(run, tree, opened, served):
+    """H15's whole promise: a spec is never one file, and this is one process."""
+    result = run("view", str(tree), "--author", "alice", "--json")
+    assert result.code == 0
+    payload = result.json
+    assert set(payload) == {
+        "schema", "verb", "doc", "path", "store", "root", "url", "host", "port",
+        "token", "workspace",
+    }
+    assert payload["root"] == str(tree)
+    assert [d["key"] for d in payload["workspace"]["documents"]] == [
+        "second.md", "spec.md", "sub/third.md"
+    ]
+    assert served == [payload["url"]]
+
+
+def test_view_on_a_directory_still_prints_the_url_first_and_alone(run, tree, opened, served):
+    """An embedder reads one line and does not learn a second shape from the argument."""
+    result = run("view", str(tree), "--author", "alice")
+    assert result.lines[0].startswith("http://127.0.0.1:")
+    assert served == [result.lines[0]]
+    assert "3 document(s) under" in result.out
+
+
+def test_view_on_a_directory_opens_the_first_document_in_path_order(run, tree, opened, served):
+    """Not the most recently active one: nothing here may rank by a timestamp."""
+    payload = run("view", str(tree), "--author", "alice", "--json").json
+    assert payload["workspace"]["selected"] == "second.md"
+    assert payload["path"].endswith("second.md")
+
+
+def test_view_on_a_directory_carries_the_badges_the_bar_shows(run, tree, opened, served):
+    payload = run("view", str(tree), "--author", "alice", "--json").json
+    listed = {d["key"]: d for d in payload["workspace"]["documents"]}
+    assert listed["spec.md"]["active"] and listed["spec.md"]["open_rounds"] == 1
+    assert not listed["second.md"]["active"]
+    assert payload["workspace"]["counts"]["active"] == 1
+
+
+def test_view_refuses_a_directory_with_nothing_to_review(run, tmp_path, served):
+    """A tree with no markdown in it has nothing to serve — a ``2``, not an empty page."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("not a document\n", encoding="utf-8")
+    result = run("view", str(empty), "--author", "alice")
+    assert result.code == 2
+    assert "no markdown documents" in result.err
+    assert served == []
+
+
+def test_view_refuses_round_on_a_directory(run, tree, opened, served):
+    """A round belongs to one document; honouring the flag would pick one silently."""
+    result = run("view", str(tree), "--author", "alice", "--round", opened)
+    assert result.code == 2
+    assert "belongs to one document" in result.err
+    assert served == []
+
+
+def test_view_on_a_directory_says_it_is_a_store_per_document(run, tree, opened, served):
+    """The default layout gives each document its own; naming one would name the wrong one."""
+    result = run("view", str(tree), "--author", "alice")
+    assert "stores 3 — one per document" in result.out
+
+
 def test_view_stopping_with_ctrl_c_is_a_clean_exit(run, doc, opened, monkeypatch):
     """Ctrl-c is how this verb ends. It is not a failure."""
     def interrupt(self):

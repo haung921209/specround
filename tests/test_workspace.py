@@ -23,7 +23,7 @@ from specround.locations import canonical_path
 from specround.store import ReviewStore
 from specround.webview import WebView
 from specround.workspace import DEFAULT_LIMIT, Workspace
-from test_webview import call, state
+from test_webview import call, in_node, state
 
 ALPHA = "# Alpha\n\nThe first document. It says a thing.\n"
 BETA = "# Beta\n\nThe second document. It says another.\n"
@@ -417,3 +417,62 @@ def test_a_document_named_by_something_other_than_a_string_is_refused(view):
     status, payload = call(view, "/api/comment", {"doc": 7, "body": "x", "whole": True})
     assert status == 400
     assert "must be a string" in payload["error"]["message"]
+
+
+def test_a_write_can_name_its_document_in_the_query_too(view, reviewed, tree, clock):
+    """Which is how the page does it — one rule for every request it sends.
+
+    The body form is for a caller writing JSON by hand. Both have to work, or
+    the page and the API would be two surfaces with two conventions.
+    """
+    status, _ = call(
+        view, "/api/comment", {"body": "from the query", "whole": True},
+        params={"doc": "sub/beta.md"},
+    )
+    assert status == 200
+    landed = ReviewStore.for_document(tree / "sub" / "beta.md", clock=clock).fold()
+    assert "from the query" in [comment.body for comment in landed.comments.values()]
+
+
+# -- the bar's own logic -------------------------------------------------
+#
+# The filter lives in the page, so this is where it can be held to account: the
+# server always sends the whole listing, and hiding rows is a decision the
+# browser makes. Lifted and run like the rest of the page's pure part.
+
+LISTED = [
+    {"key": "quiet.md", "active": False, "rounds": 0, "open_rounds": 0,
+     "unresolved": 0, "orphans": 0, "error": None},
+    {"key": "busy.md", "active": True, "rounds": 2, "open_rounds": 1,
+     "unresolved": 3, "orphans": 1, "error": None},
+    {"key": "done.md", "active": True, "rounds": 1, "open_rounds": 0,
+     "unresolved": 0, "orphans": 0, "error": None},
+    {"key": "broken.md", "active": False, "rounds": 0, "open_rounds": 0,
+     "unresolved": 0, "orphans": 0, "error": "ledger.jsonl:1: not valid JSON"},
+]
+
+
+def test_the_filter_keeps_only_the_documents_with_review_activity(tmp_path):
+    kept = in_node("visibleDocuments(input, true).map((d) => d.key)", LISTED, tmp_path)
+    assert kept == ["busy.md", "done.md"]
+
+
+def test_the_filter_off_is_the_whole_listing(tmp_path):
+    kept = in_node("visibleDocuments(input, false).map((d) => d.key)", LISTED, tmp_path)
+    assert kept == ["quiet.md", "busy.md", "done.md", "broken.md"]
+
+
+def test_the_badges_say_what_is_outstanding(tmp_path):
+    marks = in_node("badges(input[1]).map((b) => b.text)", LISTED, tmp_path)
+    assert marks == ["1 open", "3 unresolved", "1 orphaned"]
+
+
+def test_a_document_that_was_reviewed_and_owes_nothing_still_says_so(tmp_path):
+    """A blank row would give "reviewed, nothing owed" and "never looked at" the same answer."""
+    assert in_node("badges(input[2]).map((b) => b.text)", LISTED, tmp_path) == ["reviewed"]
+    assert in_node("badges(input[0])", LISTED, tmp_path) == []
+
+
+def test_a_document_whose_history_will_not_fold_says_that_first(tmp_path):
+    marks = in_node("badges(input[3])", LISTED, tmp_path)
+    assert marks == [{"text": "unreadable", "kind": "bad"}]
