@@ -206,6 +206,21 @@ CLI lists. Edit in raw mode and the submission is a suggestion diff (G8).
 Threads carry their replies, verdicts, and resolve/reopen, and resolved ones are
 hidden with a toggle rather than deleted (G11).
 
+**The page arranges to the pane it is in.** Drag either seam to resize the file
+bar or the thread column, double-click a seam for the width back, fold either
+side column away with `⇤` / `⇥` in the toolbar, and set the size the document and
+its threads are read at with `A−` / `A+`. In a narrow pane the two side columns
+**start** folded, so the document has the width; open one and that choice is the
+one that sticks from then on.
+
+Those settings live in the browser — one `localStorage` key, one JSON object,
+kept per origin, which survives a restart because the port is derived from the
+document's path. They are **not** in the ledger, and the line is worth naming:
+the ledger holds review state, the things another reviewer or a later reader has
+to agree with. How wide a column is on your screen is not one of them, and a
+history whose every entry is a claim about the document is what makes it worth
+reading.
+
 The anchor space is the round's base in every mode, because that snapshot is the
 text the round is a review of (I7). In the diff, a line only the revision has has
 no place in the base — selecting it carries the text back through the re-anchor

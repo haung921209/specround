@@ -18,6 +18,12 @@
     --bg: #fbfbfa; --panel: #fff; --ink: #1a1a19; --dim: #6b6b66; --line: #e2e1dc;
     --accent: #2f6f5e; --warn: #9a5b12; --bad: #a33; --mark: #fff3bf; --markopen: #ffe08a;
     --add: #e9f6ec; --del: #fdecec; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* The two the reader moves. `--read` is the size the document and the threads
+       are read at, and `--handle` is how wide a splitter is to grab — wide enough
+       to hit on a trackpad, narrow enough that the seam still looks like a seam.
+       Both are overwritten inline by `applyView`; these are what an unstyled
+       first paint uses, and they are the layout as it always was. */
+    --read: 15px; --handle: 6px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -45,6 +51,14 @@
   /* A mode this document has nothing for. It stays in place, greyed, with the
      reason on its title — see `diffReason`. */
   .modes button:disabled { opacity: .45; cursor: not-allowed; }
+  /* The fold switches borrow the group's shape but not its fill. `aria-pressed` is
+     right for them — a column showing is a state, not a step — but the accent is
+     already spelling "this is the mode you are in", and a header with three filled
+     buttons at rest is a header where the one that means a choice stopped standing
+     out. So the state worth seeing is the unusual one: a folded column dims its
+     switch, and an open one looks like the ordinary button it is. */
+  #columns button[aria-pressed="true"] { background: transparent; color: var(--ink); }
+  #columns button[aria-pressed="false"] { background: transparent; color: var(--dim); }
   button, select, input, textarea { font: inherit; color: var(--ink); }
   .btn {
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
@@ -56,15 +70,62 @@
   #notice.show { display: block; }
   #notice.bad { background: var(--del); color: var(--bad); }
   #notice.info { background: var(--panel); color: var(--dim); }
-  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 0; align-items: start; }
-  /* The navigation bar exists only when the server was started on a directory.
-     A file view keeps the two-column layout it always had, to the pixel. */
-  main.tree { grid-template-columns: 260px minmax(0, 1fr) 380px; }
-  @media (max-width: 900px) { main, main.tree { grid-template-columns: minmax(0, 1fr); } }
+  /* Five tracks always, and every child placed by hand into one of them. Source
+     order would be enough until a column is folded away — a folded column is
+     `display: none`, and auto-placement slides everything after it one track to
+     the left, which puts the document where the bar was. Placing by hand means a
+     folded column is a track of zero width and nothing else moves.
+     The navigation bar exists only when the server was started on a directory, so
+     a file view is the same layout with its first two tracks at nothing. */
+  main {
+    display: grid; gap: 0; align-items: start;
+    grid-template-columns:
+      var(--nav-w) var(--nav-handle) minmax(0, 1fr) var(--handle) var(--thr-w);
+    --nav-w: 0px; --nav-handle: 0px;
+    --thr-w: var(--thr-width, 380px);
+  }
+  main.tree { --nav-w: var(--nav-width, 260px); --nav-handle: var(--handle); }
+  nav#files { grid-column: 1; }
+  #splitnav { grid-column: 2; }
+  #stage { grid-column: 3; min-width: 0; }
+  #splitthreads { grid-column: 4; }
+  aside { grid-column: 5; }
+  /* A grab, not a decoration: transparent while nobody is reaching for it, so the
+     panels' own borders stay the separator they have always been, and accent under
+     the pointer so the seam says it can be moved. It is left in place when its
+     column is folded, because dragging it out is the other way back. */
+  .split {
+    position: sticky; top: 49px; height: calc(100vh - 49px);
+    cursor: col-resize; background: transparent; touch-action: none;
+  }
+  .split:hover, .split.dragging { background: var(--accent); }
+  #splitnav { display: none; }
+  main.tree #splitnav { display: block; }
   nav#files { display: none; }
   main.tree nav#files {
     display: block; position: sticky; top: 49px; max-height: calc(100vh - 49px);
     overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 12px;
+  }
+  /* Folded: gone, not squeezed. A zero-width track still holds a panel's border
+     and padding open, so a column folded by width alone would leave a 25px stripe
+     that looks like a rendering fault rather than a fold. These come after the
+     rules that show the panels so that a fold wins wherever it is set. */
+  main.navshut nav#files { display: none; }
+  main.thrshut aside { display: none; }
+  /* Below this the columns cannot sit side by side at all, which is the layout this
+     page has always fallen back to. The handles go with them — there is nothing
+     horizontal left to divide — and folding is then the whole control, which is
+     the one that matters here anyway: the panels go away and the document has the
+     screen. Last, so it wins over the per-handle rules above. */
+  @media (max-width: 900px) {
+    main, main.tree { grid-template-columns: minmax(0, 1fr); }
+    nav#files, #stage, aside { grid-column: 1; }
+    /* `main.tree` on the first of these is load-bearing, not symmetry: the rule
+       that shows the bar's handle is `main.tree #splitnav`, and a bare `#splitnav`
+       here loses to it on specificity. Measured, not guessed — it left a
+       zero-width `col-resize` target sitting in a layout with no columns to
+       resize, which is a handle that answers the mouse and moves nothing. */
+    main.tree #splitnav, #splitthreads { display: none; }
   }
   nav#files h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; }
   nav#files .note { font-size: 12px; color: var(--dim); margin-top: 10px; line-height: 1.45; }
@@ -82,12 +143,15 @@
   .file[aria-current="true"] { background: var(--bg); color: var(--ink); font-weight: 600; }
   .file .name { display: block; font-size: 13px; word-break: break-all; }
   .file .marks { display: block; margin-top: 3px; }
-  #doc { padding: 18px 22px 60vh; min-width: 0; }
+  /* The size the reader chose, and from here down every size inside the document
+     is relative to it — `em` and not `px`, or a bigger document would be a bigger
+     paragraph with the same small code in it. */
+  #doc { padding: 18px 22px 60vh; min-width: 0; font-size: var(--read); }
   #doc h1, #doc h2, #doc h3, #doc h4 { line-height: 1.3; margin: 1.4em 0 .5em; }
   #doc h1 { font-size: 1.6em; } #doc h2 { font-size: 1.3em; } #doc h3 { font-size: 1.1em; }
   #doc pre {
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
-    padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 13px;
+    padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: .87em;
   }
   #doc table { border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; }
   #doc th, #doc td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
@@ -95,7 +159,7 @@
   #doc code { font-family: var(--mono); font-size: .9em; background: var(--panel); padding: 1px 4px; border-radius: 3px; }
   #doc pre code { background: none; padding: 0; }
   #doc hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
-  #doc.raw, #doc.diff { font-family: var(--mono); font-size: 13px; line-height: 1.55; }
+  #doc.raw, #doc.diff { font-family: var(--mono); font-size: calc(var(--read) * .87); line-height: 1.55; }
   .line { display: flex; }
   .line .ln {
     flex: 0 0 4.5ch; text-align: right; padding-right: 1.2ch; color: var(--dim);
@@ -118,25 +182,30 @@
      are the same claim about where a comment sits, and a focused caret that lit
      up nothing left the reviewer hunting for a mark the document never had. */
   mark.anch.here, .caret.here { outline: 2px solid var(--accent); }
+  /* The threads take the reading size too, because a comment is read against the
+     sentence it is about — one of the two at the size the reviewer set and the
+     other not is the pair being harder to read together, not easier. The file bar
+     keeps its own size: it is a list of names to scan, not prose to read. */
   aside {
     position: sticky; top: 49px; max-height: calc(100vh - 49px); overflow-y: auto;
     border-left: 1px solid var(--line); background: var(--panel); padding: 12px;
+    font-size: var(--read);
   }
-  aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; }
+  aside h2 { font-size: .87em; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; }
   .card { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; margin-bottom: 10px; background: var(--bg); }
   .card.here { border-color: var(--accent); }
-  .card .who { font-size: 12px; color: var(--dim); font-family: var(--mono); }
+  .card .who { font-size: .8em; color: var(--dim); font-family: var(--mono); }
   .card .quote {
-    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    font-family: var(--mono); font-size: .8em; color: var(--dim);
     border-left: 2px solid var(--line); padding-left: 6px; margin: 5px 0;
     white-space: pre-wrap; word-break: break-word; max-height: 5.5em; overflow: hidden;
   }
   .card .body { white-space: pre-wrap; word-break: break-word; }
   .card pre.patch {
-    font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+    font-family: var(--mono); font-size: .8em; background: var(--panel); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 8px; overflow-x: auto; margin: 6px 0;
   }
-  .card .reply { border-left: 2px solid var(--line); margin: 6px 0 0 8px; padding-left: 7px; font-size: 14px; }
+  .card .reply { border-left: 2px solid var(--line); margin: 6px 0 0 8px; padding-left: 7px; font-size: .93em; }
   /* Written where it will be read: the box takes the indent of the chain it is
      adding to, so a reviewer sees the shape of the reply before sending it. The
      accent edge is the one difference, and it says which of them is not sent. */
@@ -145,7 +214,7 @@
   }
   .card .replybox textarea { min-height: 52px; }
   .tag {
-    display: inline-block; font-size: 11px; font-family: var(--mono); border: 1px solid var(--line);
+    display: inline-block; font-size: .73em; font-family: var(--mono); border: 1px solid var(--line);
     border-radius: 10px; padding: 0 7px; margin-right: 4px; color: var(--dim);
   }
   .tag.open { color: var(--accent); border-color: var(--accent); }
@@ -171,10 +240,10 @@
   #float.show { display: block; }
   #editor { display: none; padding: 0 22px 22px; }
   #editor.show { display: block; }
-  #editor textarea { min-height: 55vh; font-family: var(--mono); font-size: 13px; }
+  #editor textarea { min-height: 55vh; font-family: var(--mono); font-size: calc(var(--read) * .87); }
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-  label.check { font-size: 13px; color: var(--dim); display: flex; gap: 5px; align-items: center; }
-  .empty { color: var(--dim); font-size: 14px; }
+  label.check { font-size: .87em; color: var(--dim); display: flex; gap: 5px; align-items: center; }
+  .empty { color: var(--dim); font-size: .93em; }
 </style>
 </head>
 <body>
@@ -182,10 +251,21 @@
   <span class="doc" id="docname">…</span>
   <span class="meta" id="roundmeta"></span>
   <span class="grow"></span>
-  <div class="modes" role="group" aria-label="view mode">
+  <div class="modes" id="modes" role="group" aria-label="view mode">
     <button data-mode="render" aria-pressed="true">render</button>
     <button data-mode="raw" aria-pressed="false">raw</button>
     <button data-mode="diff" aria-pressed="false">diff</button>
+  </div>
+  <!-- The arrangement controls. `aria-pressed` on the fold buttons means "this
+       column is showing", which is what the button is a switch for; the size pair
+       are ordinary buttons because a step is not a state. -->
+  <div class="modes" id="columns" role="group" aria-label="columns">
+    <button id="foldnav" aria-pressed="true">⇤</button>
+    <button id="foldthreads" aria-pressed="true">⇥</button>
+  </div>
+  <div class="modes" id="size" role="group" aria-label="reading size">
+    <button id="fontdown">A−</button>
+    <button id="fontup">A+</button>
   </div>
   <label class="check">author <input type="text" id="author" size="12"></label>
   <label class="check">as
@@ -196,7 +276,9 @@
 <div id="notice"></div>
 <main id="layout">
   <nav id="files" aria-label="documents in this workspace"></nav>
-  <div>
+  <div class="split" id="splitnav" role="separator" aria-orientation="vertical"
+       aria-label="width of the file bar"></div>
+  <div id="stage">
     <div id="doc"></div>
     <div id="editor">
       <textarea id="edittext" spellcheck="false"></textarea>
@@ -208,6 +290,8 @@
       </div>
     </div>
   </div>
+  <div class="split" id="splitthreads" role="separator" aria-orientation="vertical"
+       aria-label="width of the thread column"></div>
   <aside>
     <div id="composer"></div>
     <h2 id="threadhead">threads</h2>
@@ -230,9 +314,13 @@ const $ = (id) => document.getElementById(id);
 // `drafts` is what has been typed on any card, open or not. Two fields because
 // they answer different questions — a card can hold words nobody is looking at,
 // and a card can be open with nothing typed into it yet.
+// `view` is how the page is arranged for whoever is reading it — column widths,
+// folds, reading size. It sits beside the rest and is the one field that outlives
+// the tab, because it is the one field that is nobody else's business (see
+// `loadView`).
 const state = {
   data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false,
-  reply: { open: null, drafts: {} },
+  reply: { open: null, drafts: {} }, view: null,
 };
 
 // -- transport ------------------------------------------------------------
@@ -515,6 +603,124 @@ function paintable(comments) {
   return comments.filter((c) => c.current_anchor && !c.misplaced);
 }
 
+// -- how the page is arranged ---------------------------------------------
+//
+// Column widths, whether a column is folded away, and the size the text is read
+// at. All of it is one object, two conversions and a clamp — and every way it
+// actually breaks (a stored blob from a version that wrote fewer keys, a
+// hand-edited value, a drag that ran off the screen) is arithmetic, which is why
+// it belongs on this side of the fence rather than in the handlers.
+
+const VIEW_KEY = "specround.view";
+
+// The layout as it has always looked, and the bounds a drag may not leave. The
+// floors are not taste: a bar narrower than the badges it lists, or a thread
+// column narrower than a card, is a column that has been folded without saying
+// so — and folding is a button, with a way back. A ceiling for the same reason
+// with the document on the losing side.
+const VIEW_DEFAULTS = { nav: 260, threads: 380, font: 15 };
+const VIEW_BOUNDS = { nav: [140, 560], threads: [240, 760], font: [11, 26] };
+
+// Under this the three columns stop fitting: 260 and 380 of chrome leave a
+// document about as wide as the bar beside it, which is the complaint this was
+// built for (a browser pane in a terminal multiplexer, 2026-08-08). So a narrow
+// viewport *starts* folded — and starting is all this number does. It is a
+// default and never a clamp: a reviewer who opens a column at this width has
+// said what they want, and from then on the stored answer outranks the guess.
+// Everything else about a small screen is H16's.
+const VIEW_FOLD_UNDER = 1100;
+
+function clampView(field, value) {
+  // Out of bounds and not a number are one case on purpose. A stored `"260px"`,
+  // a `null` from a half-written blob and a drag that reached the far edge of
+  // the screen all have the same honest answer — the nearest width this layout
+  // can actually be — and a page that refused to draw over any of them would be
+  // a page one bad character in localStorage can break.
+  const bounds = VIEW_BOUNDS[field];
+  if (!bounds) throw new Error("unknown view field: " + field);
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return VIEW_DEFAULTS[field];
+  return Math.max(bounds[0], Math.min(bounds[1], number));
+}
+
+function foldDefaults(viewport) {
+  // What a viewport this wide starts as, before anything stored is consulted.
+  return { navShut: Number(viewport) < VIEW_FOLD_UNDER, threadsShut: Number(viewport) < VIEW_FOLD_UNDER };
+}
+
+function mergeView(stored, viewport) {
+  // Field by field rather than wholesale, because the two ways a stored blob
+  // goes wrong are an older page that wrote fewer keys and one nonsense value
+  // in an otherwise good object — and neither is a reason to throw away the
+  // rest of what the reviewer set up.
+  //
+  // The folds read `typeof === "boolean"` rather than falling back on truthiness
+  // for the one reason that matters here: `false` is an answer. A reviewer who
+  // opened a column on a narrow screen stored exactly that, and a `||` would
+  // hand it back the width-based guess every time the page loaded.
+  const held = stored && typeof stored === "object" ? stored : {};
+  const folds = foldDefaults(viewport);
+  const width = (field) => clampView(field, held[field] === undefined ? VIEW_DEFAULTS[field] : held[field]);
+  return {
+    nav: width("nav"),
+    threads: width("threads"),
+    font: width("font"),
+    navShut: typeof held.navShut === "boolean" ? held.navShut : folds.navShut,
+    threadsShut: typeof held.threadsShut === "boolean" ? held.threadsShut : folds.threadsShut,
+  };
+}
+
+function readView(text, viewport) {
+  // Whatever is under the key, which is text this page wrote last time and also
+  // text anything else could have put there. Unparseable is not an error to
+  // report — there is nobody to report it to, and the default layout is a
+  // perfectly good answer to give a reviewer who only wanted to read.
+  let stored = null;
+  try { stored = text ? JSON.parse(text) : null; } catch (error) { stored = null; }
+  return mergeView(stored, viewport);
+}
+
+function writeView(view) {
+  // The five keys and nothing else, so that a blob which arrived carrying
+  // something extra does not get handed its own additions back. This page is
+  // the only writer of this key, and what it writes is what it reads.
+  return JSON.stringify({
+    nav: view.nav, threads: view.threads, font: view.font,
+    navShut: view.navShut, threadsShut: view.threadsShut,
+  });
+}
+
+function viewAfter(view, action) {
+  // One place for every gesture that rearranges the page, for the reason
+  // `replyAfter` has one: two splitters, two fold buttons and two size buttons
+  // are six handlers, and six copies of "clamp it and keep the rest" is six
+  // chances for one of them to be slightly different.
+  if (action.kind === "size" || action.kind === "reset") {
+    // A drag or a double-click on a handle is a statement about a width, and a
+    // width says "show me this much" — so both of them unfold the column they
+    // are about. Otherwise dragging a folded column's handle would move a
+    // number nobody can see, which reads as a dead handle.
+    const next = Object.assign({}, view);
+    next[action.field] = action.kind === "reset"
+      ? VIEW_DEFAULTS[action.field]
+      : clampView(action.field, action.px);
+    next[action.field + "Shut"] = false;
+    return next;
+  }
+  if (action.kind === "fold") {
+    const key = action.field + "Shut";
+    // The width is left alone, so unfolding gives back the column that was
+    // folded rather than the one it started as.
+    return Object.assign({}, view, { [key]: !view[key] });
+  }
+  if (action.kind === "font") {
+    return Object.assign({}, view, { font: clampView("font", view.font + action.step) });
+  }
+  // Every caller passes a literal, so an unknown kind is a typo — and a typo
+  // that returned the state unchanged would look exactly like a dead button.
+  throw new Error("unknown view action: " + action.kind);
+}
+
 // -- end of the pure part -------------------------------------------------
 
 // -- painting anchors ------------------------------------------------------
@@ -700,7 +906,12 @@ function draw() {
 
 function drawFiles() {
   const workspace = state.data.workspace;
-  $("layout").className = workspace ? "tree" : "";
+  // `classList` and not `className`: the folds are classes on this same element,
+  // and assigning the whole attribute unfolded both columns every time the file
+  // list redrew — which is every reload.
+  $("layout").classList.toggle("tree", Boolean(workspace));
+  // A file view has no bar, so the button that folds it is a switch for nothing.
+  $("foldnav").hidden = !workspace;
   const host = $("files");
   host.textContent = "";
   if (!workspace) return;
@@ -1120,6 +1331,102 @@ function stopEditing() {
   $("doc").style.display = "";
 }
 
+// -- the arrangement, on the screen ---------------------------------------
+
+function applyView() {
+  // Everything the settings mean on screen, in one pass. One function rather than
+  // one per control, so that a fold restored on load and a fold set by a click
+  // cannot arrive by two routes that disagree about what folded looks like.
+  const layout = $("layout");
+  // The fold is a zero-width track *and* a hidden panel. The width alone would
+  // leave the panel's border and padding holding a stripe open; the class alone
+  // would leave the track it used to fill as a gap.
+  layout.style.setProperty("--nav-width", (state.view.navShut ? 0 : state.view.nav) + "px");
+  layout.style.setProperty("--thr-width", (state.view.threadsShut ? 0 : state.view.threads) + "px");
+  layout.classList.toggle("navshut", state.view.navShut);
+  layout.classList.toggle("thrshut", state.view.threadsShut);
+  document.documentElement.style.setProperty("--read", state.view.font + "px");
+  foldButton("foldnav", state.view.navShut, "the file bar");
+  foldButton("foldthreads", state.view.threadsShut, "the thread column");
+  // The size is on the buttons rather than in a readout of its own: a number that
+  // only matters while it is being changed does not need a place in the header.
+  $("fontdown").title = "smaller — now " + state.view.font + "px";
+  $("fontup").title = "larger — now " + state.view.font + "px";
+}
+
+function foldButton(id, shut, what) {
+  const element = $(id);
+  element.setAttribute("aria-pressed", String(!shut));
+  element.title = (shut ? "show " : "fold away ") + what;
+}
+
+function loadView() {
+  // The reader's settings come from the browser, and this is the boundary that
+  // matters: how wide a column is on this screen is not a claim about the
+  // document, and a review history in which every entry *is* such a claim is what
+  // makes the history worth reading. So none of this is an event.
+  //
+  // The key is per origin and the origin is stable, because the port is derived
+  // from the document's path — which is what makes the settings outlive a restart
+  // without anything being written somewhere shared.
+  let stored = null;
+  try { stored = window.localStorage.getItem(VIEW_KEY); } catch (error) { stored = null; }
+  state.view = readView(stored, window.innerWidth);
+  applyView();
+}
+
+function saveView() {
+  // Storage can refuse — a private window, a filled quota — and a layout that
+  // cannot be remembered is no reason to stop drawing the page. It then holds for
+  // this tab, which is the whole of what is lost.
+  try { window.localStorage.setItem(VIEW_KEY, writeView(state.view)); } catch (error) { return; }
+}
+
+function moveView(action) {
+  // Applied and not remembered: a drag in progress would otherwise be one
+  // localStorage write per frame, none of which anybody asked for.
+  state.view = viewAfter(state.view, action);
+  applyView();
+}
+
+function setView(action) {
+  moveView(action);
+  saveView();
+}
+
+function dragHandle(id, field, sign) {
+  // `sign` is which direction means wider. The bar's handle is to the right of the
+  // bar, so dragging right widens it; the thread column's handle is to its left,
+  // where that same drag makes it narrower.
+  const handle = $(id);
+  handle.addEventListener("pointerdown", (event) => {
+    // Pointer capture rather than listeners on the document: the pointer leaves a
+    // handle this thin on the first frame, and every move after that still has to
+    // arrive here — including the release, which may happen off the window.
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("dragging");
+    const from = event.clientX;
+    const started = state.view[field];
+    const move = (moved) => moveView({
+      kind: "size", field, px: started + sign * (moved.clientX - from),
+    });
+    const done = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", done);
+      handle.removeEventListener("pointercancel", done);
+      handle.classList.remove("dragging");
+      saveView();
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", done);
+    handle.addEventListener("pointercancel", done);
+  });
+  // The default is one double-click away, because a handle dragged somewhere
+  // unhelpful is exactly the moment a reviewer wants the layout they know back.
+  handle.addEventListener("dblclick", () => setView({ kind: "reset", field }));
+}
+
 // -- wiring ---------------------------------------------------------------
 
 function applyMode(mode) {
@@ -1128,7 +1435,10 @@ function applyMode(mode) {
   // and a mode setter that redrew in the middle of that would decide it here.
   state.mode = mode;
   const reason = diffReason(state.data);
-  document.querySelectorAll(".modes button").forEach((element) => {
+  // `#modes` and not `.modes`: the arrangement controls borrow the same segmented
+  // look, and a loop over the class would set `aria-pressed="false"` on all of
+  // them — a fold button reporting the opposite of what the column is doing.
+  document.querySelectorAll("#modes button").forEach((element) => {
     element.setAttribute("aria-pressed", String(element.dataset.mode === mode));
     if (element.dataset.mode !== "diff") return;
     // Disabled and carrying the reason, rather than hidden. A mode that vanishes
@@ -1223,9 +1533,15 @@ async function load() {
   drawThreads();
 }
 
-document.querySelectorAll(".modes button").forEach((element) => {
+document.querySelectorAll("#modes button").forEach((element) => {
   element.addEventListener("click", () => setMode(element.dataset.mode));
 });
+dragHandle("splitnav", "nav", 1);
+dragHandle("splitthreads", "threads", -1);
+$("foldnav").addEventListener("click", () => setView({ kind: "fold", field: "nav" }));
+$("foldthreads").addEventListener("click", () => setView({ kind: "fold", field: "threads" }));
+$("fontdown").addEventListener("click", () => setView({ kind: "font", step: -1 }));
+$("fontup").addEventListener("click", () => setView({ kind: "font", step: 1 }));
 $("showresolved").addEventListener("change", drawThreads);
 $("refresh").addEventListener("click", () => load().catch((e) => notice(String(e.message || e), "bad")));
 $("float").addEventListener("mousedown", (event) => {
@@ -1242,6 +1558,10 @@ $("propose").addEventListener("click", async () => {
 });
 $("editcancel").addEventListener("click", stopEditing);
 
+// Before the first request, so the page is arranged the way it was left before it
+// has anything to put in it — a document that appears at one width and jumps to
+// another once the state lands is the settings arriving too late to be settings.
+loadView();
 load().catch((error) => notice(String(error.message || error), "bad"));
 </script>
 </body>
