@@ -246,9 +246,9 @@ def test_a_thread_can_be_resolved_with_no_disposition(store, round_id):
     resolve(store, cid, note="bob agreed in chat")
     comment = store.fold().comments[cid]
     assert comment.resolved is True
-    assert comment.unresolved is True  # the disposition axis is untouched
+    assert comment.undisposed is True  # the disposition axis is untouched
     assert comment.verdict is None
-    assert [c.id for c in store.fold().unresolved] == [cid]
+    assert [c.id for c in store.fold().undisposed] == [cid]
 
 
 def test_a_settled_comment_can_keep_its_thread_open(store, round_id):
@@ -260,14 +260,19 @@ def test_a_settled_comment_can_keep_its_thread_open(store, round_id):
     assert [c.id for c in store.fold().threads()] == [cid]
 
 
-def test_resolved_and_unresolved_are_not_complements(store, round_id):
-    """The two words are antonyms in English and different axes here."""
+def test_resolved_and_undisposed_are_not_complements(store, round_id):
+    """Two axes, and now two words that cannot be read as each other's negation.
+
+    They used to be ``resolved`` and ``unresolved`` — antonyms in English,
+    unrelated questions here, which is how a resolved thread came to look like a
+    count the tool had refused to update.
+    """
     settled_open = store.add_comment(round_id, author="bob", body="settled, still talking")
     store.dispose(settled_open, author="alice", verdict="applied", reason="done")
     resolved_undisposed = store.add_comment(round_id, author="bob", body="agreed, no verdict")
     resolve(store, resolved_undisposed)
     state = store.fold()
-    assert [c.id for c in state.unresolved] == [resolved_undisposed]
+    assert [c.id for c in state.undisposed] == [resolved_undisposed]
     assert [c.id for c in state.resolved_threads] == [resolved_undisposed]
     assert [c.id for c in state.active_threads] == [settled_open]
 
@@ -276,12 +281,12 @@ def test_resolving_does_not_change_what_a_round_close_must_declare(store, round_
     """Closing a thread is not a way to walk away from an undisposed comment."""
     cid = store.add_comment(round_id, author="bob", body="retries?")
     resolve(store, cid, note="we talked it through")
-    assert [c.id for c in store.fold().unresolved_in(round_id)] == [cid]
-    with pytest.raises(InvariantError, match="1 unresolved comment"):
+    assert [c.id for c in store.fold().undisposed_in(round_id)] == [cid]
+    with pytest.raises(InvariantError, match="1 undisposed comment"):
         store.close_round(round_id, author="alice")
 
-    close_id = store.close_round(round_id, author="alice", allow_unresolved=True)
-    assert store.fold().rounds[round_id].unresolved_at_close == [cid]
+    close_id = store.close_round(round_id, author="alice", allow_undisposed=True)
+    assert store.fold().rounds[round_id].undisposed_at_close == [cid]
     assert close_id
 
 

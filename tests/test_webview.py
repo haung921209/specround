@@ -174,7 +174,7 @@ def test_state_reports_the_round_the_three_modes_and_the_counts(opened, doc_text
     assert payload["render"].startswith("<h1>")
     assert payload["diff"]["identical"] is True
     assert payload["counts"] == {
-        "comments": 0, "unresolved": 0, "orphans": 0, "resolved": 0, "events": 1
+        "comments": 0, "undisposed": 0, "orphans": 0, "resolved": 0, "events": 1
     }
 
 
@@ -740,7 +740,7 @@ def test_a_disposition_settles_the_comment(opened, comment_id):
     )
     assert status == 200
     assert payload["comment"]["state"] == "applied"
-    assert payload["comment"]["unresolved"] is False
+    assert payload["comment"]["undisposed"] is False
 
 
 def test_deferring_leaves_the_comment_outstanding(opened, comment_id):
@@ -749,7 +749,7 @@ def test_deferring_leaves_the_comment_outstanding(opened, comment_id):
         "/api/dispose",
         {"target": comment_id, "verdict": "deferred", "reason": "waiting on the retry spec"},
     )
-    assert payload["comment"]["unresolved"] is True
+    assert payload["comment"]["undisposed"] is True
 
 
 def test_a_settled_comment_cannot_be_disposed_again(opened, comment_id):
@@ -787,7 +787,7 @@ def test_commenting_with_no_open_round_is_the_state_error_the_cli_gives(view):
 
 def test_disposing_still_works_after_the_round_closes(opened, store, comment_id, round_id):
     """A comment outlives its round, and so does everything decided about it."""
-    store.close_round(round_id, author="alice", allow_unresolved=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True)
     status, _ = call(
         opened, "/api/dispose", {"target": comment_id, "verdict": "answered", "reason": "explained"}
     )

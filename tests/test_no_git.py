@@ -150,7 +150,7 @@ def assert_loop_landed(store: ReviewStore, doc: Path) -> None:
     assert len(state.rounds) == 1
     assert len(state.comments) == 2
     assert state.open_rounds == []
-    assert state.unresolved == []
+    assert state.undisposed == []
     assert {c.state for c in state.comments.values()} == {"applied"}
     round_ = next(iter(state.rounds.values()))
     assert store.snapshots.get_text(round_.base) == DOC
@@ -190,7 +190,7 @@ def test_full_loop_beside_an_untracked_document_in_a_repository(
 def assert_loop_landed_in_repo(store: ReviewStore, doc: Path) -> None:
     state = store.fold()
     assert len(state.comments) == 2
-    assert state.unresolved == []
+    assert state.undisposed == []
     assert (central_store_dir(doc) / "ledger.jsonl").is_file()
     # The working tree gained nothing to gitignore — this is the whole reason the
     # default moved out of the document's folder.
@@ -207,7 +207,7 @@ def test_an_in_tree_store_is_still_git_free(tmp_path, clock, no_subprocess, host
 
     store = run_full_loop(doc, clock)
     assert (workdir / STORE_DIRNAME / "ledger.jsonl").is_file()
-    assert store.fold().unresolved == []
+    assert store.fold().undisposed == []
     assert not hostile_path.exists(), "a git binary was invoked"
 
 

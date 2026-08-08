@@ -589,25 +589,30 @@ class ReviewStore:
         round_id: str,
         *,
         author: str,
-        allow_unresolved: bool = False,
+        allow_undisposed: bool = False,
         note: str | None = None,
     ) -> str:
-        """Close a round, recording anything it leaves unresolved.
+        """Close a round, recording anything it leaves undisposed.
 
-        Refusing by default is the gate: walking away from open comments has to
-        be a decision someone typed, not the shape of a quiet exit. The record
-        carries the list either way, so the ledger never loses them (G3).
+        Refusing by default is the gate: walking away from comments nobody
+        decided has to be a decision someone typed, not the shape of a quiet
+        exit. The record carries the list either way, so the ledger never loses
+        them (G3).
+
+        The axis is disposition, never thread. Resolving a conversation does not
+        take a comment off this list, or ending the talk would become a way past
+        the gate.
         """
         state = self.fold()
         round_ = state.rounds.get(round_id)
         if round_ is None:
             raise InvariantError(f"unknown round {round_id!r}")
-        outstanding = sorted(c.id for c in state.unresolved_in(round_id))
-        if outstanding and not allow_unresolved:
+        outstanding = sorted(c.id for c in state.undisposed_in(round_id))
+        if outstanding and not allow_undisposed:
             raise InvariantError(
-                f"round {round_id!r} has {len(outstanding)} unresolved comment(s): "
+                f"round {round_id!r} has {len(outstanding)} undisposed comment(s): "
                 f"{', '.join(outstanding)} — dispose them, or close with "
-                "allow_unresolved=True to record that they were left open"
+                "allow_undisposed=True to record that they were left open"
             )
         record: dict[str, Any] = {
             "type": ROUND_CLOSE,
@@ -615,6 +620,8 @@ class ReviewStore:
             "round": round_id,
         }
         if outstanding:
+            # The record's field keeps its v0 spelling on disk; what it holds is
+            # this undisposed set (format §4).
             record["unresolved"] = outstanding
         if note:
             record["note"] = note

@@ -6,9 +6,16 @@ over. Nothing else caches that state, so there is no second copy to fall out of
 sync with the log.
 
 Three axes run independently and are easy to confuse, so they are named apart:
-*disposition* (was this decided? — ``unresolved``), *anchor* (can we still put
+*disposition* (was this decided? — ``undisposed``), *anchor* (can we still put
 it on the document? — ``orphans``), and *thread* (is the conversation over? —
-``resolved_threads``). A comment can sit anywhere in that cube.
+``resolved_threads`` / ``active_threads``). A comment can sit anywhere in that
+cube.
+
+**The disposition axis is spelled ``undisposed``, never "unresolved".** It used
+to be, and one word away from the ``resolve`` verb is close enough that running
+that verb and watching the number not move read as a bug rather than as the
+answer to a different question. "Unresolved" now belongs to the thread axis and
+to nothing else — the word and the verb agree.
 
 Two properties are load bearing:
 
@@ -17,9 +24,16 @@ Two properties are load bearing:
   ordering — ``seq`` is the order.
 * **It is also the validator.** Every cross-record rule (a comment must name a
   live round, a settled comment stays settled, a closed round must have
-  recorded what it left unresolved) is enforced here while folding. The writer
+  recorded what it left undisposed) is enforced here while folding. The writer
   folds the prospective history before appending, so the same code that reads a
   ledger is the code that refuses a bad append — one oracle, not two.
+
+One spelling did not move: the ``round.close`` record's own ``unresolved``
+field. That is bytes already written under ``specround.ledger/v0``, where the
+field set is closed and an unknown key is refused outright (format §2), so
+renaming it would not be a rename — it would make every ledger that used it
+unreadable. It is read here into :attr:`Round.undisposed_at_close`, which is
+what the rest of the program sees.
 """
 
 from __future__ import annotations
@@ -193,12 +207,18 @@ class Comment:
     def resolved(self) -> bool:
         """True when this conversation has been closed and not re-opened (G11).
 
-        A third axis, independent of the other two. :attr:`unresolved` asks
+        A third axis, independent of the other two. :attr:`undisposed` asks
         whether anyone decided what to do about the comment; :attr:`orphaned`
         asks whether the tool can still place it on the document; this asks
         whether the discussion is over. A thread can be resolved with no
         disposition (people simply agreed) and settled with the thread still
         open (the fix landed, the argument continues).
+
+        This is the only axis the word *resolved* names. There is deliberately
+        no ``unresolved`` property beside it: ``not comment.resolved`` is one
+        character longer and cannot be mistaken for the disposition axis, and
+        anything still reaching for the old spelling gets an ``AttributeError``
+        rather than a boolean that flipped meaning underneath it.
         """
         current = self.resolution
         return current is not None and current.resolved
@@ -214,17 +234,20 @@ class Comment:
         return self.verdict in TERMINAL_VERDICTS
 
     @property
-    def unresolved(self) -> bool:
+    def undisposed(self) -> bool:
         """Still owed an answer: never disposed, or explicitly deferred.
 
         ``deferred`` is the one verdict that does not settle a comment — that is
         the whole point of having it. A deferred comment keeps showing up until
         someone applies, rejects, or answers it.
 
-        Not the opposite of :attr:`resolved`, despite the words. This one is the
-        disposition axis and it is what ``round.close`` has to account for (I6);
-        closing a thread never changes it, or resolving would become a way to
-        walk away from an undisposed comment quietly.
+        Nothing to do with :attr:`resolved`. This one is the disposition axis
+        and it is what ``round.close`` has to account for (I6); closing a thread
+        never changes it, or resolving would become a way to walk away from an
+        undisposed comment quietly. That independence is the reason for the
+        name: while this was called ``unresolved`` the two axes shared a word,
+        and the count that correctly did not move after a ``resolve`` looked
+        like the tool ignoring the command.
         """
         return not self.settled
 
@@ -247,7 +270,9 @@ class Round:
     status: str = OPEN
     closed_by: str | None = None
     closed_ts: str | None = None
-    unresolved_at_close: list[str] = field(default_factory=list)
+    #: The comments this round walked away from with no verdict. It reads the
+    #: record's ``unresolved`` field, which keeps its v0 spelling on disk.
+    undisposed_at_close: list[str] = field(default_factory=list)
     close_note: str = ""
     #: The reserved additive object from ``round.open``, preserved not read.
     ext: dict[str, Any] | None = None
@@ -272,19 +297,19 @@ class State:
         return [r for r in self.rounds.values() if r.open]
 
     @property
-    def unresolved(self) -> list[Comment]:
+    def undisposed(self) -> list[Comment]:
         """Comments still owed an answer, in the order they were made.
 
-        The disposition axis — see :attr:`Comment.unresolved`. Not the
-        complement of :attr:`resolved_threads`.
+        The disposition axis — see :attr:`Comment.undisposed`. Nothing to do
+        with :attr:`resolved_threads` or :attr:`active_threads`.
         """
-        return [c for c in self.comments.values() if c.unresolved]
+        return [c for c in self.comments.values() if c.undisposed]
 
     @property
     def orphans(self) -> list[Comment]:
         """Comments whose anchor was not found in the revision it was tried on.
 
-        Separate axis from :attr:`unresolved`: that one is about whether anyone
+        Separate axis from :attr:`undisposed`: that one is about whether anyone
         answered the comment, this one is about whether the tool can still show
         it where it belongs. A comment can be both, either, or neither.
         """
@@ -292,7 +317,8 @@ class State:
 
     @property
     def active_threads(self) -> list[Comment]:
-        """Conversations still going — the default listing (G11).
+        """Conversations still going — the unresolved threads, and the default
+        listing (G11).
 
         This is what "resolved is hidden by default" means at this layer.
         Hiding is a view decision, not a deletion: the records are all still in
@@ -329,14 +355,14 @@ class State:
         """
         return [c for c in self.comments.values() if c.round == round_id]
 
-    def unresolved_in(self, round_id: str) -> list[Comment]:
+    def undisposed_in(self, round_id: str) -> list[Comment]:
         """Comments in a round still owed a disposition — resolved or not.
 
         Unfiltered on purpose: this feeds ``round.close`` (I6), and a resolved
         thread whose comment nobody disposed is still something the close has
         to declare.
         """
-        return [c for c in self.comments_in(round_id) if c.unresolved]
+        return [c for c in self.comments_in(round_id) if c.undisposed]
 
     def round_of(self, comment_id: str) -> Round:
         return self.rounds[self.comments[comment_id].round]
@@ -516,19 +542,21 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
 
     elif kind == ROUND_CLOSE:
         round_ = _live_round_or_raise(state, record["round"], f"round.close {event_id!r}")
-        outstanding = sorted(c.id for c in state.unresolved_in(round_.id))
+        outstanding = sorted(c.id for c in state.undisposed_in(round_.id))
+        # ``unresolved`` is this record's field name at v0 and stays that way on
+        # disk; what it holds is the undisposed set (format §4).
         declared = sorted(record.get("unresolved", []))
         if declared != outstanding:
             # Closing over open comments is allowed, hiding them is not: the
             # event has to say which ones it walked away from (G3, loss 0).
             raise InvariantError(
                 f"round.close {event_id!r} declares unresolved={declared} but round "
-                f"{round_.id!r} has {outstanding} unresolved — the close must record them"
+                f"{round_.id!r} has {outstanding} undisposed — the close must record them"
             )
         round_.status = CLOSED
         round_.closed_by = event_id
         round_.closed_ts = record["ts"]
-        round_.unresolved_at_close = outstanding
+        round_.undisposed_at_close = outstanding
         round_.close_note = record.get("note", "")
 
     else:  # pragma: no cover - validate_event already gates the type

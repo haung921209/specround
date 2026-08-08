@@ -122,7 +122,7 @@ target is spec and prose documents — PR tools already do code well).
   listing the markdown under it and what review each document has. Every
   request names the document it is about and gets back the *same per-document
   projection* a file view gives: no workspace round, no shared anchor space, no
-  second definition of "unresolved". The selection is the **caller's, never the
+  second definition of "undisposed". The selection is the **caller's, never the
   server's** — a process that remembered which document was open would be
   state, which the view does not have (that is also what lets two tabs on one
   port read two documents). One store per document throughout, so the bar reads
@@ -191,6 +191,18 @@ target is spec and prose documents — PR tools already do code well).
   undisposed count does not look at resolve** (if it did, closing a
   conversation would become a way to walk past an undisposed comment quietly).
   Details in `docs/ledger-format.md` §4·§7.1.
+- **The two axes get two words: `undisposed` and `unresolved`** (settled by the
+  implementation 2026-08-08, from a user report). The count above was right and
+  its name was not: it was called "unresolved", one word away from the `resolve`
+  verb, so resolving a thread and watching `round status` hold at `1 unresolved`
+  read as the tool ignoring the command. The disposition axis is **undisposed**
+  wherever it is shown or projected; **unresolved** means the thread axis and
+  nothing else, and `round status` reports both numbers. Nothing keeps the old
+  spelling as an alias — a stale reader gets a missing key or a refused flag,
+  never a value that silently changed which question it answers. The one place
+  the words still disagree is the `round.close` record's own `unresolved` field,
+  which is frozen bytes at ledger/v0 and a v1 rename candidate.
+  Vocabulary table in `docs/ledger-format.md` §7.2.
 - **suggestion** = a comment whose body is a patch (`kind: comment |
   suggestion`). When an agent harvests, a comment gets answered or applied and a
   suggestion gets applied or rejected — either way the disposition and its
@@ -273,7 +285,7 @@ target is spec and prose documents — PR tools already do code well).
   never one file, and one server per file is a real burden, so `view` accepts
   a **directory** — one server for the tree, a navigation bar on the left
   listing the files, documents with review activity marked (open rounds,
-  unresolved counts) and a filter that shows only them. Clicking a file swaps
+  undisposed counts) and a filter that shows only them. Clicking a file swaps
   the main panel to the existing per-document three-mode view — the workspace
   layer is navigation only; rounds, anchors, and the ledger stay per-document
   axes and the core does not change. Several servers may overlap the same

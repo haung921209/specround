@@ -365,7 +365,7 @@ class WebView:
         ``workspace`` carries the navigation bar for the same reason, and it is
         ``None`` for a file view. One answer means a comment posted here repaints
         the bar's badges and the thread list together — two requests would let
-        the bar say "no unresolved" about a document the panel beside it is
+        the bar say "nothing undisposed" about a document the panel beside it is
         showing an open thread on.
         """
         state = self.store.fold()
@@ -395,7 +395,7 @@ class WebView:
             "diff": self._diff_payload(base, live),
             "counts": {
                 "comments": len(comments),
-                "unresolved": sum(1 for c in comments if c.unresolved),
+                "undisposed": sum(1 for c in comments if c.undisposed),
                 "orphans": sum(1 for c in comments if c.orphaned),
                 "resolved": sum(1 for c in comments if c.resolved),
                 "events": state.count,

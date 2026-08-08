@@ -36,15 +36,15 @@ def test_fold_ignores_timestamp_order(tmp_path, clock):
     assert reversed_time.comments[cid].state == ordered.comments[cid].state
 
 
-def test_open_rounds_and_unresolved_comments_are_what_fold_is_for(store, doc, round_id):
+def test_open_rounds_and_undisposed_comments_are_what_fold_is_for(store, doc, round_id):
     first = store.add_comment(round_id, author="bob", body="why 30 seconds?")
     second = store.add_comment(round_id, author="carol", body="retries?")
     state = store.fold()
     assert [r.id for r in state.open_rounds] == [round_id]
-    assert [c.id for c in state.unresolved] == [first, second]
+    assert [c.id for c in state.undisposed] == [first, second]
 
     store.dispose(first, author="alice", verdict="applied", reason="raised to 60")
-    assert [c.id for c in store.fold().unresolved] == [second]
+    assert [c.id for c in store.fold().undisposed] == [second]
 
 
 def test_round_records_its_document_base_and_title(store, doc, round_id):
@@ -111,7 +111,7 @@ def test_suggestion_is_a_comment_whose_substance_is_a_patch(store, round_id):
     assert suggestion.kind == "suggestion"
     assert suggestion.patch.startswith("-Timeouts")
     assert suggestion.body == "align with the proxy"
-    assert suggestion.unresolved is True
+    assert suggestion.undisposed is True
 
 
 def test_replies_attach_in_order(store, round_id):
@@ -129,7 +129,7 @@ def test_terminal_verdicts_settle_a_comment(store, round_id, verdict):
     store.dispose(cid, author="alice", verdict=verdict, reason="a reason")
     comment = store.fold().comments[cid]
     assert comment.settled is True
-    assert comment.unresolved is False
+    assert comment.undisposed is False
     assert comment.state == verdict
 
 
@@ -138,8 +138,8 @@ def test_deferred_leaves_a_comment_outstanding(store, round_id):
     store.dispose(cid, author="alice", verdict="deferred", reason="needs the retry spec")
     comment = store.fold().comments[cid]
     assert comment.state == "deferred"
-    assert comment.unresolved is True
-    assert [c.id for c in store.fold().unresolved] == [cid]
+    assert comment.undisposed is True
+    assert [c.id for c in store.fold().undisposed] == [cid]
 
 
 def test_a_deferred_comment_can_be_disposed_again(store, round_id):
@@ -149,7 +149,7 @@ def test_a_deferred_comment_can_be_disposed_again(store, round_id):
     comment = store.fold().comments[cid]
     assert comment.state == "applied"
     assert [d.verdict for d in comment.dispositions] == ["deferred", "applied"]
-    assert store.fold().unresolved == []
+    assert store.fold().undisposed == []
 
 
 def test_a_settled_comment_cannot_be_re_disposed(store, round_id):
@@ -186,16 +186,16 @@ def test_a_reply_must_name_a_known_comment(store, round_id):
         store.reply("c-nonexistent", author="alice", body="hello")
 
 
-def test_closing_over_unresolved_comments_needs_an_explicit_decision(store, round_id):
+def test_closing_over_undisposed_comments_needs_an_explicit_decision(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="retries?")
-    with pytest.raises(InvariantError, match="1 unresolved comment"):
+    with pytest.raises(InvariantError, match="1 undisposed comment"):
         store.close_round(round_id, author="alice")
     assert store.fold().rounds[round_id].open is True
 
-    store.close_round(round_id, author="alice", allow_unresolved=True, note="next round")
+    store.close_round(round_id, author="alice", allow_undisposed=True, note="next round")
     round_ = store.fold().rounds[round_id]
     assert round_.open is False
-    assert round_.unresolved_at_close == [cid]
+    assert round_.undisposed_at_close == [cid]
     assert round_.close_note == "next round"
 
 
@@ -204,7 +204,7 @@ def test_a_clean_close_records_nothing_left_open(store, round_id):
     store.dispose(cid, author="alice", verdict="applied", reason="fixed")
     close_id = store.close_round(round_id, author="alice")
     round_ = store.fold().rounds[round_id]
-    assert round_.unresolved_at_close == []
+    assert round_.undisposed_at_close == []
     assert round_.closed_by == close_id
     assert round_.closed_ts is not None
 
@@ -223,7 +223,7 @@ def test_a_hand_written_close_cannot_hide_open_comments(store, round_id):
     }
     # The rule lives in the format, not just in the convenience API: a close
     # that omits what it left open is invalid however it was produced.
-    with pytest.raises(InvariantError, match=f"has \\['{cid}'\\] unresolved"):
+    with pytest.raises(InvariantError, match=f"has \\['{cid}'\\] undisposed"):
         fold([*records, forged])
 
 
@@ -235,7 +235,7 @@ def test_a_round_cannot_be_closed_twice(store, round_id):
 
 def test_a_comment_in_a_closed_round_can_still_be_disposed(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="retries?")
-    store.close_round(round_id, author="alice", allow_unresolved=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True)
     # Deferred work outlives the round it was raised in.
     store.dispose(cid, author="alice", verdict="applied", reason="landed later")
     assert store.fold().comments[cid].state == "applied"
@@ -268,8 +268,8 @@ def test_multiple_rounds_can_be_open_at_once(doc, clock):
     # Comments name their round, so concurrent rounds are unambiguous.
     a = store.add_comment(first, author="bob", body="on the spec")
     b = store.add_comment(second, author="bob", body="on the other")
-    assert [c.id for c in store.fold().unresolved_in(first)] == [a]
-    assert [c.id for c in store.fold().unresolved_in(second)] == [b]
+    assert [c.id for c in store.fold().undisposed_in(first)] == [a]
+    assert [c.id for c in store.fold().undisposed_in(second)] == [b]
 
 
 def test_state_helpers_navigate_the_graph(store, doc, round_id):

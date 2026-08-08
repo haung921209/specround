@@ -162,7 +162,7 @@ def test_a_document_nobody_has_reviewed_has_no_activity_and_no_error(space):
     assert not quiet.active
     assert quiet.error is None
     assert quiet.summary["rounds"] == 0
-    assert quiet.summary["unresolved"] == 0
+    assert quiet.summary["undisposed"] == 0
     assert quiet.summary["last_activity"] is None
 
 
@@ -171,7 +171,7 @@ def test_the_badge_counts_come_from_that_documents_own_store(space, reviewed):
     listed = {document.key: document for document in space.list().documents}
     assert listed["sub/beta.md"].active
     assert listed["sub/beta.md"].summary["open_rounds"] == 1
-    assert listed["sub/beta.md"].summary["unresolved"] == 1
+    assert listed["sub/beta.md"].summary["undisposed"] == 1
     assert listed["sub/beta.md"].summary["comments"] == 1
     assert listed["sub/beta.md"].store == reviewed.root
     # And the neighbours are untouched: one store per document is the default.
@@ -339,12 +339,12 @@ def test_the_state_payload_carries_the_bar_and_the_document_together(view, revie
     assert payload["workspace"]["selected"] == "alpha.md"
     assert payload["doc"] == "alpha.md"
     assert keys_of(payload) == ["alpha.md", "gamma.md", "sub/beta.md"]
-    assert entry(payload, "sub/beta.md")["unresolved"] == 1
+    assert entry(payload, "sub/beta.md")["undisposed"] == 1
     assert payload["workspace"]["counts"] == {
         "documents": 3,
         "active": 1,
         "open_rounds": 1,
-        "unresolved": 1,
+        "undisposed": 1,
     }
 
 
@@ -419,9 +419,9 @@ def test_a_comment_lands_in_the_document_it_was_made_on(view, reviewed, tree, cl
 
 def test_the_badges_move_with_the_write_that_changed_them(view, reviewed):
     """The reason the bar rides in the state payload rather than a route of its own."""
-    before = entry(state(view), "sub/beta.md")["unresolved"]
+    before = entry(state(view), "sub/beta.md")["undisposed"]
     call(view, "/api/comment", {"doc": "sub/beta.md", "body": "one more", "whole": True})
-    assert entry(state(view), "sub/beta.md")["unresolved"] == before + 1
+    assert entry(state(view), "sub/beta.md")["undisposed"] == before + 1
 
 
 def test_a_write_without_a_named_document_goes_to_the_open_one(view, tree, clock):
@@ -511,13 +511,13 @@ def test_a_write_can_name_its_document_in_the_query_too(view, reviewed, tree, cl
 
 LISTED = [
     {"key": "quiet.md", "active": False, "rounds": 0, "open_rounds": 0,
-     "unresolved": 0, "orphans": 0, "error": None},
+     "undisposed": 0, "orphans": 0, "error": None},
     {"key": "busy.md", "active": True, "rounds": 2, "open_rounds": 1,
-     "unresolved": 3, "orphans": 1, "error": None},
+     "undisposed": 3, "orphans": 1, "error": None},
     {"key": "done.md", "active": True, "rounds": 1, "open_rounds": 0,
-     "unresolved": 0, "orphans": 0, "error": None},
+     "undisposed": 0, "orphans": 0, "error": None},
     {"key": "broken.md", "active": False, "rounds": 0, "open_rounds": 0,
-     "unresolved": 0, "orphans": 0, "error": "ledger.jsonl:1: not valid JSON"},
+     "undisposed": 0, "orphans": 0, "error": "ledger.jsonl:1: not valid JSON"},
 ]
 
 
@@ -533,7 +533,7 @@ def test_the_filter_off_is_the_whole_listing(tmp_path):
 
 def test_the_badges_say_what_is_outstanding(tmp_path):
     marks = in_node("badges(input[1]).map((b) => b.text)", LISTED, tmp_path)
-    assert marks == ["1 open", "3 unresolved", "1 orphaned"]
+    assert marks == ["1 open", "3 undisposed", "1 orphaned"]
 
 
 def test_a_document_that_was_reviewed_and_owes_nothing_still_says_so(tmp_path):

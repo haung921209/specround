@@ -364,14 +364,18 @@ function visibleDocuments(documents, activeOnly) {
 function badges(entry) {
   // What a reviewer scans a file list for, in the order they scan for it. The
   // numbers are the server's; nothing is recomputed here, because a bar that
-  // counted unresolved threads itself would be a second oracle for a word the
-  // ledger defines. A document that was reviewed and has nothing outstanding
-  // still says so — "reviewed, nothing owed" and "never looked at" are
-  // different answers and a blank row would give them the same one.
+  // counted them itself would be a second oracle for a word the ledger defines.
+  // A document that was reviewed and has nothing outstanding still says so —
+  // "reviewed, nothing owed" and "never looked at" are different answers and a
+  // blank row would give them the same one.
+  //
+  // The badge is the disposition axis: comments with no verdict. It used to be
+  // spelled "unresolved", which is the thread axis's word — so a reviewer who
+  // had just resolved a thread read this badge as the bar ignoring them.
   const out = [];
   if (entry.error) out.push({ text: "unreadable", kind: "bad" });
   if (entry.open_rounds) out.push({ text: entry.open_rounds + " open", kind: "open" });
-  if (entry.unresolved) out.push({ text: entry.unresolved + " unresolved", kind: "warn" });
+  if (entry.undisposed) out.push({ text: entry.undisposed + " undisposed", kind: "warn" });
   if (entry.orphans) out.push({ text: entry.orphans + " orphaned", kind: "bad" });
   if (!out.length && entry.rounds) out.push({ text: "reviewed", kind: "" });
   return out;
@@ -437,7 +441,7 @@ function paint(container, comments) {
       );
       if (!covering.length) { fragment.appendChild(document.createTextNode(piece)); continue; }
       const mark = document.createElement("mark");
-      mark.className = "anch" + (covering.some((c) => c.unresolved) ? " open" : "");
+      mark.className = "anch" + (covering.some((c) => c.undisposed) ? " open" : "");
       mark.dataset.comments = covering.map((c) => c.id).join(" ");
       mark.textContent = piece;
       fragment.appendChild(mark);
@@ -666,7 +670,7 @@ function drawThreads() {
   const hidden = data.comments.filter((c) => c.resolved).length;
   const shown = data.comments.filter((c) => showResolved || !c.resolved);
   $("threadhead").textContent =
-    "threads — " + shown.length + " shown, " + data.counts.unresolved + " undisposed"
+    "threads — " + shown.length + " shown, " + data.counts.undisposed + " undisposed"
     + (hidden && !showResolved ? ", " + hidden + " resolved and hidden" : "");
   const host = $("threads");
   host.textContent = "";
@@ -685,7 +689,7 @@ function card(comment) {
   const element = document.createElement("div");
   element.className = "card" + (state.focused === comment.id ? " here" : "");
   element.dataset.comment = comment.id;
-  const tags = [tag(comment.kind), tag(comment.state, comment.unresolved ? "open" : "")];
+  const tags = [tag(comment.kind), tag(comment.state, comment.undisposed ? "open" : "")];
   if (comment.resolved) tags.push(tag("resolved"));
   // `orphan` beside `bad` names what the badge is rather than how it looks, so
   // the one place that draws attention to it has something to aim at that will
@@ -712,7 +716,7 @@ function card(comment) {
   const actions = document.createElement("div");
   actions.className = "acts";
   actions.appendChild(button("reply", () => replyBox(comment)));
-  if (comment.unresolved) actions.appendChild(button("dispose", () => disposeBox(comment)));
+  if (comment.undisposed) actions.appendChild(button("dispose", () => disposeBox(comment)));
   actions.appendChild(button(comment.resolved ? "reopen" : "resolve", () => threadBox(comment)));
   element.appendChild(actions);
   element.addEventListener("click", () => focus(comment.id, "card"));

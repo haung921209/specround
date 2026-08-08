@@ -6,7 +6,7 @@ navigation and nothing else.** It finds the markdown under a root, asks each
 document's own store how much review it has, and turns a key back into a path.
 Rounds, anchors, and the ledger stay per-document axes exactly as they were:
 there is no workspace round, no workspace store, and no second definition of
-"unresolved" here — the counts come from :func:`specround.wire.document_summary`,
+"undisposed" here — the counts come from :func:`specround.wire.document_summary`,
 which is the same fold the per-document payload reads.
 
 **Every document keeps its own store.** In the default central layout that is
@@ -135,7 +135,7 @@ class Listing:
                 "documents": len(self.documents),
                 "active": sum(1 for d in self.documents if d.active),
                 "open_rounds": sum(d.summary.get("open_rounds", 0) for d in self.documents),
-                "unresolved": sum(d.summary.get("unresolved", 0) for d in self.documents),
+                "undisposed": sum(d.summary.get("undisposed", 0) for d in self.documents),
             },
         }
 

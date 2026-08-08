@@ -164,7 +164,7 @@ def test_no_open_round_is_a_three(run, doc):
 
 
 def test_a_closed_round_named_explicitly_is_a_three(run, annotated, opened):
-    assert run("round", "close", annotated, "--author", "alice", "--allow-unresolved").code == 0
+    assert run("round", "close", annotated, "--author", "alice", "--allow-undisposed").code == 0
     result = run("harvest", annotated, "--author", "bob", "--round", opened, "--json")
     assert result.code == 3
     assert "closed" in result.error["message"]

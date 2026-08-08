@@ -130,7 +130,8 @@ def test_round_status_counts_what_is_outstanding(run, doc, opened):
     assert result.json["counts"] == {
         "rounds": 1,
         "comments": 2,
-        "unresolved": 2,
+        "undisposed": 2,
+        "unresolved_threads": 2,
         "orphans": 0,
         "events": 3,
     }
@@ -141,6 +142,53 @@ def test_round_status_on_a_fresh_document_is_not_an_error(run, doc):
     result = run("round", "status", doc)
     assert result.code == 0
     assert "no rounds yet" in result.out
+
+
+def test_resolving_a_thread_clears_the_thread_axis_and_not_the_other(run, doc, opened):
+    """The report that named this item: resolve the talk, and the count stays.
+
+    It was right to stay — the comment has no verdict, and ``round.close`` has to
+    account for it (I6). What was wrong was calling it *unresolved*, one word off
+    the verb that had just been run. So the two questions are counted apart and
+    spelled apart: ``undisposed`` asks whether anyone decided, ``unresolved``
+    asks whether the conversation is over.
+    """
+    comment = a_comment(run, doc)
+    run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "agreed in chat")
+
+    payload = run("round", "status", doc, "--json").json
+    assert payload["undisposed"] == [comment]  # no verdict — close must still declare it
+    assert payload["unresolved_threads"] == []  # the conversation is over
+    assert payload["counts"]["undisposed"] == 1
+    assert payload["counts"]["unresolved_threads"] == 0
+
+
+def test_disposing_a_comment_clears_the_other_axis_and_not_the_thread(run, doc, opened):
+    """The mirror. Deciding is not the same as ending the conversation."""
+    comment = a_comment(run, doc)
+    run("dispose", doc, "--comment", comment, "--as", "applied", "--why", "raised to 60",
+        "--author", "alice")
+
+    payload = run("round", "status", doc, "--json").json
+    assert payload["undisposed"] == []
+    assert payload["unresolved_threads"] == [comment]
+    assert payload["counts"]["undisposed"] == 0
+    assert payload["counts"]["unresolved_threads"] == 1
+
+
+def test_round_status_prints_both_axes_in_words_that_do_not_collide(run, doc, opened):
+    """A reader who ran ``resolve`` must be able to see which number it moved."""
+    resolved_only = a_comment(run, doc)
+    a_comment(run, doc, quote=None, body="retry policy is missing")
+    run("resolve", doc, "--comment", resolved_only, "--author", "alice")
+
+    result = run("round", "status", doc)
+    assert result.code == 0
+    assert "2 undisposed" in result.out
+    assert "1 unresolved thread(s)" in result.out
+    # And per round, side by side, so the two columns say they are two questions.
+    header = next(line for line in result.lines if "ROUND" in line)
+    assert "UNDISPOSED" in header and "UNRESOLVED" in header
 
 
 def test_comment_anchors_to_the_quoted_span(run, doc, opened):
@@ -174,13 +222,25 @@ def test_comments_lists_the_round_and_the_disposition(run, doc, opened):
     assert all(c["round"] == opened for c in result.json["comments"])
 
 
-def test_comments_can_be_narrowed_to_the_unresolved(run, doc, opened):
+def test_comments_can_be_narrowed_to_the_undisposed(run, doc, opened):
     first = a_comment(run, doc)
     second = a_comment(run, doc, quote=None, body="retry policy is missing")
     run("dispose", doc, "--comment", first, "--as", "applied", "--why", "done", "--author", "alice")
 
-    result = run("comments", doc, "--unresolved", "--json")
+    result = run("comments", doc, "--undisposed", "--json")
     assert [c["id"] for c in result.json["comments"]] == [second]
+
+
+def test_the_old_spelling_of_the_disposition_filter_is_refused(run, doc, opened):
+    """Not accepted quietly as an alias: the word moved axes.
+
+    ``--unresolved`` used to select comments with no verdict. Keeping it alive
+    would leave a flag whose name says one axis and whose behaviour is the
+    other, and a caller cannot see that. Argparse refuses the unknown flag (2),
+    which the caller can.
+    """
+    a_comment(run, doc)
+    assert run("comments", doc, "--unresolved", "--json").code == 2
 
 
 def test_reanchor_reports_what_moved(run, doc, opened):
@@ -349,7 +409,7 @@ def test_dispose_settles_a_comment_with_its_reason(run, doc, opened):
     assert result.code == 0
     assert result.json["disposition"]["verdict"] == "applied"
     assert result.json["disposition"]["reason"] == "raised to 60 in revision 2"
-    assert result.json["comment"]["unresolved"] is False
+    assert result.json["comment"]["undisposed"] is False
 
 
 def test_dispose_takes_a_prefix_of_the_id(run, doc, opened):
@@ -362,10 +422,10 @@ def test_dispose_takes_a_prefix_of_the_id(run, doc, opened):
 
 def test_round_close_records_what_it_left_open(run, doc, opened):
     comment = a_comment(run, doc)
-    result = run("round", "close", doc, "--author", "alice", "--allow-unresolved",
+    result = run("round", "close", doc, "--author", "alice", "--allow-undisposed",
                  "--note", "retries move to round 2", "--json")
     assert result.code == 0
-    assert result.json["unresolved"] == [comment]
+    assert result.json["undisposed"] == [comment]
     assert result.json["round"]["status"] == "closed"
     assert result.json["round"]["close_note"] == "retries move to round 2"
 
@@ -500,7 +560,7 @@ def test_resolving_leaves_the_disposition_axis_alone(run, doc, opened):
     comment = a_comment(run, doc)
     run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "agreed in chat")
     status = run("round", "status", doc, "--json").json
-    assert status["unresolved"] == [comment]
+    assert status["undisposed"] == [comment]
     assert run("round", "close", doc, "--author", "alice").code == 3
 
 
@@ -610,12 +670,15 @@ def test_a_deferred_comment_can_be_disposed_again(run, doc, opened):
                "--why", "raised to 60", "--author", "alice").code == 0
 
 
-def test_closing_over_unresolved_comments_is_a_state_error(run, doc, opened):
+def test_closing_over_undisposed_comments_is_a_state_error(run, doc, opened):
     a_comment(run, doc)
     result = run("round", "close", doc, "--author", "alice")
     assert result.code == 3
     # The message names the flag this surface has, not the library keyword.
-    assert "--allow-unresolved" in result.err
+    assert "--allow-undisposed" in result.err
+    # And it says which axis it means, because the reader who lands here has
+    # often just resolved the thread and is asking why that did not count.
+    assert "Resolving the thread does not count" in result.err
 
 
 def test_an_unknown_comment_id_is_a_usage_error(run, doc, opened):
@@ -720,8 +783,11 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
         "state",
         "strategy",
         "ts",
-        "unresolved",
+        "undisposed",
     }
+    # The thread axis is `resolved` and only `resolved`. A consumer reaching for
+    # the old key gets nothing back rather than a boolean that changed meaning.
+    assert "unresolved" not in payload
     assert set(payload["dispositions"][0]) == {"author", "id", "reason", "ts", "verdict"}
     assert set(payload["replies"][0]) == {"author", "body", "id", "ts"}
     assert set(payload["resolutions"][0]) == {
@@ -880,8 +946,9 @@ def test_the_round_object_field_set_is_closed(run, doc, opened):
         "status",
         "title",
         "ts",
-        "unresolved_at_close",
-        "unresolved_count",
+        "undisposed_at_close",
+        "undisposed_count",
+        "unresolved_thread_count",
     }
 
 
@@ -889,9 +956,15 @@ def test_the_status_payload_field_set_is_closed(run, doc, opened):
     payload = run("round", "status", doc, "--json").json
     assert set(payload) == {
         "counts", "doc", "open", "orphans", "path", "rounds", "schema", "store",
-        "unresolved", "verb",
+        "undisposed", "unresolved_threads", "verb",
     }
-    assert set(payload["counts"]) == {"comments", "events", "orphans", "rounds", "unresolved"}
+    assert set(payload["counts"]) == {
+        "comments", "events", "orphans", "rounds", "undisposed", "unresolved_threads",
+    }
+    # Never the bare word on its own: `unresolved` alone was the disposition
+    # axis, and a key that kept the spelling while changing the question is the
+    # one failure a consumer cannot detect.
+    assert "unresolved" not in payload and "unresolved" not in payload["counts"]
 
 
 def test_the_reanchor_payload_field_set_is_closed(run, doc, opened):
@@ -1528,3 +1601,29 @@ def test_view_stopping_with_ctrl_c_is_a_clean_exit(run, doc, opened, monkeypatch
     result = run("view", doc, "--author", "alice")
     assert result.code == 0
     assert "stopped" in result.err
+
+
+def test_the_all_listing_marks_resolved_threads_in_their_rows(run, doc, opened):
+    """A resolved thread shown by --all must not look like an open one.
+
+    The report that forced the two-axis split (2026-08-08) hit this table:
+    seventeen rows, some resolved, none marked — the reader had no way to see
+    which conversations were over. The THREAD column appears exactly when the
+    listing contains a resolved thread, so the default view (which hides them)
+    keeps its width.
+    """
+    settled = a_comment(run, doc, quote="client sends")
+    still_open = a_comment(run, doc, quote="30 seconds")
+    run("resolve", doc, "--comment", settled, "--author", "alice", "--note", "done")
+
+    every = run("comments", doc, "--all").out.splitlines()
+    header = next(line for line in every if line.startswith("ID"))
+    assert "THREAD" in header
+    settled_row = next(line for line in every if line.startswith(settled))
+    still_open_row = next(line for line in every if line.startswith(still_open))
+    assert "resolved" in settled_row
+    assert "resolved" not in still_open_row
+
+    live_only = run("comments", doc).out.splitlines()
+    live_header = next(line for line in live_only if line.startswith("ID"))
+    assert "THREAD" not in live_header
