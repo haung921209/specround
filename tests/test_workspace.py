@@ -376,6 +376,27 @@ def test_naming_a_document_swaps_the_panel_and_nothing_else(view, reviewed):
     assert keys_of(payload) == ["alpha.md", "gamma.md", "sub/beta.md"]
 
 
+def test_clicking_a_document_nobody_has_reviewed_reads_it(view, reviewed):
+    """The bar lists every document, so every row in it has to open onto one.
+
+    A tree is mostly documents no round has been opened on — that is what a first
+    browse *is* — and those rows carried no badge and, until this, no text
+    either. The row and the panel now say the same thing: nothing has happened
+    here yet, and here is the document.
+    """
+    status, payload = call(view, "/api/state", params={"doc": "gamma.md"})
+    assert status == 200
+    assert payload["workspace"]["selected"] == "gamma.md"
+    assert payload["round"] is None
+    assert payload["commentable"] is False
+    assert payload["reading"] == "revision"
+    assert "The third document" in payload["live"]
+    assert "The third document" in payload["render"]
+    # The unreviewed row is the one with no badges, and it is still navigable.
+    quiet = [entry for entry in payload["workspace"]["documents"] if entry["key"] == "gamma.md"]
+    assert quiet[0]["rounds"] == 0 and not quiet[0]["error"]
+
+
 def test_the_round_hint_does_not_travel_to_another_document(tree, space, reviewed):
     """``--round`` names a round, and a round belongs to one document.
 

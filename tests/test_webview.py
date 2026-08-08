@@ -206,7 +206,80 @@ def test_a_document_with_no_round_is_readable_and_says_what_to_do(view):
     payload = state(view)
     assert payload["round"] is None
     assert payload["commentable"] is False
+    assert "read only" in payload["blocked"]
     assert "specround round open" in payload["blocked"]
+
+
+def test_a_document_with_no_round_reads_the_live_file(view, doc_text):
+    """"Read only" has to carry a text, or it is a blank page.
+
+    The routes already served a document with no round and blocked the two verbs
+    the format ties to an open round (I4). What they did not say was *which* text
+    the render and raw modes show — and both took it from the round's base, so a
+    document nobody had opened a round on had nothing to draw. That is not
+    read-only, it is unreadable, and the reviewer was only reading.
+    """
+    payload = state(view)
+    assert payload["reading"] == "revision"
+    assert payload["live"] == doc_text
+    # No round means no base, and the payload still says so rather than passing
+    # the live text off as one (I7).
+    assert payload["base"] is None
+    assert payload["render"].startswith("<h1>")
+    assert "Timeouts are 30 seconds." in payload["render"]
+
+
+def test_with_no_round_the_reading_follows_the_file(view, doc, doc_text):
+    """Nothing froze this text, so what is shown is the file as it is now."""
+    doc.write_text(doc_text.replace("30 seconds", "45 seconds"), encoding="utf-8")
+    payload = state(view)
+    assert payload["reading"] == "revision"
+    assert REVISED_QUOTE in payload["live"]
+    assert "45 seconds" in payload["render"]
+
+
+def test_with_no_round_there_is_no_diff_to_show(view):
+    """The diff compares two texts, and one of them does not exist yet."""
+    payload = state(view)
+    assert payload["diff"]["available"] is False
+    assert payload["diff"]["rows"] == []
+
+
+def test_opening_a_round_moves_the_reading_onto_the_base(view, store, doc, doc_text):
+    """I7 is untouched: with a round, what is shown is the base it froze.
+
+    The read-only path adds a text where there was none. It does not make the
+    view follow the file once a round exists — that would move the ground under
+    the comments this round is a review of.
+    """
+    assert state(view)["reading"] == "revision"
+    store.open_round(doc, author="alice")
+    doc.write_text(doc_text.replace("30 seconds", "45 seconds"), encoding="utf-8")
+    payload = state(view)
+    assert payload["reading"] == "base"
+    assert payload["base"] == doc_text
+    assert "30 seconds" in payload["render"]
+    assert "45 seconds" not in payload["render"]
+    # And the revision is where the change shows, exactly as it did before.
+    assert payload["diff"]["available"] is True
+    assert payload["diff"]["identical"] is False
+
+
+def test_no_round_and_no_file_leaves_nothing_to_read(view, doc):
+    """The one case that has no text at all — and it still says why."""
+    doc.unlink()
+    payload = state(view)
+    assert payload["reading"] is None
+    assert payload["render"] == ""
+    assert payload["live"] is None
+    assert "specround round open" in payload["blocked"]
+
+
+def test_reading_a_document_is_not_permission_to_comment_on_it(view):
+    """Showing the text does not open a round (I4). The refusal is unchanged."""
+    status, payload = call(view, "/api/comment", {"body": "hello", "whole": True})
+    assert status == 409
+    assert "specround round open" in payload["error"]["message"]
 
 
 def test_two_open_rounds_ask_which_one_rather_than_picking(view, store, doc):
@@ -500,6 +573,7 @@ def test_the_gutter_looks_clickable_only_where_a_click_records_something(tmp_pat
         "diff",
     ]
     assert "#doc.live .line .ln" in page().decode("utf-8")
+
 
 
 # -- focus: the highlight, and which side of the screen moves ------------
