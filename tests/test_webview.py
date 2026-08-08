@@ -1138,6 +1138,103 @@ def test_an_arrangement_action_the_reducer_does_not_know_is_a_typo_and_says_so(t
     assert caught == "unknown view action: shrink"
 
 
+def test_the_arrangement_is_kept_in_the_browser_and_never_in_the_ledger(opened):
+    """The boundary G5 is about, drawn where it is easy to cross by accident.
+
+    "The state is in the ledger" is about *review* state — rounds, comments,
+    verdicts, resolutions: the things another reviewer, another machine, or a
+    later reader has to agree with. How wide a column is on this screen is none of
+    those. Recording it would put an event in a history whose whole value is that
+    everything in it is a claim about the document, and it would travel to a
+    teammate whose screen is a different size.
+    """
+    html = page().decode("utf-8")
+    assert "window.localStorage.setItem(VIEW_KEY, writeView(state.view))" in html
+    assert 'const VIEW_KEY = "specround.view";' in html
+    # Not on the wire either, in the direction the route gate cannot see: the
+    # server's projection says nothing about the layout, so there is no field for
+    # a later change to start reading and no reason for one to start sending.
+    assert not {"nav", "threads", "font", "navShut", "threadsShut"} & set(state(opened))
+
+
+def test_a_folded_column_leaves_no_gap_where_it_was():
+    """Two halves, and the layout is wrong with either one missing.
+
+    A fold is a zero-width track *and* a hidden panel: the width alone leaves the
+    panel's border and padding holding a 25px stripe open, and hiding the panel
+    alone leaves the track it used to fill sitting there as a gap. Hiding it also
+    means the columns cannot be placed by source order — auto-placement slides
+    everything after a `display: none` child one track to the left, which puts the
+    document where the bar was.
+    """
+    html = page().decode("utf-8")
+    assert "#stage { grid-column: 3; min-width: 0; }" in html
+    assert "aside { grid-column: 5; }" in html
+    assert "main.navshut nav#files { display: none; }" in html
+    assert "main.thrshut aside { display: none; }" in html
+
+
+def test_the_handles_go_away_where_there_are_no_columns_to_resize():
+    """The stacked layout, and a specificity trap that was measured, not guessed.
+
+    Below the breakpoint the columns stack and there is nothing horizontal left to
+    divide. The rule that shows the bar's handle is `main.tree #splitnav`, so a
+    bare `#splitnav` in the media query loses to it — which left a zero-width
+    `col-resize` target in the stacked layout: a handle that answers the mouse and
+    moves nothing, the same dead-control failure the disabled diff button exists to
+    avoid.
+    """
+    html = page().decode("utf-8")
+    stacked = html[html.index("@media (max-width: 900px)") :]
+    stacked = stacked[: stacked.index("\n  }")]
+    assert "main.tree #splitnav, #splitthreads { display: none; }" in stacked
+
+
+def test_redrawing_the_file_list_does_not_unfold_the_columns():
+    """`className` on the layout element took the folds off with it.
+
+    The tree flag and the two folds are classes on the same element, so assigning
+    the whole attribute cleared the folds — on every reload, which is the one moment
+    a reviewer is watching for their settings to come back.
+    """
+    html = page().decode("utf-8")
+    assert 'classList.toggle("tree", Boolean(workspace))' in html
+    assert '$("layout").className =' not in html
+
+
+def test_the_mode_group_is_the_only_one_the_mode_setter_reaches():
+    """The arrangement controls borrow the mode group's look, not its meaning.
+
+    A loop over `.modes button` would set `aria-pressed="false"` on every fold
+    switch every time a mode was applied — a switch reporting the opposite of what
+    its column is doing, and a screen reader repeating it.
+    """
+    html = page().decode("utf-8")
+    assert 'querySelectorAll("#modes button")' in html
+    assert '.modes button"' not in html
+    # And the accent stays the mode's word: a fold says its state some other way.
+    assert '#columns button[aria-pressed="true"] { background: transparent;' in html
+
+
+def test_the_reading_size_reaches_the_document_and_the_threads():
+    """One size for the two things that are read together.
+
+    A comment is read against the sentence it is about, so scaling one and not the
+    other makes the pair harder to read together rather than easier. Everything
+    inside them is relative from there — an absolute `px` further down would be a
+    bigger paragraph with the same small code and the same small quote in it.
+    """
+    html = page().decode("utf-8")
+    assert "#doc { padding: 18px 22px 60vh; min-width: 0; font-size: var(--read); }" in html
+    assert "font-size: var(--read);\n  }" in html  # aside, at the end of its block
+    assert "#doc.raw, #doc.diff { font-family: var(--mono); font-size: calc(var(--read) * .87)" in html
+    # Nothing inside either one may pin a size in px, or it would not scale.
+    inner = re.findall(r"\n  (?:#doc|aside|\.card|\.tag|\.empty)[^\n{]*\{[^}]*font-size: (\d+)px", html)
+    assert inner == [], inner
+    # The bar keeps its own size on purpose: a list of names to scan is not prose.
+    assert "  .file .name { display: block; font-size: 13px;" in html
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 
