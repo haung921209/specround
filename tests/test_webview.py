@@ -576,6 +576,56 @@ def test_the_gutter_looks_clickable_only_where_a_click_records_something(tmp_pat
 
 
 
+def test_the_diff_mode_says_why_it_is_not_on_offer(tmp_path):
+    """A mode that would draw an empty page is a mode the page should not offer.
+
+    The reason names the missing half, because the two ways a diff has nothing to
+    compare are different situations to be in: no round yet is the beginning of a
+    review, and an unreadable file is something to go and look at.
+    """
+    reasons = in_node(
+        "input.map(diffReason)",
+        [
+            {"round": {"id": "r-1"}, "diff": {"available": True}},
+            {"round": None, "diff": {"available": False}},
+            {"round": {"id": "r-1"}, "diff": {"available": False}},
+        ],
+        tmp_path,
+    )
+    assert reasons[0] == ""
+    assert "no round" in reasons[1]
+    assert "not readable" in reasons[2]
+
+
+def test_a_mode_the_document_cannot_show_is_not_the_mode_it_opens_in(tmp_path):
+    """Browsing a tree carries the mode from document to document (H15).
+
+    Clicking a file with no round while the diff mode is up used to leave the
+    reviewer on a mode that document has nothing for. The mode falls back rather
+    than the page going quiet — the same click, one document over, still reads.
+    """
+    assert in_node('modeFor("diff", {round: null, diff: {available: false}})', None, tmp_path) == (
+        "render"
+    )
+    assert in_node('modeFor("diff", {round: {id: "r-1"}, diff: {available: true}})', None, tmp_path) == (
+        "diff"
+    )
+    assert in_node('modeFor("raw", {round: null, diff: {available: false}})', None, tmp_path) == "raw"
+
+
+def test_the_raw_mode_reads_whatever_the_state_says_it_is_reading():
+    """One lookup, so the mode and the offsets its gutter posts cannot disagree.
+
+    It used to take `data.base` directly, which is why a document with no round
+    drew nothing: there was no base and the mode had no other text to ask for.
+    Going through the same lookup every other converter uses is what keeps the
+    line offsets counted in the space the server said it was serving.
+    """
+    html = page().decode("utf-8")
+    assert "rawLines(textIn(space))" in html
+    assert "rawLines(data.base" not in html
+
+
 # -- focus: the highlight, and which side of the screen moves ------------
 
 
