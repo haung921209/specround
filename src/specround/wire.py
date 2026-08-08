@@ -116,6 +116,11 @@ def disposition_json(disposition: Disposition | None) -> dict[str, Any] | None:
         "ts": disposition.ts,
         "verdict": disposition.verdict,
         "reason": disposition.reason,
+        # Which of these overturned a settled verdict rather than reaching one.
+        # Without it a reader walking ``dispositions`` sees two verdicts on one
+        # comment and cannot tell a decision that changed from a ledger that is
+        # contradicting itself.
+        "supersede": disposition.supersede,
     }
 
 
@@ -175,8 +180,8 @@ def comment_json(comment: Comment) -> dict[str, Any]:
 
     The three axes are three separate keys, because they are three separate
     questions and collapsing any two would make the answer unreadable:
-    ``undisposed`` (has anyone decided this?), ``orphaned`` (can it still be
-    placed on the document?), ``resolved`` (is the conversation over?).
+    ``settled`` (has anyone decided this, for good?), ``orphaned`` (can it still
+    be placed on the document?), ``resolved`` (is the conversation over?).
 
     ``misplaced`` is not a fourth axis but a warning about ``current_anchor``
     itself (I12): the offsets belong to some other text than the base this
@@ -191,6 +196,32 @@ def comment_json(comment: Comment) -> dict[str, Any]:
     used to mean the *other* axis. A consumer still reading ``unresolved`` gets
     a missing key, which is a bug it can see, rather than a boolean that quietly
     inverted.
+
+    ``verdict`` and ``settled`` are the disposition read the way ``resolved``
+    reads the thread: *what* was decided (``None`` when nobody has), and whether
+    that decision is final. Together they replace two keys.
+
+    ``state`` was a single string that carried the verdict with ``"open"``
+    standing in for "no verdict", and it answered two questions at once: a
+    consumer could only recover ``settled`` from it by knowing that ``deferred``
+    is the one verdict which settles nothing — the vocabulary this shape exists
+    to spare it. ``"open"`` was also the fourth thing here called open, after a
+    round's status, an unresolved thread, and the ``state`` error kind, and §7.2
+    has already paid once for one word covering two axes.
+
+    ``undisposed`` went with it because ``settled`` is its exact negation, and a
+    second key that is only the first one inverted is the thing three paragraphs
+    of this docstring already refuse. Choosing the positive spelling here makes
+    all three axes read the same direction — ``settled``, ``orphaned``,
+    ``resolved`` — where the disposition axis alone used to read inverted. The
+    *counts* keep the negative spelling (``undisposed_count``,
+    ``undisposed_at_close``, and the summary's ``undisposed``): those answer I6's
+    question, "how many are still owed", which is a count of outstanding things
+    and is what ``round.close`` has to declare. The bridge is one negation — a
+    round's ``undisposed_count`` is how many of its comments have ``settled``
+    false. Both removals are removals rather than aliases, for the reason
+    ``unresolved`` was: a missing key is a bug a consumer can see, where a
+    redefined one is a value that quietly changed which question it answers.
     """
     placed = comment.current_anchoring
     return {
@@ -203,8 +234,8 @@ def comment_json(comment: Comment) -> dict[str, Any]:
         "patch": comment.patch,
         "anchor": anchor_json(comment.anchor),
         "current_anchor": anchor_json(comment.current_anchor),
-        "state": comment.state,
-        "undisposed": comment.undisposed,
+        "verdict": comment.verdict,
+        "settled": comment.settled,
         "orphaned": comment.orphaned,
         "misplaced": comment.misplaced,
         "anchoring": anchoring_json(comment.anchoring),

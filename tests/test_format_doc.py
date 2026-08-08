@@ -108,19 +108,26 @@ def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
     state = fold(records)
     # The prose says: no open rounds, one undisposed comment, deferred.
     assert state.open_rounds == []
-    assert [(c.id, c.state) for c in state.undisposed] == [("c-7863abd8f91e", "deferred")]
+    assert [(c.id, c.verdict) for c in state.undisposed] == [("c-7863abd8f91e", "deferred")]
     assert len(state.comments) == 3
-    assert sorted(c.state for c in state.comments.values()) == [
+    assert sorted(c.verdict for c in state.comments.values()) == [
+        "applied",
         "applied",
         "deferred",
-        "rejected",
+    ]
+    # The last line overturns seq 7's rejection. Both verdicts stay, in the order
+    # they were made, and only the flagged one moved which is in force (I5).
+    superseded = state.comments["s-086c5beb81f0"]
+    assert [(d.verdict, d.supersede) for d in superseded.dispositions] == [
+        ("rejected", False),
+        ("applied", True),
     ]
     closed = next(iter(state.rounds.values()))
     assert closed.undisposed_at_close == ["c-7863abd8f91e"]
     # And: two orphans after the third revision, one of them already settled —
     # the prose makes a point of the axes being independent.
     assert [c.id for c in state.orphans] == ["c-d35c1ebd2b14", "s-086c5beb81f0"]
-    assert state.comments["c-d35c1ebd2b14"].state == "applied"
+    assert state.comments["c-d35c1ebd2b14"].verdict == "applied"
     # The thread axis is the third one: one conversation closed, one closed and
     # re-opened, so the default listing shows two of the three comments.
     assert [c.id for c in state.resolved_threads] == ["c-d35c1ebd2b14"]

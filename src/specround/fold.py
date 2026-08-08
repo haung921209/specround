@@ -53,6 +53,7 @@ from specround.events import (
     ROUND_CLOSE,
     ROUND_OPEN,
     SUGGESTION_ADD,
+    SUPERSEDE,
     TERMINAL_VERDICTS,
     THREAD_KINDS,
     THREAD_RESOLVE,
@@ -82,6 +83,10 @@ class Disposition:
     ts: str
     verdict: str
     reason: str
+    #: True when this verdict was recorded over a settled one (I5). Kept because
+    #: "the decision changed" and "the decision was made" read the same in a list
+    #: of verdicts otherwise, and only the first is worth a second look.
+    supersede: bool = False
 
 
 @dataclass
@@ -232,12 +237,27 @@ class Comment:
 
     @property
     def verdict(self) -> str | None:
+        """The decision in force, or ``None`` when nobody has made one.
+
+        There is deliberately no companion that spells ``None`` as ``"open"``.
+        That string used to live here as ``state`` and it made one value answer
+        two questions — a caller could not get :attr:`settled` back out of it
+        without knowing that ``deferred`` settles nothing. A display sentinel is
+        a display decision, so it belongs to whoever is rendering a table, not
+        to the fold.
+        """
         current = self.disposition
         return current.verdict if current else None
 
     @property
     def settled(self) -> bool:
-        """True once a terminal verdict has been recorded."""
+        """True once a terminal verdict is the one in force.
+
+        Settled is not frozen. A later disposition that declares ``supersede``
+        overturns it (I5), and because that is an append like everything else,
+        the verdict that was overturned stays in :attr:`dispositions` — what
+        moves is only which one is last.
+        """
         return self.verdict in TERMINAL_VERDICTS
 
     @property
@@ -257,11 +277,6 @@ class Comment:
         like the tool ignoring the command.
         """
         return not self.settled
-
-    @property
-    def state(self) -> str:
-        """``"open"`` before any disposition, otherwise the current verdict."""
-        return self.verdict or OPEN
 
 
 @dataclass
@@ -488,10 +503,32 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
     elif kind == DISPOSITION:
         comment = _comment_or_raise(state, record["target"], f"disposition {event_id!r}")
         current = comment.disposition
-        if current is not None and current.verdict in TERMINAL_VERDICTS:
+        settled = current is not None and current.verdict in TERMINAL_VERDICTS
+        supersede = bool(record.get(SUPERSEDE, False))
+        if settled and not supersede:
+            assert current is not None  # settled implies a disposition
+            # The gate that stays. A second verdict arriving without anyone
+            # meaning it is how a recorded decision changes quietly, which is the
+            # loss G3 exists to prevent — so the default is still a refusal and
+            # the flag is the caller saying the overturn is deliberate.
             raise InvariantError(
                 f"comment {comment.id!r} is already settled as {current.verdict!r} "
-                f"(by {current.id!r}); a settled comment cannot be re-disposed"
+                f"(by {current.id!r}); re-disposing a settled comment takes a "
+                f"disposition that declares {SUPERSEDE}"
+            )
+        if supersede and not settled:
+            # A declaration that does not match the ledger is refused rather than
+            # ignored, the same rule as ``round.close``'s undisposed list (I6):
+            # a flag that passes quietly when it describes nothing is a flag the
+            # caller goes on believing is in effect.
+            standing = (
+                f"is outstanding as {current.verdict!r}"
+                if current is not None
+                else "has no disposition"
+            )
+            raise InvariantError(
+                f"disposition {event_id!r} declares {SUPERSEDE} but comment "
+                f"{comment.id!r} {standing} — there is no settled verdict to overturn"
             )
         comment.dispositions.append(
             Disposition(
@@ -500,6 +537,7 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
                 ts=record["ts"],
                 verdict=record["verdict"],
                 reason=record["reason"],
+                supersede=supersede,
             )
         )
 

@@ -51,7 +51,7 @@ from specround.anchors import Anchor, count_occurrences
 from specround.critic import COMMENT, DELETE, INSERT, Annotation, MarkupError
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
-from specround.fold import Comment, Round, State
+from specround.fold import OPEN, Comment, Round, State
 from specround.imports import BatchError, apply_plan, load_batch, parse_text, plan_import
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
@@ -439,7 +439,11 @@ def _comment_rows(comments: Sequence[Comment], *, hidden: Sequence[str] = ()) ->
         row = [
             comment.id,
             comment.kind,
-            comment.state,
+            # The table wants one word per comment, so "nobody decided yet" gets
+            # spelled here. It is a rendering choice and stays in the renderer:
+            # the fold reports ``verdict is None`` and lets each surface say that
+            # in its own vocabulary.
+            comment.verdict or OPEN,
             comment.author,
             _anchor_cell(comment),
             _clip(comment.patch or comment.body, _BODY_WIDTH),
@@ -1150,18 +1154,28 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     comment = _comment(state, target.key, args.comment)
     verdict = VERDICT_ALIASES.get(args.verdict, args.verdict)
     target.store.dispose(
-        comment.id, author=_author(args), verdict=verdict, reason=args.why
+        comment.id,
+        author=_author(args),
+        verdict=verdict,
+        reason=args.why,
+        supersede=args.supersede,
     )
     state = target.store.fold()
-    settled = state.comments[comment.id]
+    disposed = state.comments[comment.id]
     payload = {
         **target.envelope(),
-        "comment": comment_json(settled),
-        "disposition": disposition_json(settled.disposition),
+        "comment": comment_json(disposed),
+        "disposition": disposition_json(disposed.disposition),
     }
-    current = settled.disposition
+    current = disposed.disposition
     assert current is not None  # just appended
-    return payload, [f"{settled.id} {current.verdict} by {current.author} — {current.reason}"]
+    # An overturn says so on the line that records it. Two verdicts on one
+    # comment read as a contradiction unless the second one is marked as having
+    # been meant, and the reader of this line is usually the person who typed it.
+    overturned = " (superseding)" if current.supersede else ""
+    return payload, [
+        f"{disposed.id} {current.verdict}{overturned} by {current.author} — {current.reason}"
+    ]
 
 
 def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable[[], None]]:
@@ -1587,6 +1601,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="applied · rejected · answered · deferred (held is accepted for deferred)",
     )
     dispose.add_argument("--why", required=True, help="the reason — required for every verdict")
+    dispose.add_argument(
+        "--supersede",
+        action="store_true",
+        help="overturn a verdict that already settled this comment "
+        "(deferred needs no flag — completing it later is the ordinary path)",
+    )
     dispose.set_defaults(handler=_dispose, verb_name="dispose")
 
     importing = verbs.add_parser(

@@ -198,6 +198,17 @@ arrives, record the anchor update as a new event"). v0 is not frozen yet, and no
 v0 ledger predates these two kinds. **Once v0 is frozen, adding a kind bumps
 major** — an older reader refuses the whole file at that line.
 
+**`supersede` came in as a field rather than through `ext`.** The rule above
+sends additive experiments to `ext`, and this one could not go there: it decides
+whether I5 refuses the record, and the reader **does not inspect inside `ext`**.
+A permission the reader cannot see is not a permission — the write would pass
+its own gate and the next read would refuse the file. Anything the fold has to
+act on is a field. It used the window the two thread kinds used (v0 is not
+frozen, and no v0 ledger exists outside this tool's own dogfooding), and a field
+is the cheaper half of that window: a reader predating it refuses a superseding
+record as an unknown key, loudly and at that line, instead of reading it as an
+ordinary disposition and quietly disagreeing about which verdict is in force.
+
 `thread.resolve` and `thread.reopen` came in through the same window. Their
 place was held not by §10 but by **the SPEC's guarantee G11** — "a conversation
 that is over is closed with resolve" was declared from the start, and what was
@@ -303,8 +314,28 @@ refuses it and asks for `thread.reopen` first (I11).
 | `target` | ✓ | a comment or suggestion id |
 | `verdict` | ✓ | `applied` · `rejected` · `answered` · `deferred` |
 | `reason` | ✓ | the reason (an empty string is not allowed) — required on all four verdicts |
+| `supersede` | | `true` when this verdict overturns one that had already settled the comment (I5) |
 
 The vocabulary is **closed**. An arbitrary value such as `wontfix` is refused.
+
+`supersede` marks the difference between **finishing** something and **changing
+your mind** about it. Deferring is not settling (§7), so a comment parked at
+`deferred` and completed later — `deferred`, then `applied` — takes no flag at
+all. That is the ordinary path and the whole reason the verdict exists. The flag
+is for the other case: a comment a terminal verdict already settled. Without it
+the second disposition is refused, which is the gate that keeps a recorded
+decision from moving by accident; with it, the overturn is on the record as
+something somebody meant.
+
+**It is refused when there is nothing to supersede** — on a comment with no
+disposition, or one standing at `deferred`. A flag that passes quietly while
+describing nothing is a flag the caller goes on believing is in effect, the same
+reason `round.close` refuses an `unresolved` list that is not the real one (I6).
+So the flag never means two things, and its presence in a line is evidence that
+a settled verdict was there to overturn.
+
+The flag is written **only when true**. An ordinary disposition is therefore the
+same bytes it has always been, and its derived id does not move.
 
 ### `round.close` — close a round
 
@@ -536,7 +567,7 @@ such as "skip just that line".
 | I2 | `seq` == the line's position in the file | deleting or reordering by hand is an **error** (not a silent wrong answer) |
 | I3 | `id` is unique across the whole ledger | refused |
 | I4 | a comment or suggestion names an **open** round | refused (open a new round) |
-| I5 | a settled comment cannot be re-disposed | refused |
+| I5 | a settled comment is re-disposed **only** by a disposition that declares `supersede` — and `supersede` on a comment that is not settled is refused just as hard | refused |
 | I6 | `round.close`'s `unresolved` field == the real undisposed set (the disposition axis — resolving a thread does not take a comment out of it) | refused |
 | I7 | an anchor is consistent with the snapshot it names (comment = the round's base · re-anchor = that event's `base`) | refused |
 | I8 | the `target` of a reply, disposition, resolve, or reopen is an existing comment or suggestion | refused |
@@ -585,8 +616,11 @@ that is recorded as a separate error.
 
 ```
 (no disposition) ──deferred──► deferred ──applied/rejected/answered──► settled
-      │                          │
-      └──applied/rejected/answered─────────────────────► settled (re-disposition refused)
+      │                          │                                       ▲
+      └──applied/rejected/answered──────────────────────────────────────►┤
+                                                                         │
+                      settled ──supersede + a new verdict────────────────┘
+                      settled ──a second verdict with no flag──► refused
 ```
 
 **Only `deferred` is non-terminal.** If deferring were terminal, a deferred item
@@ -594,8 +628,11 @@ would drop out of the "things to look at" list and there would be no reason for
 the verdict to exist. So:
 
 - **undisposed** = has no disposition ∪ the latest disposition is `deferred`
-- `applied` · `rejected` · `answered` are final. Overturning one means a new
-  comment in a new round (the past is not changed by editing the ledger)
+- `applied` · `rejected` · `answered` are final **by default**. Overturning one
+  takes a disposition that declares `supersede` (§4); without the flag the
+  second verdict is refused. That is an append like everything else, so the
+  overturned verdict stays exactly where it was written and only *which one is
+  in force* moves — the past is still never changed by editing the ledger
 - a disposition can be appended more than once and **the latest is the current
   state**. The whole history stays
 
@@ -614,6 +651,12 @@ things — handing a settled comment a different verdict **contradicts** a
 recorded decision, while closing a closed thread says the same thing twice,
 which is **agreement**. So a retry is not an error, and a misjudgement does not
 become an accident.
+
+`supersede` does not soften that asymmetry — it is what the asymmetry looks like
+from the caller's side. A contradiction is still refused unless somebody states
+in the record that they mean it, and the ledger never infers that from a second
+verdict arriving. A thread is never asked for the equivalent because there is
+nothing there to contradict.
 
 **A duplicate line does not change the state but does stay in the history** —
 whether from a hand-written ledger or two participants closing at once, the
@@ -639,7 +682,7 @@ from here.**
 
 | axis | what it asks | the word | fold | on the wire |
 |---|---|---|---|---|
-| disposition | has anyone decided this | **undisposed** | `State.undisposed`, `Comment.undisposed`, `State.undisposed_in()` | `undisposed`, `undisposed_count`, `undisposed_at_close` |
+| disposition | has anyone decided this, and is that decision final | **undisposed** for what is owed · **settled** / **verdict** for one comment | `State.undisposed`, `Comment.undisposed`, `Comment.settled`, `Comment.verdict`, `State.undisposed_in()` | one comment: `settled`, `verdict` · counts: `undisposed`, `undisposed_count`, `undisposed_at_close` |
 | anchor | can it still be placed on the document | **orphaned** | `State.orphans`, `Comment.orphaned` | `orphaned`, `orphans` |
 | thread | is this conversation over | **resolved** / **unresolved** | `State.resolved_threads`, `State.active_threads`, `Comment.resolved` | `resolved`, `unresolved_threads`, `unresolved_thread_count` |
 
@@ -661,6 +704,25 @@ a rename — every ledger that used it would stop being readable. It keeps its v
 spelling and holds the undisposed set; the fold reads it into
 `Round.undisposed_at_close`, which is what every reader above the ledger sees.
 A v1 that bumps major is where the two agree again (§10).
+
+**The disposition axis reads in two directions, and those are not two words for
+one thing.** One comment answers "is this decision final" — `settled`, with
+`verdict` saying what was decided and `null` meaning nobody has. A round answers
+"how many are still owed" — `undisposed_count`, which is exactly the set
+`round.close` has to declare (I6). Each reading takes the spelling that matches
+its question, and the bridge between them is one negation: a round's
+`undisposed_count` is how many of its comments have `settled` false.
+
+**Two keys left the comment payload on 2026-08-08 instead of being kept as
+aliases.** `state` was one string holding the verdict with `"open"` standing in
+for "no verdict" — it answered two questions at once, so a consumer could only
+get `settled` back out of it by already knowing which verdict is the
+non-terminal one, and `"open"` was the fourth thing in this tool wearing that
+name (a round's status, an unresolved thread, the `state` error kind). And
+`undisposed` left the comment because `settled` is its exact negation, which is
+the thing the paragraph above refuses. Removed rather than redefined, for the
+reason `unresolved` was: a missing key is a bug a consumer can see, where a
+redefined one is a value that quietly changed which question it answers.
 
 **The default view hides resolved** (G11). Hiding is the view's job and not a
 deletion — the ledger keeps everything, and so does the fold's `comments`. It
@@ -690,8 +752,8 @@ copy to disagree with).
 Below is output the tool actually produced (not a hand-written example). In one
 round it leaves a comment · a suggestion · a reply · an applied · a deferred · a
 rejected · one undisposed, then closes and crosses two revisions — re-anchored
-at the second, orphaned at the third. Finally two conversations are closed and
-one of them reopened.
+at the second, orphaned at the third. Finally two conversations are closed, one
+of them reopened, and the reopened one's rejection is overturned.
 
 ```jsonl
 {"author":"alice","base":"sha256:35c081dd8b8aea1c491c9b6e76eb6ae8e7675e7cfceb679fc5ca2652ba8ff8e5","doc":"protocol.md","id":"r-59add8920c91","schema":"specround.ledger/v0","seq":0,"title":"round 1","ts":"2026-02-01T09:00:00Z","type":"round.open"}
@@ -710,6 +772,7 @@ one of them reopened.
 {"actor":"agent","author":"agent:reviewer","id":"v-08bdcb2d3b60","note":"raised to 60 in revision 2, nothing left to discuss","schema":"specround.ledger/v0","seq":13,"target":"c-d35c1ebd2b14","ts":"2026-02-01T10:05:00Z","type":"thread.resolve"}
 {"actor":"human","author":"alice","id":"v-6e5c72132f69","schema":"specround.ledger/v0","seq":14,"target":"s-086c5beb81f0","ts":"2026-02-01T10:06:00Z","type":"thread.resolve"}
 {"actor":"human","author":"bob","id":"n-58caec7c2b7b","reason":"the patch still reads on the new wording","schema":"specround.ledger/v0","seq":15,"target":"s-086c5beb81f0","ts":"2026-02-01T10:07:00Z","type":"thread.reopen"}
+{"author":"bob","id":"d-1c72dd66fade","reason":"reopened and re-read: the patch still applies to the new wording","schema":"specround.ledger/v0","seq":16,"supersede":true,"target":"s-086c5beb81f0","ts":"2026-02-01T10:12:00Z","type":"disposition","verdict":"applied"}
 ```
 
 Folding this ledger gives: 0 open rounds, 1 undisposed (`c-7863abd8f91e`,
@@ -718,12 +781,23 @@ Folding this ledger gives: 0 open rounds, 1 undisposed (`c-7863abd8f91e`,
 whose prose is gone staying as an orphan instead of quietly disappearing, is the
 zero loss G3 talks about.
 
+The last line is a **supersede**, and the three lines before it are why it is
+allowed to exist. `s-086c5beb81f0` was rejected at seq 7, alice closed the
+thread at seq 14, and bob reopened it at seq 15 saying the patch still reads on
+the new wording — so by seq 16 the conversation had produced a different answer
+than the one on the record. Without the flag that append is refused, which is
+the point: a settled verdict does not move because a second one showed up. With
+it, both verdicts are in `dispositions` in the order they were made, and only
+the last is in force. Nothing was edited to make that true — reading the
+rejection back out of this file is still `grep`.
+
 The three axes being independent is in this example too. `c-d35c1ebd2b14` is
 **settled** as `applied`, is an **orphan** at the third revision (naturally —
 applying it deleted the sentence), and its conversation is **closed** as well —
 a case where all three axes happened to go the same way. `s-086c5beb81f0` is
-settled as `rejected` and is an orphan, but its conversation is **open** (it was
-closed and bob reopened it). `c-7863abd8f91e` is undisposed, has no anchor, and
+settled as `applied` — rejected first, then superseded — and is an orphan, but
+its conversation is **open** (it was closed and bob reopened it).
+`c-7863abd8f91e` is undisposed, has no anchor, and
 its conversation is open. The default listing shows the latter two.
 
 Who did the closing is in here as well: `v-08bdcb2d3b60` was closed by an agent

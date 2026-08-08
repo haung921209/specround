@@ -72,7 +72,7 @@ from urllib.parse import parse_qs, urlsplit
 from specround import __version__, markdown
 from specround.diffs import changed_span, diff, unified_patch
 from specround.errors import AnchorError, InvariantError, SpecroundError
-from specround.events import ACTORS, HUMAN, VERDICTS
+from specround.events import ACTORS, HUMAN, SUPERSEDE, VERDICTS
 from specround.fold import Round, State
 from specround.locations import path_key
 from specround.reanchor import POSITION
@@ -715,6 +715,14 @@ class WebView:
         return {"comment": comment_json(self.store.fold().comments[target])}
 
     def dispose(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Record a verdict, overturning a settled one when the caller says so.
+
+        ``supersede`` is carried here rather than left to the CLI because the
+        view is a write surface of equal standing: a reviewer who settled a
+        comment on this page and wants it back would otherwise have to leave the
+        page to undo it, and a gate you can only pass somewhere else is a gate
+        people route around.
+        """
         target = _text(body, "target")
         verdict = _text(body, "verdict")
         if verdict not in VERDICTS:
@@ -724,6 +732,7 @@ class WebView:
             author=_author(body, self.author),
             verdict=verdict,
             reason=_text(body, "reason"),
+            supersede=bool(body.get(SUPERSEDE, False)),
         )
         return {"comment": comment_json(self.store.fold().comments[target])}
 
