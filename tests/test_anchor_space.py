@@ -17,7 +17,7 @@ import pytest
 
 from specround.cli import main
 from specround.errors import InvariantError
-from specround.events import ANCHOR_REANCHOR
+from specround.events import ANCHOR_KINDS, ANCHOR_REANCHOR, ROUND_OPEN
 from specround.reanchor import reanchor
 from specround.wire import comment_json, document_summary
 
@@ -213,6 +213,52 @@ def test_the_cli_refusal_is_a_state_error(run, doc, doc_text, round_id, anchored
     result = run("reanchor", doc, "--author", "agent:reanchor", "--json")
     assert result.code == 3
     assert "round open" in result.error["message"]
+
+
+def anchoring_bases(store):
+    return {r["base"] for r in store.ledger.read() if r["type"] in ANCHOR_KINDS}
+
+
+def round_bases(store):
+    return {r["base"] for r in store.ledger.read() if r["type"] == ROUND_OPEN}
+
+
+def test_every_anchoring_a_writer_produces_names_a_round_base(store, doc, doc_text, round_id):
+    """The class, not the instance: no path through the API can make a third space.
+
+    This is the shape of the whole fix. "One field, two spaces" was possible
+    because a writer could freeze a text for the anchors without freezing it for
+    the review, so the assertion worth keeping is not about any one verb — it is
+    that the set of texts anchors live in and the set of texts rounds froze are
+    the same set.
+    """
+    store.add_comment(
+        round_id, author="bob", body="too short", anchor=store.anchor_in_round(round_id, QUOTE_TEXT)
+    )
+    store.add_suggestion(
+        round_id,
+        author="agent:reviewer",
+        patch="-30\n+60\n",
+        anchor=store.anchor_in_round(round_id, "hello frame"),
+    )
+    store.close_round(round_id, author="alice", allow_undisposed=True)
+
+    doc.write_text(DRAFT + doc_text, encoding="utf-8")  # moved down the page
+    store.open_round(doc, author="alice")
+    store.reanchor_document(doc, author="agent:reanchor")  # the idempotent re-drive
+    doc.write_text("# Gadget\n\nNothing above survives.\n", encoding="utf-8")  # and lost
+    store.open_round(doc, author="alice")
+
+    assert anchoring_bases(store)  # the sequence really did write some
+    assert anchoring_bases(store) <= round_bases(store)
+
+
+def test_the_measured_ledger_is_what_that_assertion_catches(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    """...and the assertion above has teeth: this is the shape it excludes."""
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    assert not anchoring_bases(store) <= round_bases(store)
 
 
 # -- repairing a ledger that already holds them ---------------------------
