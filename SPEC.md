@@ -287,6 +287,31 @@ target is spec and prose documents — PR tools already do code well).
   is a timestamp and this project's timestamps order nothing; and the listing's
   limit holds back documents with **no** review activity first, never one that
   has some, or the filter would be lying about the set it was asked to find
+- H16 reaching the view from another device (user, thinking aloud 2026-08-08 —
+  "edit and submit from a phone"). Three separable pieces, and only one of
+  them is new. **Submitting from the page already exists** (G8 — a raw-mode
+  edit is taken in as a suggestion; the gutter takes comments); what a phone
+  lacks is *reach*, and reach is a **transport question, not a mode**: the
+  server binds loopback by design, and letting one trusted device in is a
+  `--host` opt-in on a private network (tailnet/LAN) with the token and the
+  Origin check it already has. The non-goal stands — this is not hosting, no
+  accounts, one reviewer's own devices. Held open until a second device is
+  actually used: the exposure step deserves its own look (token lifetime,
+  HTTPS or not on a tailnet), and mobile ergonomics (touch selection → gutter)
+  is real work that should be pulled by use, not predicted
+- H17 mapping a round to its consuming session (user, thinking aloud
+  2026-08-08). Today the agent *pulls* ("collect when asked"); the idea is a
+  submitted suggestion or comment finding the session that is working on that
+  document. The unit, if this lands, is **round ↔ consuming session** — a
+  round is one conversation, and its consumer is whoever opened it to collect.
+  The core's share is at most an **observation** (an `ext` note on round.open
+  naming the consumer, like H12 records git state — no dependency, no
+  judgement on it); the *push* — noticing the event and nudging the mapped
+  session — is the adapter layer's job (the same events-and-notify machinery
+  that surfaces worker questions), because a channel to a live session is
+  exactly what a serverless core does not have (G5). No separate "mode":
+  modes multiply surfaces, and both halves are additions to surfaces that
+  already exist
 
 ## 5. Done-ness (of the spec stage)
 
