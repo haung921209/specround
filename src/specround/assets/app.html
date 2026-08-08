@@ -383,6 +383,15 @@ function diffReason(data) {
   return "the document is not readable — a diff needs the file as it is now";
 }
 
+function readable(data) {
+  // Whether there is a text to draw. Deliberately not "is there a round": those
+  // two came apart the moment a document with no round started reading the file
+  // itself, and conflating them is what put a paragraph on the page where the
+  // document should have been. The only answer of "nothing" is no base *and* no
+  // file, and there the server's reason is the whole page.
+  return Boolean(data && data.reading);
+}
+
 function modeFor(mode, data) {
   // The mode to actually be in, which is not always the one that was up. The
   // mode outlives the document: clicking through a tree (H15) keeps it, and most
@@ -667,12 +676,10 @@ function draw() {
   // Same race `renderControls` names: a mode button is clickable before the first
   // state has arrived.
   if (!data) return;
-  // Gated on having a text to show, not on having a round. Those came apart the
-  // moment a document with no round started reading the live file: with no round
-  // there is nothing to write and still something to read, and this is where the
-  // second half used to be thrown away. Nothing to read at all is the narrower
-  // case — no base and no file — and there the server's reason is the whole page.
-  if (!data.reading) {
+  // Gated on having a text to show, not on having a round — see `readable`. With
+  // no round there is nothing to write and still something to read, and this is
+  // where the second half used to be thrown away.
+  if (!readable(data)) {
     host.className = "";
     host.innerHTML = '<p class="empty">' + escapeHtml(data.blocked || "nothing to show") + "</p>";
     return;

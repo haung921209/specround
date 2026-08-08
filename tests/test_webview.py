@@ -576,6 +576,35 @@ def test_the_gutter_looks_clickable_only_where_a_click_records_something(tmp_pat
 
 
 
+def test_the_page_draws_on_having_a_text_not_on_having_a_round(tmp_path):
+    """The blank screen, at the line that drew it.
+
+    `draw` asked whether there was a *round* and put the blocked reason on the
+    page in place of everything else — so every document nobody had opened a round
+    on was a paragraph telling the reviewer to open one, and the text they had
+    clicked to read was nowhere. The question it should have asked, and now does,
+    is whether there is a text.
+    """
+    verdicts = in_node(
+        "input.map(readable)",
+        [
+            {"reading": "base"},  # a round froze a text
+            {"reading": "revision"},  # no round, and the file is there to read
+            {"reading": None},  # neither — the server's reason is the whole page
+        ],
+        tmp_path,
+    )
+    assert verdicts == [True, True, False]
+    # And the drawing does not ask the old question. `diffReason` still asks about
+    # the round, which is right there — a diff needs the base a round froze. What
+    # must not come back is the round deciding whether anything is drawn at all.
+    html = page().decode("utf-8")
+    drawing = html[html.index("function draw()") :]
+    drawing = drawing[: drawing.index("\n}\n")]
+    assert "readable(data)" in drawing
+    assert "data.round" not in drawing
+
+
 def test_the_diff_mode_says_why_it_is_not_on_offer(tmp_path):
     """A mode that would draw an empty page is a mode the page should not offer.
 
