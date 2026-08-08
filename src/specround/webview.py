@@ -13,6 +13,18 @@ reads (G5). Closing the window loses nothing.
 consumer: a terminal multiplexer's browser pane takes the URL and places it.
 ``--open`` is the opt-in for a person sitting at a shell.
 
+**The port is the document's, not the moment's.** Because the consumer is an
+embedded pane, a port drawn fresh each start makes every restart — a code
+change, a view reclaimed and started again — kill the tab that was holding the
+review, and makes a loop that lives in the ledger look like it lives in this
+process. So the default port is derived from the document's path on the same
+normalization the store keys by (:func:`derived_port`), and the same document
+comes back on the same address. What that does *not* buy is a frozen URL: the
+token is minted per start, because a restart is a new grant. See
+:meth:`WebView.bind` for the three ways a port gets chosen, and for the one rule
+under them — a port that is not the expected one is a port whose reason is
+recorded, never one that quietly wandered.
+
 Every route here either folds the ledger or appends to it through the same
 :class:`~specround.store.ReviewStore` methods the CLI calls, and it answers in
 :mod:`specround.wire`'s shapes. Nothing re-implements a rule: a view carrying its
@@ -54,12 +66,28 @@ from specround.diffs import changed_span, diff, unified_patch
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, HUMAN, VERDICTS
 from specround.fold import Round, State
+from specround.locations import path_key
 from specround.reanchor import POSITION
 from specround.store import ReviewStore
 from specround.wire import comment_json, comments_on, round_json, rounds_on
 from specround.workspace import Workspace
 
-__all__ = ["BASE", "REVISION", "Refusal", "WebView", "VIEW_SCHEMA"]
+__all__ = [
+    "BASE",
+    "DERIVED",
+    "EPHEMERAL",
+    "FALLBACK",
+    "PINNED",
+    "PORT_CEILING",
+    "PORT_FLOOR",
+    "PORT_SOURCES",
+    "PortTaken",
+    "REVISION",
+    "Refusal",
+    "WebView",
+    "VIEW_SCHEMA",
+    "derived_port",
+]
 
 #: The payload's own version, for the reason the ledger lines carry one: a
 #: consumer should be able to tell that the shape it parses is the shape it was
@@ -74,6 +102,27 @@ REVISION = "revision"
 SPACES = (BASE, REVISION)
 
 DEFAULT_HOST = "127.0.0.1"
+
+#: The dynamic/private range (RFC 6335 §8.1.2) — the ports no service registers
+#: and none of which need privilege. It is also the range an operating system
+#: draws outbound source ports from, so a derived port is occasionally in use by
+#: something with no opinion about this tool at all. That is not a flaw to design
+#: around; it is the case :meth:`WebView.bind` falls back from, out loud. The
+#: alternative — a range nothing else touches — does not exist on a machine this
+#: process does not own.
+PORT_FLOOR = 49152
+PORT_CEILING = 65535
+PORT_SPAN = PORT_CEILING - PORT_FLOOR + 1
+
+#: Where :attr:`WebView.port_source` says the bound port came from. The
+#: distinction a caller acts on is "will this URL come back": ``derived`` yes,
+#: ``pinned`` yes, ``ephemeral`` no by request, ``fallback`` no and here is why.
+DERIVED = "derived"
+PINNED = "pinned"
+EPHEMERAL = "ephemeral"
+FALLBACK = "fallback"
+PORT_SOURCES = (DERIVED, PINNED, EPHEMERAL, FALLBACK)
+
 #: How often the serving loop checks whether it has been told to stop.
 #: :meth:`~socketserver.BaseServer.shutdown` waits for one of these, so the
 #: default half-second is half a second of a view that has been closed and has
@@ -84,6 +133,43 @@ POLL_INTERVAL = 0.05
 MAX_BODY = 8 * 1024 * 1024
 _ASSETS = "assets"
 _PAGE = "app.html"
+
+
+def derived_port(path: Path) -> int:
+    """The port a document — or a directory — always comes back on.
+
+    It is the store's own key, folded into the dynamic range: same
+    normalization, same digest, so the two answers can never disagree about
+    which document this is. A relative spelling, a symlink, and (where the
+    filesystem says they are one file) a different capitalisation all land on one
+    port for the same reason they land on one history
+    (``docs/ledger-format.md`` §1.2).
+
+    Sharing the store's digest is deliberate rather than convenient. The
+    alternative is a second normalization to keep in step with the first, and a
+    port that drifts from the store key is a view addressed as one document while
+    reading another's ledger.
+    """
+    return PORT_FLOOR + int(path_key(path), 16) % PORT_SPAN
+
+
+class PortTaken(SpecroundError):
+    """A port the caller named is in use — so nothing is served, and nothing moves.
+
+    Only a *named* port raises this. The derived one falls back instead, because
+    nobody typed it: the caller asked for "this document's view", and a free port
+    still answers that as long as the move is said out loud. ``--port N`` is a
+    different request, and quietly serving N+something would answer past it.
+    """
+
+    def __init__(self, host: str, port: int, reason: str) -> None:
+        super().__init__(
+            f"{host}:{port} is already in use ({reason}) — name a free port, or drop "
+            "--port to take the one derived from the document's path"
+        )
+        self.host = host
+        self.port = port
+        self.reason = reason
 
 
 class Refusal(SpecroundError):
@@ -109,6 +195,16 @@ def _state(message: str) -> Refusal:
     return Refusal(HTTPStatus.CONFLICT, "state", message)
 
 
+def _strerror(exc: OSError) -> str:
+    """What the operating system said, without the errno furniture.
+
+    "Address already in use" is a sentence a person can act on; "[Errno 48]
+    Address already in use" is the same sentence wearing a number that means
+    nothing to the reader of a URL.
+    """
+    return exc.strerror or str(exc)
+
+
 @lru_cache(maxsize=1)
 def page() -> bytes:
     """The single static page. One file, no build step, no CDN."""
@@ -130,7 +226,11 @@ class WebView:
     #: round while this view is open, and the view should notice.
     round_hint: str | None = None
     host: str = DEFAULT_HOST
-    port: int = 0
+    #: Which port to take, and after :meth:`bind` the one that was taken.
+    #: ``None`` — the default — means the one derived from the document's path,
+    #: so the same document keeps its URL across restarts. ``0`` asks for
+    #: whatever is free. Anything else is a request that is met or refused.
+    port: int | None = None
     token: str = ""
     #: The tree this view navigates, when it was started on a directory (H15).
     #: ``None`` is the file view, unchanged in every respect.
@@ -145,6 +245,13 @@ class WebView:
     def __post_init__(self) -> None:
         self.key = self.store.doc_key(self.path)
         self.token = self.token or secrets.token_urlsafe(16)
+        #: One of :data:`PORT_SOURCES`, once :meth:`bind` has run.
+        self.port_source = ""
+        #: The derived port that was not free, when that is why the port moved.
+        #: ``None`` every other time, including a successful derivation.
+        self.wanted_port: int | None = None
+        #: What the operating system said about it, verbatim.
+        self.port_reason = ""
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         #: Whether a serving loop is running and can acknowledge a shutdown.
@@ -156,13 +263,75 @@ class WebView:
 
     # -- lifecycle -------------------------------------------------------
 
+    @property
+    def port_path(self) -> Path:
+        """What the derived port counts from — the tree, or else the document.
+
+        A workspace view is one server over a directory (H15), and the directory
+        is what the caller named. Deriving from the document it happens to open
+        on would move the whole tree's port the day somebody adds a file that
+        sorts before it, which is a port nobody could rely on.
+        """
+        return self.workspace.root if self.workspace is not None else self.path
+
     def bind(self) -> "WebView":
-        """Take the port, so the URL is knowable before anything is served."""
-        if self._server is None:
-            self._server = _Server((self.host, self.port), _Handler)
-            self._server.view = self
-            self.port = self._server.server_address[1]
+        """Take the port, so the URL is knowable before anything is served.
+
+        Which port is three requests, and they differ by who is asking:
+
+        ``port=N``
+            The caller named it. It is taken, or :class:`PortTaken` — moving a
+            named port answers a question nobody asked.
+        ``port=0``
+            The caller asked for whatever is free, and gets it. The URL will be
+            a different one next time, which is what was requested.
+        ``port=None`` (the default)
+            Derived from the path, so a restart lands on the same address and an
+            embedder's pane survives it. When something else already holds it, a
+            free port stands in and :attr:`port_source` says ``fallback`` —
+            recording *why* the URL moved is the whole difference between a
+            fallback and a port that wanders.
+
+        A stable port is not a stable URL: the token is new every time (see
+        :attr:`url`), because a restart is a new grant and not a resumed one.
+        """
+        if self._server is not None:
+            return self
+        if self.port is None:
+            wanted = derived_port(self.port_path)
+            try:
+                self._take(wanted)
+            except OSError as exc:
+                # Not a failure — the caller asked for this document's view, and
+                # a free port still serves it. What would be a failure is doing
+                # this silently, so the reason is kept for whoever prints it.
+                self.wanted_port, self.port_reason = wanted, _strerror(exc)
+                self._take(0)
+                self.port_source = FALLBACK
+            else:
+                self.port_source = DERIVED
+        elif self.port == 0:
+            self._take(0)
+            self.port_source = EPHEMERAL
+        else:
+            try:
+                self._take(self.port)
+            except OSError as exc:
+                raise PortTaken(self.host, self.port, _strerror(exc)) from exc
+            self.port_source = PINNED
+        assert self._server is not None
+        self.port = self._server.server_address[1]
         return self
+
+    def _take(self, port: int) -> None:
+        """Bind one port, leaving nothing behind if it cannot be had.
+
+        ``TCPServer`` closes its own socket when the bind raises, so a refused
+        port costs no descriptor and the next attempt starts clean.
+        """
+        server = _Server((self.host, port), _Handler)
+        server.view = self
+        self._server = server
 
     @property
     def url(self) -> str:

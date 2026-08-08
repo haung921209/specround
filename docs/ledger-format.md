@@ -35,6 +35,13 @@ $XDG_DATA_HOME/specround/docs/5a/cdd8cb…/
   filesystem: **the spelling on disk is the correct one, and an exactly matching
   entry wins when there is one** (on a case-sensitive filesystem the two really
   are different files).
+- **The same key decides the web view's default port.** `specround view` folds
+  that digest into the dynamic range (49152–65535), so a document comes back on
+  the address an embedded browser pane is already holding. It is a *consumer* of
+  the rule above, not a second one: normalize differently and the port moves with
+  the store, which is the point — a port derived some other way would address one
+  document while the ledger under it belonged to another. (A directory view keys
+  off the directory, by the same rule.)
 - **The data home** = `$XDG_DATA_HOME` (only when absolute), otherwise
   `~/.local/share`. A store is data — a cache may be evicted and config is what
   you hand-edit, so it is neither. Instead of the per-platform convention (macOS

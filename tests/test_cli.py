@@ -29,7 +29,7 @@ import pytest
 from specround.cli import CLI_SCHEMA, main
 from specround.imports import IMPORT_SCHEMA
 from specround.store import ReviewStore
-from specround.webview import WebView
+from specround.webview import WebView, derived_port
 
 REVISED = """# Widget protocol
 
@@ -1441,8 +1441,8 @@ def test_view_json_names_what_an_embedder_needs(run, doc, opened, served):
     assert result.code == 0
     payload = result.json
     assert set(payload) == {
-        "schema", "verb", "doc", "path", "store",
-        "url", "host", "port", "token", "round", "commentable", "blocked",
+        "schema", "verb", "doc", "path", "store", "url", "host", "port",
+        "port_source", "port_note", "token", "round", "commentable", "blocked",
     }
     assert payload["schema"] == CLI_SCHEMA
     assert payload["verb"] == "view"
@@ -1509,6 +1509,93 @@ def test_view_pins_the_port_when_told_to(run, doc, opened, served):
     result = run("view", doc, "--author", "alice", "--port", free, "--json")
     assert result.code == 0
     assert result.json["port"] == free
+    assert result.json["port_source"] == "pinned"
+    assert result.json["port_note"] is None
+
+
+# -- which port, and why it is that one ----------------------------------
+#
+# The port decides whether a browser pane survives a restart, so the three ways
+# it can be chosen are a contract and not an implementation detail. The rule is
+# one sentence: the caller's number wins, then the document's own, then a free
+# one — and the last case says so, because a URL that moved without a reason is
+# a URL nobody can trust.
+
+
+def test_view_defaults_to_the_port_derived_from_the_document(run, doc, opened, served):
+    """No flag: the document's own port, and stdout says it will hold."""
+    port = derived_port(doc)
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            pytest.skip(f"port {port} is held from outside the suite ({exc})")
+    result = run("view", doc, "--author", "alice", "--json")
+    assert result.code == 0
+    assert result.json["port"] == port
+    assert result.json["port_source"] == "derived"
+    assert result.json["port_note"] is None
+
+
+def test_view_says_on_stdout_why_the_port_moved(run, doc, opened, served):
+    """The one thing a fallback must never be is quiet.
+
+    The reason lands on stdout rather than stderr because the caller reading the
+    URL is the caller who needs it, and a `--json` consumer gets the same
+    sentence in ``port_note`` — an embedder that only parses JSON would
+    otherwise watch the URL change with no field saying why.
+    """
+    wanted = derived_port(doc)
+    holder = socket.socket()
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        holder.bind(("127.0.0.1", wanted))
+        holder.listen(1)
+    except OSError as exc:
+        holder.close()
+        pytest.skip(f"port {wanted} is held from outside the suite ({exc})")
+    try:
+        plain = run("view", doc, "--author", "alice")
+        structured = run("view", doc, "--author", "alice", "--json")
+    finally:
+        holder.close()
+
+    assert plain.code == 0
+    # The URL is still the first line and still alone: a fallback changes the
+    # port, never the shape an embedder reads.
+    assert plain.lines[0].startswith("http://127.0.0.1:")
+    said = "\n".join(plain.lines[1:])
+    assert str(wanted) in said
+    assert "in use" in said.lower() or "address" in said.lower()
+
+    assert structured.code == 0
+    assert structured.json["port"] != wanted
+    assert structured.json["port_source"] == "fallback"
+    assert str(wanted) in structured.json["port_note"]
+
+
+def test_view_refuses_a_pinned_port_that_is_taken(run, doc, opened, served):
+    """A ``2``: the caller named this port, so the caller is the one who fixes it."""
+    holder = socket.socket()
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    taken = holder.getsockname()[1]
+    try:
+        result = run("view", doc, "--author", "alice", "--port", taken)
+    finally:
+        holder.close()
+    assert result.code == 2
+    assert str(taken) in result.err
+    assert served == []
+
+
+def test_view_port_zero_asks_for_a_free_one(run, doc, opened, served):
+    """The old behaviour, now something a caller opts into rather than inherits."""
+    result = run("view", doc, "--author", "alice", "--port", 0, "--json")
+    assert result.code == 0
+    assert result.json["port"] > 0
+    assert result.json["port_source"] == "ephemeral"
 
 
 # -- the view verb over a directory (H15) --------------------------------
@@ -1535,13 +1622,26 @@ def test_view_on_a_directory_serves_the_tree_from_one_server(run, tree, opened, 
     payload = result.json
     assert set(payload) == {
         "schema", "verb", "doc", "path", "store", "root", "url", "host", "port",
-        "token", "workspace",
+        "port_source", "port_note", "token", "workspace",
     }
     assert payload["root"] == str(tree)
     assert [d["key"] for d in payload["workspace"]["documents"]] == [
         "second.md", "spec.md", "sub/third.md"
     ]
     assert served == [payload["url"]]
+
+
+def test_view_on_a_directory_derives_its_port_from_the_directory(run, tree, opened, served):
+    """The tree is what was named, so the tree is what the port counts from."""
+    port = derived_port(tree)
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            pytest.skip(f"port {port} is held from outside the suite ({exc})")
+    payload = run("view", str(tree), "--author", "alice", "--json").json
+    assert payload["port"] == port
+    assert payload["port_source"] == "derived"
 
 
 def test_view_on_a_directory_still_prints_the_url_first_and_alone(run, tree, opened, served):
