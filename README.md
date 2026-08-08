@@ -71,9 +71,19 @@ specround reopen SPEC.md --comment c-d35c --why "it came back in revision 3"
 specround dispose SPEC.md --comment c-d35c --as applied --why "raised to 60"
 specround round close SPEC.md --allow-undisposed --note "retries move to round 2"
 
-# After a revision: carry the comments over, and say which ones lost their text.
-specround reanchor SPEC.md
+# After a revision: open the next round on it. Freezing the revision is what
+# makes the space the comments move into, so opening is also what carries them —
+# it reports which followed their text and which lost it.
+specround round open SPEC.md --title "second pass"
 ```
+
+An anchor belongs to a round's base, and opening a round is the only thing that
+makes a new one. That is why there is no "carry it over now" step to remember:
+`reanchor` only re-drives the carry onto the base you are already looking at,
+and refuses once the file has moved past it — nothing has frozen that revision,
+so an anchor cut from it would sit in a space no view shows. For a ledger that
+already holds such anchors, `specround doctor SPEC.md` re-reads their quotes in
+the right base and appends the corrections (a dry run until `--apply`).
 
 ## In your editor
 

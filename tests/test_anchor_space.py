@@ -19,7 +19,7 @@ from specround.cli import main
 from specround.errors import InvariantError
 from specround.events import ANCHOR_REANCHOR
 from specround.reanchor import reanchor
-from specround.wire import comment_json
+from specround.wire import comment_json, document_summary
 
 QUOTE_TEXT = "Timeouts are 30 seconds."
 DRAFT = "> Draft.\n\n"
@@ -113,6 +113,14 @@ def test_the_wire_form_carries_the_finding(store, doc, doc_text, round_id, ancho
     pollute(store, doc, anchored_comment, DRAFT + doc_text)
     payload = comment_json(store.fold().comments[anchored_comment])
     assert payload["misplaced"] is True
+
+
+def test_the_document_summary_counts_them(store, doc, doc_text, round_id, anchored_comment):
+    """The navigation bar says "0 orphaned" about these — it must not stop there."""
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    summary = document_summary(store.fold(), store.doc_key(doc))
+    assert summary["orphans"] == 0
+    assert summary["misplaced"] == 1
 
 
 def test_the_listing_marks_it_rather_than_quoting_it_plainly(

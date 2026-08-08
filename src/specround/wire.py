@@ -43,6 +43,7 @@ EMPTY_SUMMARY: dict[str, Any] = {
     "comments": 0,
     "undisposed": 0,
     "orphans": 0,
+    "misplaced": 0,
     "resolved": 0,
     "last_activity": None,
 }
@@ -93,6 +94,10 @@ def document_summary(state: State, key: str) -> dict[str, Any]:
         "comments": len(comments),
         "undisposed": sum(1 for c in comments if c.undisposed),
         "orphans": sum(1 for c in comments if c.orphaned),
+        # Beside ``orphans`` because a reader scanning the bar would otherwise
+        # read "0 orphaned" as "every comment can be shown". I12 is the other
+        # way a comment ends up undrawable, and it is the one nobody expects.
+        "misplaced": sum(1 for c in comments if c.misplaced),
         "resolved": sum(1 for c in comments if c.resolved),
         "last_activity": max(stamps) if stamps else None,
     }

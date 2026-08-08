@@ -566,6 +566,7 @@ class WebView:
                 "comments": len(comments),
                 "undisposed": sum(1 for c in comments if c.undisposed),
                 "orphans": sum(1 for c in comments if c.orphaned),
+                "misplaced": sum(1 for c in comments if c.misplaced),
                 "resolved": sum(1 for c in comments if c.resolved),
                 "events": state.count,
             },

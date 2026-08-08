@@ -391,6 +391,9 @@ function badges(entry) {
   if (entry.open_rounds) out.push({ text: entry.open_rounds + " open", kind: "open" });
   if (entry.undisposed) out.push({ text: entry.undisposed + " undisposed", kind: "warn" });
   if (entry.orphans) out.push({ text: entry.orphans + " orphaned", kind: "bad" });
+  // The other way a comment ends up undrawable (I12), and the one nobody
+  // expects — without it "0 orphaned" reads as "everything can be shown".
+  if (entry.misplaced) out.push({ text: entry.misplaced + " misplaced", kind: "bad" });
   if (!out.length && entry.rounds) out.push({ text: "reviewed", kind: "" });
   return out;
 }

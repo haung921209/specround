@@ -196,7 +196,8 @@ def test_state_reports_the_round_the_three_modes_and_the_counts(opened, doc_text
     assert payload["render"].startswith("<h1>")
     assert payload["diff"]["identical"] is True
     assert payload["counts"] == {
-        "comments": 0, "undisposed": 0, "orphans": 0, "resolved": 0, "events": 1
+        "comments": 0, "undisposed": 0, "orphans": 0, "misplaced": 0,
+        "resolved": 0, "events": 1,
     }
 
 
@@ -611,6 +612,12 @@ def test_an_anchor_from_another_space_is_not_painted(tmp_path):
         {"id": "c-whole", "current_anchor": None, "misplaced": False},
     ]
     assert in_node("paintable(input).map((c) => c.id)", given, tmp_path) == ["c-ok"]
+
+
+def test_the_bar_says_a_document_has_anchors_nothing_can_draw(tmp_path):
+    """Undrawable is as much a fact about a document as orphaned is."""
+    badges = in_node("badges({rounds: 1, misplaced: 2}).map((b) => b.text)", None, tmp_path)
+    assert "2 misplaced" in badges
 
 
 def test_a_comment_the_page_will_not_draw_says_so_on_its_card(tmp_path):

@@ -216,6 +216,37 @@ target is spec and prose documents — PR tools already do code well).
   not overwrite the anchor: they stay as **new ledger events**
   (`anchor.reanchor`/`anchor.orphan`), so where a comment went in which revision
   reads as history. Details in `docs/ledger-format.md` §5.1.
+- **An anchor space is a round's base, and only `round.open` makes one (settled
+  by the implementation 2026-08-08, from a measured failure)**. The ladder above
+  says *how* a comment is carried; this says *into what*, which turned out to be
+  a second definition nobody had written down. Re-anchoring took its target from
+  the **document on disk**: it froze whatever the file was, cut anchors from
+  that, and recorded them — each self-consistent, so I7 passed all of them, while
+  every surface went on painting them over the round's base (①). On one real
+  review **12 of 17 comments were drawn on sentences they were not about**, and
+  the verification read the same revised text, so it passed too. Two definitions
+  of "the anchor's space" were living in one field.
+  Three things settle it:
+  **① Opening a round is what carries.** Freezing the revision is what makes the
+  space, so it is what moves the comments into it. Not a step to remember, and
+  therefore not one to skip — the ladder runs where the space is made or nowhere.
+  **② `reanchor` may not invent a space.** It re-drives the carry onto the base
+  the document is painted on, and is **refused** (exit 3) once the file has moved
+  past it, naming the two ways out (open a round on the revision · nothing to
+  move against this base). The old behaviour is unreachable rather than
+  discouraged.
+  **③ I12 is reported, not refused.** A comment whose `current_anchor` does not
+  hold in the base it is painted on is marked and **not drawn**, because a mark
+  on the wrong sentence reads like a correct answer while a missing one with a
+  badge beside it does not. Refusing would cost more than the bug: ledgers
+  written before this rule exist, and a fold that raised on one would take away
+  the only way to read or repair it. `specround doctor` is the repair — the quote
+  re-read in the right base, the correction **appended** (I1), the bad record
+  left where it is.
+  What was rejected: making the view follow the anchors instead. That is the
+  second definition winning, and it breaks both I7 (a comment is a review of the
+  text the reviewer read) and G2 (a round's base is frozen).
+  Details in `docs/ledger-format.md` §5.2.
 - **Absorbing outside comments = the format is the boundary (H9 closed, settled
   by the implementation 2026-08-07)**. `specround import <doc> --file <json>`
   reads one **documented general contract** (`specround.import/v0`,
