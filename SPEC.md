@@ -129,6 +129,16 @@ target is spec and prose documents — PR tools already do code well).
   each document's own history rather than merging them. What the walk holds
   back is counted and said; a mistyped or stale key is refused rather than
   resolved to some other file's history.
+  **⑤ With no round there is no anchor space, and the document is still read
+  (landed 2026-08-08)**. ① is what a round decides, and until one exists there is
+  nothing frozen to anchor in — so render and raw read the file on disk, read
+  only, and the diff has no base to compare against and is not offered. This is
+  not a second anchor space: nothing can be written in it (I4 blocks the two
+  verbs, as it already did), and the moment a round exists ① applies again
+  unchanged. It is written down because the first browse of a tree found the
+  opposite — thirteen documents nobody had opened a round on came up **blank**,
+  the two modes having no text to reach for. Blocking a comment was never a
+  reason to withhold the text; "read only" and "unreadable" are not one answer.
 - **vim and other editors are first-class without a plugin** — fix the raw text
   in an editor and the working-tree diff is taken in as a suggestion (G8, "fix
   it and it is submitted"), and type inline annotations (the CriticMarkup
