@@ -303,7 +303,7 @@ def test_an_orphan_can_be_resolved(store, doc, round_id):
     anchor = store.anchor_in_round(round_id, "30 seconds")
     cid = store.add_comment(round_id, author="bob", body="too short", anchor=anchor)
     doc.write_text("completely different text\n", encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")
+    store.open_round(doc, author="alice")  # the revision is frozen, and the carry loses it
     assert [c.id for c in store.fold().orphans] == [cid]
 
     resolve(store, cid, note="the sentence is gone, so is the question")

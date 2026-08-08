@@ -93,6 +93,20 @@ def opened(run, doc):
     return result.json["round"]["id"]
 
 
+def a_revision(run, doc, text, *, author="agent:reanchor") -> dict:
+    """Revise the document and freeze it as the next round — which carries the comments.
+
+    Opening a round is the only act that makes a new anchor space, so it is the
+    only act that moves comments into one. Writing the file and calling
+    ``reanchor`` is refused now, and is what these tests used to do.
+    """
+    run("round", "close", doc, "--author", "alice", "--allow-undisposed")
+    doc.write_text(text, encoding="utf-8")
+    result = run("round", "open", doc, "--author", author, "--json")
+    assert result.code == 0, result.err
+    return result.json["carried"]
+
+
 def a_comment(run, doc, *, quote="30 seconds", body="too short for the proxy") -> str:
     argv = ["comment", doc, "--author", "bob", "--body", body, "--json"]
     if quote is not None:
@@ -244,41 +258,47 @@ def test_the_old_spelling_of_the_disposition_filter_is_refused(run, doc, opened)
     assert run("comments", doc, "--unresolved", "--json").code == 2
 
 
-def test_reanchor_reports_what_moved(run, doc, opened):
+def test_round_open_reports_what_moved(run, doc, opened):
     comment = a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
+    carried = a_revision(run, doc, REVISED)
 
-    result = run("reanchor", doc, "--author", "agent:reanchor", "--json")
-    assert result.code == 0
-    assert result.json["rebound"] == [comment]
-    assert result.json["orphaned"] == []
-    assert result.json["changed"] is True
+    assert carried["rebound"] == [comment]
+    assert carried["orphaned"] == []
+    assert carried["changed"] is True
     # Which rung matched is the difference between a comment that was pushed
     # down the page and one whose sentence was rewritten under it.
-    assert result.json["strategies"][comment] in {"quote", "normalized", "fuzzy"}
+    assert carried["strategies"][comment] in {"quote", "normalized", "fuzzy"}
 
 
-def test_reanchor_reports_what_was_lost(run, doc, opened):
+def test_round_open_reports_what_was_lost(run, doc, opened):
     comment = a_comment(run, doc)
-    doc.write_text(REWRITTEN, encoding="utf-8")
+    carried = a_revision(run, doc, REWRITTEN)
 
-    result = run("reanchor", doc, "--author", "agent:reanchor", "--json")
-    assert result.code == 0
-    assert result.json["orphaned"] == [comment]
-    assert result.json["reasons"][comment]
+    assert carried["orphaned"] == [comment]
+    assert carried["reasons"][comment]
     # An orphan is not a disposition: nobody answered it, it just cannot be
     # placed on the page any more.
     assert run("comments", doc, "--json").json["comments"][0]["state"] == "open"
 
 
-def test_reanchor_a_second_time_says_nothing_new(run, doc, opened):
+def test_reanchor_re_drives_the_carry_and_says_nothing_new(run, doc, opened):
     a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
-    assert run("reanchor", doc, "--author", "agent:reanchor").code == 0
+    a_revision(run, doc, REVISED)
 
     again = run("reanchor", doc, "--author", "agent:reanchor", "--json")
+    assert again.code == 0
     assert again.json["changed"] is False
     assert again.json["rebound"] == []
+
+
+def test_reanchor_is_refused_when_nothing_froze_the_revision(run, doc, opened):
+    """The invocation that used to write into a space no view shows."""
+    a_comment(run, doc)
+    doc.write_text(REVISED, encoding="utf-8")
+
+    result = run("reanchor", doc, "--author", "agent:reanchor", "--json")
+    assert result.code == 3
+    assert "round open" in result.error["message"]
 
 
 def an_import_file(tmp_path, *comments, source="cmux", name="in.json") -> Path:
@@ -742,7 +762,7 @@ def test_errors_go_to_stderr_so_json_stdout_stays_parseable(run, doc):
 
 def test_every_payload_names_its_schema_verb_and_subject(run, doc, opened):
     a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
+    a_revision(run, doc, REVISED)
     verbs = {
         "round.status": ("round", "status", doc),
         "comments": ("comments", doc),
@@ -848,8 +868,7 @@ def test_the_reply_payload_field_set_is_closed(run, doc, opened):
 
 def test_the_anchoring_object_field_set_is_closed(run, doc, opened):
     a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, REVISED)
     payload = run("comments", doc, "--json").json["comments"][0]["anchorings"][0]
     assert set(payload) == {
         "ambiguous",
@@ -876,8 +895,7 @@ def test_a_comment_carries_how_it_was_re_anchored(run, doc, opened):
     was written for — never sees it.
     """
     comment = a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, REVISED)
 
     payload = run("comments", doc, "--json").json["comments"][0]
     assert payload["id"] == comment
@@ -898,10 +916,8 @@ def test_a_comment_that_never_moved_says_so(run, doc, opened):
 def test_an_orphan_still_reports_how_it_reached_the_anchor_it_keeps(run, doc, opened):
     """Orphaning does not erase the history that placed it — nor should the view."""
     a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
-    doc.write_text(REWRITTEN, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, REVISED)
+    a_revision(run, doc, REWRITTEN)
 
     payload = run("comments", doc, "--json").json["comments"][0]
     assert payload["orphaned"] is True
@@ -912,8 +928,7 @@ def test_an_orphan_still_reports_how_it_reached_the_anchor_it_keeps(run, doc, op
 
 def test_the_listing_flags_a_comment_that_moved_onto_rewritten_text(run, doc, opened):
     comment = a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, REVISED)
 
     result = run("comments", doc)
     assert result.code == 0
@@ -924,8 +939,7 @@ def test_the_listing_flags_a_comment_that_moved_onto_rewritten_text(run, doc, op
 def test_the_listing_stays_quiet_about_an_ordinary_move(run, doc, opened, doc_text):
     """A comment pushed down the page matched verbatim. Nobody needs telling."""
     comment = a_comment(run, doc)
-    doc.write_text("> Draft, do not circulate.\n\n" + doc_text, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, "> Draft, do not circulate.\n\n" + doc_text)
 
     result = run("comments", doc)
     assert run("comments", doc, "--json").json["comments"][0]["strategy"] == "quote"
@@ -970,9 +984,20 @@ def test_the_status_payload_field_set_is_closed(run, doc, opened):
     assert "unresolved" not in payload and "unresolved" not in payload["counts"]
 
 
+def test_the_round_open_payload_field_set_is_closed(run, doc):
+    payload = run("round", "open", doc, "--author", "alice", "--json").json
+    assert set(payload) == {"carried", "doc", "path", "round", "schema", "store", "verb"}
+    # Opening a round carries the comments into its base, so the payload has to
+    # say what that did — in the same shape ``reanchor`` reports it.
+    assert set(payload["carried"]) == {
+        "ambiguous", "base", "changed", "orphaned", "reasons", "rebound",
+        "skipped", "strategies", "unchanged",
+    }
+
+
 def test_the_reanchor_payload_field_set_is_closed(run, doc, opened):
     a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
+    a_revision(run, doc, REVISED)
     payload = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
     assert set(payload) == {
         "ambiguous", "base", "changed", "doc", "orphaned", "path", "reasons",
@@ -1103,8 +1128,7 @@ def test_a_listing_with_nothing_but_resolved_threads_does_not_claim_emptiness(ru
 
 def test_orphans_are_reported_under_the_table(run, doc, opened):
     comment = a_comment(run, doc)
-    doc.write_text(REWRITTEN, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, REWRITTEN)
     out = run("comments", doc).out
     assert "1 orphaned" in out
     assert comment in out
@@ -1343,8 +1367,7 @@ def test_the_listing_carries_the_re_anchoring_that_moved_a_comment(run, doc, ope
     look at — from one that was merely pushed down the page.
     """
     comment = a_comment(run, doc)
-    doc.write_text(REVISED, encoding="utf-8")
-    moved = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
+    moved = a_revision(run, doc, REVISED)
 
     payload = run("comments", doc, "--json").json["comments"][0]
     assert payload["anchoring"]["strategy"] == moved["strategies"][comment]
@@ -1355,8 +1378,7 @@ def test_the_listing_carries_the_re_anchoring_that_moved_a_comment(run, doc, ope
 
 def test_an_orphan_carries_the_reason_it_could_not_be_placed(run, doc, opened):
     a_comment(run, doc)
-    doc.write_text(REWRITTEN, encoding="utf-8")
-    run("reanchor", doc, "--author", "agent:reanchor")
+    a_revision(run, doc, REWRITTEN)
 
     anchoring = run("comments", doc, "--json").json["comments"][0]["anchoring"]
     assert anchoring["orphaned"] is True
@@ -1377,13 +1399,13 @@ def test_the_table_names_the_comments_a_person_should_look_at(run, doc, opened):
     listing every move would bury the two that matter.
     """
     comment = a_comment(run, doc, quote="The client sends a hello frame", body="which frame?")
-    doc.write_text(
+    moved = a_revision(
+        run,
+        doc,
         "# Widget protocol\n\n"
         "The client sends a hell0 frame. The server answers with a hello frame.\n\n"
         "Timeouts are 30 seconds. Retries are not specified yet.\n",
-        encoding="utf-8",
     )
-    moved = run("reanchor", doc, "--author", "agent:reanchor", "--json").json
     assert moved["strategies"].get(comment) == "fuzzy", moved
 
     listing = run("comments", doc)

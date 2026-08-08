@@ -16,6 +16,7 @@ import json
 import pytest
 
 from specround.cli import main
+from specround.errors import InvariantError
 from specround.events import ANCHOR_REANCHOR
 from specround.reanchor import reanchor
 from specround.wire import comment_json
@@ -130,3 +131,77 @@ def test_round_status_counts_them(run, store, doc, doc_text, round_id, anchored_
     result = run("round", "status", doc, "--json")
     assert result.code == 0
     assert result.json["counts"]["misplaced"] == 1
+
+
+# -- only round.open makes a space ----------------------------------------
+
+
+def test_opening_a_round_carries_the_live_comments_onto_its_base(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    """The carry moves to the one moment a new anchor space comes into existence."""
+    store.close_round(round_id, author="alice", allow_undisposed=True)
+    doc.write_text(DRAFT + doc_text, encoding="utf-8")
+    second = store.open_round(doc, author="alice", title="second pass")
+
+    comment = store.fold().comments[anchored_comment]
+    assert comment.misplaced is False
+    assert comment.current_anchor.exact == QUOTE_TEXT
+    assert comment.current_anchor.matches(store.base_text(second))
+    assert comment.anchoring.base == store.round_base(second)
+
+
+def test_a_carry_that_cannot_find_the_text_records_an_orphan(store, doc, round_id, anchored_comment):
+    doc.write_text("# Widget protocol\n\nThis page was replaced wholesale.\n", encoding="utf-8")
+    store.open_round(doc, author="alice")
+
+    comment = store.fold().comments[anchored_comment]
+    assert comment.orphaned is True
+    assert comment.anchoring.reason
+
+
+def test_opening_the_first_round_carries_nothing(store, doc):
+    store.open_round(doc, author="alice")
+    assert [record["type"] for record in store.ledger.read()] == ["round.open"]
+
+
+def test_opening_a_round_on_an_unchanged_document_appends_nothing_extra(
+    store, doc, round_id, anchored_comment
+):
+    """Same bytes, same content address — the comments are already in that space."""
+    store.open_round(doc, author="alice")
+    assert [record["type"] for record in store.ledger.read()] == [
+        "round.open",
+        "comment.add",
+        "round.open",
+    ]
+
+
+def test_re_anchoring_is_refused_once_the_document_moved_past_the_round_base(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    """The invocation that made the measured mess is the one that now fails loudly.
+
+    Nothing froze the revision, so an anchor cut from it would name a space no
+    surface shows — which is what happened, silently, twelve times.
+    """
+    doc.write_text(DRAFT + doc_text, encoding="utf-8")
+    with pytest.raises(InvariantError) as raised:
+        store.reanchor_document(doc, author="agent:reanchor")
+
+    message = str(raised.value)
+    assert "round open" in message  # way out 1: freeze the revision, comments carry
+    assert store.ledger.count() == 2  # and nothing was written
+
+
+def test_re_anchoring_an_unmoved_document_is_still_a_no_op(store, doc, round_id, anchored_comment):
+    report = store.reanchor_document(doc, author="agent:reanchor")
+    assert report.unchanged == [anchored_comment]
+    assert store.ledger.count() == 2
+
+
+def test_the_cli_refusal_is_a_state_error(run, doc, doc_text, round_id, anchored_comment):
+    doc.write_text(DRAFT + doc_text, encoding="utf-8")
+    result = run("reanchor", doc, "--author", "agent:reanchor", "--json")
+    assert result.code == 3
+    assert "round open" in result.error["message"]

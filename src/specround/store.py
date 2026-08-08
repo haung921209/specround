@@ -52,7 +52,7 @@ from specround.locations import (
     write_origin,
 )
 from specround.reanchor import MIN_SIMILARITY, POSITION, Rebind, reanchor
-from specround.snapshots import SnapshotStore
+from specround.snapshots import SnapshotStore, digest_text
 
 LEDGER_FILENAME = "ledger.jsonl"
 
@@ -449,11 +449,28 @@ class ReviewStore:
         author: str,
         title: str | None = None,
         ext: Mapping[str, Any] | None = None,
+        min_similarity: float = MIN_SIMILARITY,
     ) -> str:
-        """Freeze ``doc`` as a new round's base and record the round.
+        """Freeze ``doc`` as a new round's base, record the round, and carry.
 
         The snapshot is the round's base, not a commit: nothing is staged and
         nothing is committed to open a review (G10).
+
+        **Opening a round is the only act that makes a new anchor space, so it
+        is also the act that carries the comments into it.** Every surface paints
+        ``current_anchor`` over the round's base (I7), so a comment left behind
+        in the previous round's space would be drawn at offsets belonging to a
+        text nobody is looking at. Carrying here rather than in a verb somebody
+        has to remember is what keeps that from being a step you can skip: the
+        space and its occupants change in one act, and I12 holds by construction
+        rather than by discipline.
+
+        The carry is the ordinary ladder, appending the ordinary events, so a
+        comment that moved and a comment the revision lost read exactly as they
+        do anywhere else (G3). An unchanged document is content-addressed to the
+        same base, so nothing is appended and nothing is claimed to have moved.
+        ``min_similarity`` is the ladder's floor and belongs to whoever runs it —
+        which, now that the carry happens here, is whoever opens the round.
         """
         path = canonical_path(doc)
         if not path.is_file():
@@ -473,7 +490,9 @@ class ReviewStore:
             record["title"] = title
         if ext:
             record["ext"] = dict(ext)
-        return self._append(record)
+        round_id = self._append(record)
+        self._carry_onto(self.fold(), key, base, author=author, min_similarity=min_similarity)
+        return round_id
 
     def _verify_anchor(self, round_id: str, anchor: Anchor | Mapping[str, Any] | None) -> dict[str, Any] | None:
         """Check an anchor against the round's base before it becomes history.
@@ -681,13 +700,23 @@ class ReviewStore:
         author: str,
         min_similarity: float = MIN_SIMILARITY,
     ) -> ReanchorReport:
-        """Carry every anchored comment on ``doc`` onto the document as it is now.
+        """Carry every anchored comment on ``doc`` onto the base it is painted on.
 
-        This is G1 doing its work: the document was revised, and each comment
-        either follows its text to the new place or is reported orphaned. The
-        original records are never touched — a move appends
-        ``anchor.reanchor``, a loss appends ``anchor.orphan``, and the history
-        of both stays readable in order (G3, append-only).
+        This is G1 doing its work: each comment either follows its text to where
+        it now sits in that base or is reported orphaned. The original records
+        are never touched — a move appends ``anchor.reanchor``, a loss appends
+        ``anchor.orphan``, and the history of both stays readable in order (G3,
+        append-only).
+
+        **The target is a round's base, never the live file.** It used to be the
+        file, and that is the hole this closes: nothing had frozen the revision,
+        so the anchors this appended named a snapshot no surface ever draws,
+        while every surface went on painting them over the round's base (I7).
+        Each event was self-consistent, so nothing complained — measured at 12 of
+        17 comments landing on sentences they were not about. So when the
+        document on disk has moved past that base, this **refuses**: the way to
+        carry comments onto a revision is to freeze it, which is what
+        :meth:`open_round` does.
 
         Running it twice in a row is a no-op. A comment that moved now verifies
         where it landed, and a comment already processed against this exact
@@ -697,10 +726,76 @@ class ReviewStore:
         if not path.is_file():
             raise SpecroundError(f"cannot re-anchor {path}: not a file")
         key = self.doc_key(path)
-        base = self.snapshots.put_file(path)
-        text = self._snapshot_text(base)
-
         state = self.fold()
+        base = self.painting_base(state, key)
+        if base is None:
+            # No round, so no space and nothing anchored to move into one.
+            return ReanchorReport(base="")
+        live = digest_text(_document_text(path))
+        if live != base:
+            raise InvariantError(
+                f"{key} on disk is not the base round {self._round_at(state, base)} froze "
+                f"({_short(live)} vs {_short(base)}) — nothing has frozen the revision, so "
+                "an anchor cut from it would name a snapshot no view shows. Either open a "
+                "round on the revision ('specround round open') and the comments carry onto "
+                "it, or leave it: against this round's base there is nothing to move."
+            )
+        return self._carry_onto(state, key, base, author=author, min_similarity=min_similarity)
+
+    def carry_of(self, round_id: str) -> ReanchorReport:
+        """What opening ``round_id`` did to the comments already on its document.
+
+        Read back from the ledger rather than remembered. The anchorings naming
+        this round's base *are* the record of the carry, so this is the same
+        answer a return value would have carried — and unlike a return value it
+        is still the same answer a week later, to whoever asks.
+
+        ``unchanged`` is the quiet majority: anchored comments on the document
+        that needed no event because their offsets already held in this base.
+        """
+        state = self.fold()
+        round_ = state.rounds.get(round_id)
+        if round_ is None:
+            raise InvariantError(f"unknown round {round_id!r}")
+        report = ReanchorReport(base=round_.base)
+        for comment in self._anchored_comments(state, round_.doc):
+            landed = [a for a in comment.anchorings if a.base == round_.base]
+            if not landed:
+                report.unchanged.append(comment.id)
+                continue
+            attempt = landed[-1]
+            if attempt.orphaned:
+                report.orphaned.append(comment.id)
+                continue
+            report.rebound.append(comment.id)
+            if attempt.ambiguous:
+                report.ambiguous.append(comment.id)
+        return report
+
+    def _round_at(self, state: State, base: str) -> str:
+        for round_ in reversed(list(state.rounds.values())):
+            if round_.base == base:
+                return round_.id
+        return "?"  # pragma: no cover - the base came from a round
+
+    def _carry_onto(
+        self,
+        state: State,
+        key: str,
+        base: str,
+        *,
+        author: str,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> ReanchorReport:
+        """Move every anchored comment on ``key`` into ``base``'s space.
+
+        The one implementation of the carry. :meth:`open_round` runs it because
+        opening a round is the only act that makes a new anchor space, and
+        :meth:`reanchor_document` runs it to re-drive the same thing — two
+        callers, one ladder, so a comment cannot be carried two different ways
+        depending on which verb the caller reached for.
+        """
+        text = self._snapshot_text(base)
         report = ReanchorReport(base=base)
         for comment in self._anchored_comments(state, key):
             if comment.bound_to == base:
@@ -949,6 +1044,12 @@ class ReviewStore:
 # Either translation makes the clean text a different string from the base for a
 # CRLF document, which is the quiet kind of wrong: the anchors would be off by
 # one character per line and nothing would fail.
+
+
+def _short(ref: str) -> str:
+    """A snapshot reference, shortened — a refusal names both sides, readably."""
+    _, _, digest = ref.partition(":")
+    return (digest or ref)[:12]
 
 
 def _document_text(path: Path) -> str:

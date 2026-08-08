@@ -55,7 +55,7 @@ from specround.fold import Comment, Round, State
 from specround.imports import BatchError, apply_plan, load_batch, parse_text, plan_import
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
-from specround.store import HarvestReport, Placement, ReviewStore
+from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
 from specround.webview import DEFAULT_HOST, DERIVED, FALLBACK, PINNED, PortTaken, WebView
 from specround.wire import (
     anchor_json,
@@ -527,11 +527,22 @@ def _round_open(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     )
     state = target.store.fold()
     round_ = state.rounds[round_id]
-    payload = {**target.envelope(), "round": round_json(state, round_)}
+    # Opening a round is what carries the comments already on the document into
+    # its base, so it is also what has to report the carry. Silence here would
+    # make the one act that moves anchors the only one nobody sees.
+    carried = _carry_json(state, target.store.carry_of(round_id))
+    payload = {
+        **target.envelope(),
+        "round": round_json(state, round_),
+        "carried": carried,
+    }
     lines = [f"opened {round_id} on {target.key} (base {_short(round_.base)})"]
     if round_.title:
         lines.append(f"title  {round_.title}")
     lines.append(f"store  {target.store.root}")
+    if carried["changed"] or carried["unchanged"]:
+        lines.append("")
+        lines.extend(_carry_lines(carried, "carried onto this base"))
     return payload, lines
 
 
@@ -783,22 +794,15 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, _comment_rows(items, hidden=hidden)
 
 
-def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    target = _target(args)
-    report = target.store.reanchor_document(target.path, author=_author(args))
-    state = target.store.fold()
-    strategies = {
-        cid: state.comments[cid].anchoring.strategy
-        for cid in report.rebound
-        if state.comments[cid].anchoring is not None
-    }
-    reasons = {
-        cid: state.comments[cid].anchoring.reason
-        for cid in report.orphaned
-        if state.comments[cid].anchoring is not None
-    }
-    payload = {
-        **target.envelope(),
+def _carry_json(state: State, report: ReanchorReport) -> dict[str, Any]:
+    """One shape for a carry, whichever verb ran it.
+
+    ``round open`` and ``reanchor`` are the same movement seen from two sides —
+    the first makes the space and fills it, the second re-drives that fill. A
+    consumer that had to parse two shapes for one event would be parsing the
+    verb, not the outcome.
+    """
+    return {
         "base": report.base,
         "changed": report.changed,
         "rebound": list(report.rebound),
@@ -806,30 +810,49 @@ def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "unchanged": list(report.unchanged),
         "skipped": list(report.skipped),
         "ambiguous": list(report.ambiguous),
-        "strategies": strategies,
-        "reasons": reasons,
+        "strategies": {
+            cid: state.comments[cid].anchoring.strategy
+            for cid in report.rebound
+            if state.comments[cid].anchoring is not None
+        },
+        "reasons": {
+            cid: state.comments[cid].anchoring.reason
+            for cid in report.orphaned
+            if state.comments[cid].anchoring is not None
+        },
     }
 
+
+def _carry_lines(carried: Mapping[str, Any], headline: str) -> list[str]:
+    strategies = carried["strategies"]
+    ambiguous = carried["ambiguous"]
+
     def described(cid: str) -> str:
-        marks = [m for m in (strategies.get(cid), "ambiguous" if cid in report.ambiguous else "") if m]
+        marks = [m for m in (strategies.get(cid), "ambiguous" if cid in ambiguous else "") if m]
         return f"{cid} ({', '.join(marks)})" if marks else cid
 
-    lines = [f"re-anchored {target.key} against {_short(report.base)}"]
-    for label, ids, describe in (
-        ("rebound", report.rebound, True),
-        ("orphaned", report.orphaned, False),
-        ("unchanged", report.unchanged, False),
-        ("skipped", report.skipped, False),
+    lines = [headline]
+    for label, describe in (
+        ("rebound", True),
+        ("orphaned", False),
+        ("unchanged", False),
+        ("skipped", False),
     ):
+        ids = carried[label]
         shown = ", ".join(described(c) if describe else c for c in ids)
         lines.append(f"  {label:<10}{len(ids):>3}  {shown}".rstrip())
-    if report.ambiguous:
+    if ambiguous:
         lines.append("")
-        lines.append(
-            f"{len(report.ambiguous)} moved on a tie — worth a look: "
-            + ", ".join(report.ambiguous)
-        )
-    return payload, lines
+        lines.append(f"{len(ambiguous)} moved on a tie — worth a look: " + ", ".join(ambiguous))
+    return lines
+
+
+def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    target = _target(args)
+    report = target.store.reanchor_document(target.path, author=_author(args))
+    carried = _carry_json(target.store.fold(), report)
+    payload = {**target.envelope(), **carried}
+    return payload, _carry_lines(carried, f"re-anchored {target.key} against {_short(report.base)}")
 
 
 def _harvest(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
