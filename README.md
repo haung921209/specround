@@ -65,8 +65,11 @@ specround comments SPEC.md --all
 specround reopen SPEC.md --comment c-d35c --why "it came back in revision 3"
 
 # Every comment gets a verdict and a reason: applied · rejected · answered · deferred.
+# Deciding and ending the conversation are different things, so they are counted
+# apart: `undisposed` is comments with no verdict, `unresolved` is threads still
+# going. Closing a round accounts for the first, and resolving does not touch it.
 specround dispose SPEC.md --comment c-d35c --as applied --why "raised to 60"
-specround round close SPEC.md --allow-unresolved --note "retries move to round 2"
+specround round close SPEC.md --allow-undisposed --note "retries move to round 2"
 
 # After a revision: carry the comments over, and say which ones lost their text.
 specround reanchor SPEC.md
@@ -147,7 +150,7 @@ the one at the shell.
 
 A spec is never one file, so `view` also takes a **directory**: one server for
 the tree, and a bar down the left listing the markdown under it. Each file
-carries what its own review looks like — open rounds, unresolved comments,
+carries what its own review looks like — open rounds, undisposed comments,
 orphans — with a toggle for "only the ones with review activity on them". Dotted
 names are skipped whole (`.git`, `.specround`), a directory link is followed once
 and never twice, and anything the listing holds back is counted and said rather

@@ -300,6 +300,13 @@ The vocabulary is **closed**. An arbitrary value such as `wontfix` is refused.
 | `unresolved` | conditional | the list of comment ids left undisposed (sorted). **Required** when any are undisposed |
 | `note` | | a closing note |
 
+**The field is spelled `unresolved` and means undisposed.** That is the one
+place the two axes still share a word, and it stays because the field set is
+closed within a major (§2): renaming it would make every ledger that used it
+unreadable rather than just differently spelled. Everywhere above the ledger —
+the fold, `--json`, the page — the disposition axis is `undisposed` and
+"unresolved" is the thread axis (§7.2).
+
 Closing with things left undisposed is not blocked. What is blocked is
 **closing while hiding them** — when the list left behind is not exactly the
 real undisposed set, the reader refuses (I6). So even a hand-written
@@ -480,7 +487,7 @@ such as "skip just that line".
 | I3 | `id` is unique across the whole ledger | refused |
 | I4 | a comment or suggestion names an **open** round | refused (open a new round) |
 | I5 | a settled comment cannot be re-disposed | refused |
-| I6 | `round.close`'s `unresolved` == the real undisposed set | refused |
+| I6 | `round.close`'s `unresolved` field == the real undisposed set (the disposition axis — resolving a thread does not take a comment out of it) | refused |
 | I7 | an anchor is consistent with the snapshot it names (comment = the round's base · re-anchor = that event's `base`) | refused |
 | I8 | the `target` of a reply, disposition, resolve, or reopen is an existing comment or suggestion | refused |
 | I9 | the `target` of a re-anchor or an orphan is a comment or suggestion **that has an anchor** | refused (a whole-document comment has nowhere to move) |
@@ -567,22 +574,41 @@ written" — the two do not disagree.
 **What resolved actually blocks is one thing, the reply** (I11). A disposition, a
 re-anchor, and one more resolve all attach to a closed thread as before — those
 are records about a comment, so even hidden from the view they still count in
-the totals (`unresolved`, `orphans`). Only a reply is different: a reply is
+the totals (`undisposed`, `orphans`). Only a reply is different: a reply is
 written **to be read**, and under a hidden thread it loses that purpose. So
 carrying the conversation on means opening it first with `thread.reopen` —
 resolve is a conversation's ending, not a substitute for answering.
 
-### 7.2 The three axes are independent
+### 7.2 The three axes are independent, and so is their vocabulary
 
-| axis | what it asks | fold |
-|---|---|---|
-| disposition | what was done about this point | `unresolved` |
-| anchor | can it still be placed on the document | `orphans` |
-| thread | is this conversation over | `resolved_threads` / `active_threads` |
+One comment can be in any combination of the three. **This table is the only
+place the words are defined; everything that shows a number takes its wording
+from here.**
 
-This is where the names mislead: **`unresolved` (disposition) and `resolved`
-(thread) are not opposites.** One comment can be in any combination of the three
-axes.
+| axis | what it asks | the word | fold | on the wire |
+|---|---|---|---|---|
+| disposition | has anyone decided this | **undisposed** | `State.undisposed`, `Comment.undisposed`, `State.undisposed_in()` | `undisposed`, `undisposed_count`, `undisposed_at_close` |
+| anchor | can it still be placed on the document | **orphaned** | `State.orphans`, `Comment.orphaned` | `orphaned`, `orphans` |
+| thread | is this conversation over | **resolved** / **unresolved** | `State.resolved_threads`, `State.active_threads`, `Comment.resolved` | `resolved`, `unresolved_threads`, `unresolved_thread_count` |
+
+**"Unresolved" belongs to the thread axis and to nothing else.** It named the
+disposition axis until 2026-08-08, one word away from the `resolve` verb, and
+the collision cost exactly what a shared word costs: resolve a thread, watch
+`round status` still say `1 unresolved`, and the tool reads as having ignored
+the command when it was answering a different question. The count was right. The
+word was borrowed.
+
+Nothing kept the old spelling as an alias. `Comment.unresolved` and the wire's
+`unresolved` key were removed rather than redefined, and `--allow-unresolved`
+and `comments --unresolved` are refused rather than accepted — a reader still
+using them gets an error it can see, instead of a number that quietly changed
+which question it answers. There is **one exception, and it is on disk**: the
+`round.close` record's own `unresolved` field (§4). Within a major the field set
+is closed and an unknown key is refused whole (§2), so renaming it would not be
+a rename — every ledger that used it would stop being readable. It keeps its v0
+spelling and holds the undisposed set; the fold reads it into
+`Round.undisposed_at_close`, which is what every reader above the ledger sees.
+A v1 that bumps major is where the two agree again (§10).
 
 **The default view hides resolved** (G11). Hiding is the view's job and not a
 deletion — the ledger keeps everything, and so does the fold's `comments`. It
@@ -686,6 +712,13 @@ they get filled when a decision is blocked.
   is the second place to use the `ext` §2 reserved, and a promotion candidate —
   promotion bumps major. Neither a kind nor a field was added (an outside
   comment is just a `comment.add`).
+- **Renaming `round.close`'s `unresolved` field to `undisposed`** — the word
+  moved axes everywhere else on 2026-08-08 (§7.2), and this field is the last
+  place where the spelling and the meaning disagree. It is deliberately left
+  alone at v0: the field set is closed within a major (§2), so a rename here is
+  not a rename but a break of every ledger that used it. It is a **v1
+  candidate**, and a cheap one — a major bump already invalidates existing
+  lines, so this costs nothing on top of whatever else bumps it.
 - **Merging ledgers** — the rule for combining ledgers two people appended to
   separately (today it is one file · one directory · a lock). Sharing over git
   makes a sort-and-dedupe merge necessary.
