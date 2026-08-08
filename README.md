@@ -148,6 +148,32 @@ first-class consumer is an embedder — a terminal multiplexer's browser pane ta
 that line and places the view where you already are. `--open` is for when you are
 the one at the shell.
 
+**A document keeps its port.** That embedded pane is why: a port drawn fresh each
+start means every restart — a code change, a view stopped and started again —
+kills the tab that was holding the review, and a loop that lives in the ledger
+starts looking like it lives in the server process. So the default port is
+derived from the document's path, on the same normalization the store keys by
+([`ledger-format.md` §1](docs/ledger-format.md)), folded into the dynamic range
+(49152–65535). A directory view derives from the directory, not the file it opens
+on — otherwise adding a document that sorts first would move the whole tree.
+
+| `--port` | what you get |
+|---|---|
+| *(omitted)* | the port derived from the document's (or directory's) path — the same one next time |
+| `N` | that port. If something already holds it you get a `2`, not a different port: you named it |
+| `0` | any free port, and a different one next restart |
+
+When the derived port is already taken — the dynamic range is also where the
+system draws outbound ports from, so this happens — the view takes a free one and
+**says so**, naming the port it wanted and what the system said, on stdout and in
+`port_note`. A URL that moved without a reason is a URL you cannot trust; a URL
+that moved and told you why is a fact.
+
+A stable port is not a frozen URL. The token is minted every start, because a
+restart is a new grant and not a resumed session — so an embedder re-reads the
+printed line either way, and a token that outlived its process would be one a
+stale tab could still post through.
+
 A spec is never one file, so `view` also takes a **directory**: one server for
 the tree, and a bar down the left listing the markdown under it. Each file
 carries what its own review looks like — open rounds, undisposed comments,
