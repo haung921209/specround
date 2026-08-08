@@ -133,6 +133,7 @@ def test_round_status_counts_what_is_outstanding(run, doc, opened):
         "undisposed": 2,
         "unresolved_threads": 2,
         "orphans": 0,
+        "misplaced": 0,
         "events": 3,
     }
     assert result.json["open"] == [opened]
@@ -774,6 +775,7 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
         "ext",
         "id",
         "kind",
+        "misplaced",
         "orphaned",
         "patch",
         "replies",
@@ -955,11 +957,12 @@ def test_the_round_object_field_set_is_closed(run, doc, opened):
 def test_the_status_payload_field_set_is_closed(run, doc, opened):
     payload = run("round", "status", doc, "--json").json
     assert set(payload) == {
-        "counts", "doc", "open", "orphans", "path", "rounds", "schema", "store",
-        "undisposed", "unresolved_threads", "verb",
+        "counts", "doc", "misplaced", "open", "orphans", "path", "rounds", "schema",
+        "store", "undisposed", "unresolved_threads", "verb",
     }
     assert set(payload["counts"]) == {
-        "comments", "events", "orphans", "rounds", "undisposed", "unresolved_threads",
+        "comments", "events", "misplaced", "orphans", "rounds", "undisposed",
+        "unresolved_threads",
     }
     # Never the bare word on its own: `unresolved` alone was the disposition
     # axis, and a key that kept the spelling while changing the question is the

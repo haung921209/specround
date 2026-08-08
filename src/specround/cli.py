@@ -471,6 +471,16 @@ def _comment_rows(comments: Sequence[Comment], *, hidden: Sequence[str] = ()) ->
     orphans = [c.id for c in comments if c.orphaned]
     if orphans:
         footers.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
+    misplaced = [c.id for c in comments if c.misplaced]
+    if misplaced:
+        # The ANCHOR column above still shows the quote, because the quote is
+        # real — it is the *place* that belongs to another text (I12). Saying so
+        # here is what stops the column from reading as a placement anyone can
+        # act on.
+        footers.append(
+            f"{len(misplaced)} misplaced — quoted from another text than this round's base, "
+            f"not drawn: {', '.join(misplaced)}"
+        )
     moved = [(c.id, _moved_marks(c)) for c in comments if not c.orphaned]
     flagged = [f"{cid} ({', '.join(marks)})" for cid, marks in moved if marks]
     if flagged:
@@ -586,6 +596,12 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     undisposed = [c.id for c in comments if c.undisposed]
     unresolved_threads = [c.id for c in comments if not c.resolved]
     orphans = [c.id for c in comments if c.orphaned]
+    # I12, and a different question from the three above it: not "was it
+    # answered", "can it be placed", or "is the talk over", but "do the offsets
+    # we would draw belong to the text we would draw them on". It is a repair
+    # backlog rather than review work, which is why it gets a number a person
+    # can watch go to zero (``specround doctor``) instead of a listing.
+    misplaced = [c.id for c in comments if c.misplaced]
     open_ids = [r.id for r in rounds if r.open]
     payload = {
         **target.envelope(),
@@ -594,12 +610,14 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "undisposed": undisposed,
         "unresolved_threads": unresolved_threads,
         "orphans": orphans,
+        "misplaced": misplaced,
         "counts": {
             "rounds": len(rounds),
             "comments": len(comments),
             "undisposed": len(undisposed),
             "unresolved_threads": len(unresolved_threads),
             "orphans": len(orphans),
+            "misplaced": len(misplaced),
             "events": state.count,
         },
     }
@@ -610,6 +628,11 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         f"{len(orphans)} orphaned",
         f"store  {target.store.root}",
     ]
+    if misplaced:
+        lines.append(
+            f"{len(misplaced)} anchor(s) cut from another text than this round's base — "
+            f"not drawn. Repair with 'specround doctor {target.key}'"
+        )
     if rounds:
         lines.append("")
         lines.extend(
