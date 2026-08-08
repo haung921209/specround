@@ -233,6 +233,34 @@ target is spec and prose documents — PR tools already do code well).
   the words still disagree is the `round.close` record's own `unresolved` field,
   which is frozen bytes at ledger/v0 and a v1 rename candidate.
   Vocabulary table in `docs/ledger-format.md` §7.2.
+- **Overturning a settled verdict = `supersede`, and deferring never needed it**
+  (settled by the implementation 2026-08-08, from a user report). The report was
+  that parking a point as `deferred` and completing it later got refused as a
+  re-disposition. It does not: `deferred` is the one non-terminal verdict, so
+  that path always worked and still takes no flag — the queue workflow was
+  running against a rule that was never in its way. What *was* refused with no
+  way through is overturning a terminal verdict, where the format's only answer
+  had been "raise it again in a new round". A disposition may now carry
+  `supersede: true`, and I5 becomes: a settled comment takes a second verdict
+  **only** from a record that declares it, and a record declaring it when
+  nothing is settled is refused just as hard — a flag that passes while
+  describing nothing is a flag the caller goes on believing is in effect. It is
+  a field rather than an `ext` key because the fold has to read it: a permission
+  the reader ignores would pass its own write gate and then fail the next read.
+  Append-only is untouched — the overturned verdict stays where it was written
+  and only which one is in force moves.
+- **A comment's disposition on the wire is `verdict` + `settled`** (settled by
+  the implementation 2026-08-08). `state` was one string carrying the verdict
+  with `"open"` for "nobody has decided", which answered two questions at once
+  and made `"open"` the fourth thing here wearing that name. `undisposed` left
+  the comment payload with it, because `settled` is its exact negation and one
+  bit gets one key. The counts keep the negative spelling — `undisposed_count`
+  and `undisposed_at_close` answer I6's "how many are still owed" — so §7.2's
+  word for the axis is unchanged; what moved is that a single comment states its
+  disposition positively now, like `orphaned` and `resolved` beside it. Both
+  keys were removed rather than aliased, and a page reading a key the wire no
+  longer sends is a failing test rather than an `undefined` that renders as
+  nothing.
 - **suggestion** = a comment whose body is a patch (`kind: comment |
   suggestion`). When an agent harvests, a comment gets answered or applied and a
   suggestion gets applied or rejected — either way the disposition and its
