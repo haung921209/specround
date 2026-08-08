@@ -134,6 +134,13 @@
     border-radius: 6px; padding: 6px 8px; overflow-x: auto; margin: 6px 0;
   }
   .card .reply { border-left: 2px solid var(--line); margin: 6px 0 0 8px; padding-left: 7px; font-size: 14px; }
+  /* Written where it will be read: the box takes the indent of the chain it is
+     adding to, so a reviewer sees the shape of the reply before sending it. The
+     accent edge is the one difference, and it says which of them is not sent. */
+  .card .replybox {
+    border-left: 2px solid var(--accent); margin: 6px 0 0 8px; padding-left: 7px;
+  }
+  .card .replybox textarea { min-height: 52px; }
   .tag {
     display: inline-block; font-size: 11px; font-family: var(--mono); border: 1px solid var(--line);
     border-radius: 10px; padding: 0 7px; margin-right: 4px; color: var(--dim);
@@ -687,10 +694,14 @@ function fileRow(entry, selected) {
 function openDocument(key) {
   // Everything the old document put on screen goes with it. A composer left
   // open would post its comment against whichever document answered next, and
-  // a focused thread id means nothing on a ledger that never saw it.
+  // a focused thread id means nothing on a ledger that never saw it. Drafts go
+  // too, for the same reason and not as a tidy-up: they are addressed to
+  // comment ids this document does not have, so keeping them would only mean
+  // offering them back on whatever card happened to share an id.
   if (key === state.doc) return;
   state.doc = key;
   state.focused = null;
+  state.reply = replyAfter(state.reply, { kind: "reset" });
   clearComposer();
   if (state.editing) stopEditing();
   notice("");
@@ -755,17 +766,26 @@ function card(comment) {
     + '<div class="quote">' + escapeHtml(anchorLabel(comment)) + "</div>"
     + (comment.body ? '<div class="body">' + escapeHtml(comment.body) + "</div>" : "")
     + (comment.patch ? '<pre class="patch">' + escapeHtml(comment.patch) + "</pre>" : "")
+    + '<div class="replies">'
     + comment.replies.map((reply) =>
         '<div class="reply"><span class="who">' + escapeHtml(reply.author) + "</span> "
         + escapeHtml(reply.body) + "</div>").join("")
+    + "</div>"
     + (comment.dispositions.length
         ? '<div class="who">' + comment.dispositions.map((d) =>
             escapeHtml(d.verdict + " — " + d.reason)).join("<br>") + "</div>"
         : "");
 
+  // The editor goes at the end of the chain it is adding to, which is where the
+  // reply it produces will appear once the ledger has it. Answering a thread and
+  // reading the answer back are then the same place on the screen.
+  if (state.reply.open === comment.id) {
+    element.querySelector(".replies").appendChild(replyEditor(comment));
+  }
+
   const actions = document.createElement("div");
   actions.className = "acts";
-  actions.appendChild(button("reply", () => replyBox(comment)));
+  actions.appendChild(button(replyLabel(state.reply, comment.id), () => openReply(comment.id)));
   if (comment.undisposed) actions.appendChild(button("dispose", () => disposeBox(comment)));
   actions.appendChild(button(comment.resolved ? "reopen" : "resolve", () => threadBox(comment)));
   element.appendChild(actions);
@@ -788,6 +808,13 @@ function clearComposer() {
 }
 
 function panel(title) {
+  // The page has one cursor, and this is the other half of the rule `openReply`
+  // keeps: a composer opening at the top stows whichever card was holding it.
+  // The draft stays on its card — nothing here was a decision about that reply.
+  if (state.reply.open) {
+    state.reply = replyAfter(state.reply, { kind: "close" });
+    drawThreads();
+  }
   const host = $("composer");
   host.textContent = "";
   const box = document.createElement("div");
@@ -829,19 +856,73 @@ function commentBox(span) {
   area.focus();
 }
 
-function replyBox(comment) {
-  const box = panel("reply to " + comment.id);
+// -- replying, in the card ------------------------------------------------
+
+function openReply(id) {
+  // Already open is a click on the button that is already showing what it asks
+  // for, so it puts the cursor back rather than rebuilding the box — redrawing
+  // would restore the text but not where the reviewer was in it.
+  if (state.reply.open === id) return focusReply();
+  // The page has one cursor. A top composer standing open while a card takes it
+  // is the same two-boxes confusion as two open cards.
+  clearComposer();
+  state.reply = replyAfter(state.reply, { kind: "open", id });
+  drawThreads();
+  focusReply();
+}
+
+function focusReply() {
+  const area = document.querySelector(".card .replybox textarea");
+  if (!area) return;
+  // Focus without the scroll it would otherwise do, then ask for the smallest
+  // move that puts the box on screen — the same `nearest` the thread column
+  // uses, and for the same reason: a box already in view must not jump, and the
+  // reviewer's place in whatever they were reading is not this click's to take.
+  area.focus({ preventScroll: true });
+  area.scrollIntoView({ block: "nearest" });
+}
+
+function replyEditor(comment) {
+  const box = document.createElement("div");
+  box.className = "replybox";
   const area = document.createElement("textarea");
+  area.placeholder = "reply to " + comment.id;
+  area.value = state.reply.drafts[comment.id] || "";
+  // Every keystroke goes to the state as well as the box, because the box does
+  // not survive a redraw and the words in it have to.
+  area.addEventListener("input", () => {
+    state.reply = replyAfter(state.reply, { kind: "type", id: comment.id, text: area.value });
+  });
   box.appendChild(area);
   const actions = document.createElement("div");
   actions.className = "acts";
-  actions.appendChild(button("reply", async () => {
-    if (await act({ target: comment.id, body: area.value, author: $("author").value }, "/api/reply"))
-      clearComposer();
-  }, true));
-  actions.appendChild(button("cancel", clearComposer));
+  actions.appendChild(button("reply", () => sendReply(comment, area.value), true));
+  actions.appendChild(button("cancel", () => {
+    state.reply = replyAfter(state.reply, { kind: "discard", id: comment.id });
+    drawThreads();
+  }));
   box.appendChild(actions);
-  area.focus();
+  // The card is a click target for focusing the thread; typing in it is not
+  // that click, and a caret placed with the mouse must not be dragged elsewhere.
+  box.addEventListener("click", (event) => event.stopPropagation());
+  return box;
+}
+
+async function sendReply(comment, body) {
+  // Closed before the request, not after: a reply that lands makes `act` redraw
+  // the threads, and a redraw that still saw this card as open would rebuild the
+  // editor around the words it had just sent. Only the refusal path puts it back
+  // — and there the screen was never redrawn, so what goes back is the state
+  // agreeing with a box that is still open with its text in it.
+  //
+  // The refusal that matters is a resolved thread's (I11): the server names the
+  // fix, `act` shows it, and the draft is still there to send once the thread is
+  // reopened.
+  state.reply = replyAfter(state.reply, { kind: "discard", id: comment.id });
+  const sent = await act({ target: comment.id, body, author: $("author").value }, "/api/reply");
+  if (sent) return;
+  state.reply = replyAfter(state.reply, { kind: "open", id: comment.id });
+  state.reply = replyAfter(state.reply, { kind: "type", id: comment.id, text: body });
 }
 
 function disposeBox(comment) {

@@ -749,6 +749,36 @@ def test_an_action_the_reducer_does_not_know_is_a_typo_and_says_so(tmp_path):
     assert caught == "unknown reply action: stow"
 
 
+def test_the_reply_box_is_written_into_the_chain_it_joins():
+    """Where the box is, and that nothing reopened the old door beside it.
+
+    Three names have to agree for the box to land in the card: the container the
+    replies are drawn into, the selector that finds it, and the rule that indents
+    it. The last assertion is the regression itself — a reply going back through
+    `panel` would put the cursor at the top of the column again, which is what
+    took the reviewer's eye off the thread they were answering.
+    """
+    html = page().decode("utf-8")
+    assert '<div class="replies">' in html
+    assert 'querySelector(".replies").appendChild(replyEditor(comment))' in html
+    assert ".card .replybox {" in html
+    assert 'box.className = "replybox";' in html
+    assert 'panel("reply' not in html
+
+
+def test_opening_a_reply_box_does_not_take_the_page_where_it_was_reading():
+    """The same restraint the focus round trip is built on, one click earlier.
+
+    `preventScroll` keeps the focus itself from moving anything, and `nearest`
+    then asks for the least that puts the box on screen — nothing at all when it
+    already is. A box that scrolled its column on open would fight the document
+    pane for the viewport, which is the ping-pong `focusScroll` exists to stop.
+    """
+    html = page().decode("utf-8")
+    assert "area.focus({ preventScroll: true })" in html
+    assert 'area.scrollIntoView({ block: "nearest" })' in html
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 
