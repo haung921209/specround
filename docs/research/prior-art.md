@@ -453,3 +453,32 @@ LetitiaChan/md-review-tool / Seiraiyu/md-review-plus / tkjaer/graft / Semiont
 W3C-SELECTORS / Fevol/obsidian-criticmarkup / philphilphil/obsidian-track-changes
 / github/spec-kit / Fission-AI/OpenSpec / steveyegge beads. Activity figures are
 as queried from the GitHub API on 2026-08-06.
+
+## 6. Where file-keyed state has lived before (the storage-scope axis)
+
+Added 2026-08-08, from a design conversation about the consumer-mapping adapter
+(H17): "who else has had to decide where per-file history lives, and what did
+the choice cost them?" This axis is orthogonal to §1's review-loop matrix — it
+is about the store, not the loop — and every position we adopted turns out to
+have a named predecessor and a named bill.
+
+| question | predecessor | their answer | the bill they paid | where we stand |
+|---|---|---|---|---|
+| store beside the file or central? | CVS/RCS | `,v` sidecars | directory pollution | rejected the sidecar default for the same reason |
+| | SVN ≤1.6 → 1.7 | `.svn/` in *every* directory, then centralized | the industry's clearest sidecar→central migration | central by default, opt-in beside (`.specround.json`) |
+| | Vim `undodir` | central dir, absolute path encoded in the filename | moves orphan history; stale files accumulate forever | same key model; H10 (re-bind) and H13 (archive) are the two bills Vim never paid |
+| | Lightroom | central catalog + opt-in XMP sidecars, with a sync setting | catalog↔sidecar drift | same default+opt-in split; its "missing photo → relink by content match" flow is `doctor`/H10's ancestor |
+| file identity across moves | git | none stored — tree snapshots, renames inferred at diff time | `log --follow` is a heuristic and misses | H10 makes content-hash the oracle and git-rename only a hint — the inverse allocation, bought with the store we keep and git does not |
+| | Fossil | repo anywhere, a `_FOSSIL_` pointer file in the checkout | a marker file in the tree | the mirror image of our binding (we key centrally, it points locally) |
+| comments across revisions | W3C annotation / Hypothesis | TextQuoteSelector (exact/prefix/suffix) + position, in a fallback chain | "same document, different URL" never solved | our anchor shape and ladder are this lineage; H10 is their URL problem in path form |
+| | Gerrit / Critique | a comment belongs to a frozen patchset, ported forward on the next one | porting heuristics | rounds + I7 + round-open carry; the mid-round reanchor bug (fixed 2026-08-08, I12) was rediscovering *why* they scope comments to a frozen revision |
+| who defines the directory root | editorconfig | up-walk with an explicit `root = true` stopper | none to speak of | `.specround.json` nearest-wins matches; a root marker is the proven escape if nesting ever confuses |
+| file vs workspace as the unit | LSP | the document is the primitive, workspaceFolders aggregate | — | dir-view is navigation-only over per-document stores; the consumer mapping starts per-document for the same reason |
+| directory-keyed state (cautionary) | agent-CLI session stores keyed by cwd slug | per-directory memory | sessions in a worktree cannot see the root's memory (measured in this workspace) | the store key is the *document's* absolute path; directories are views, never keys |
+
+The pattern the table keeps repeating: **central-by-default with an opt-in
+sidecar is where mature systems converged; path keys are cheap and honest but
+their two bills (re-binding after a move, lifetime of the pile) always come
+due; and identity-by-heuristic is the one position nobody was happy with.**
+H10 and H13 are not our surprises — they are the standing invoices of the
+model we chose, with forty years of prior tenants.
