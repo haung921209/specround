@@ -139,6 +139,26 @@ target is spec and prose documents — PR tools already do code well).
   opposite — thirteen documents nobody had opened a round on came up **blank**,
   the two modes having no text to reach for. Blocking a comment was never a
   reason to withhold the text; "read only" and "unreadable" are not one answer.
+  **⑥ How the page is arranged is the reader's, and it is not review state
+  (landed 2026-08-08)**. The columns are resizable at both seams, either side
+  column folds away (the coarsest control, and the one that matters in a narrow
+  pane), and the document and the threads are read at a size the toolbar
+  changes. All of it is kept in the browser under **one `localStorage` key
+  holding one JSON object** — which survives a restart because the origin does:
+  the port is derived from the document's path (§3 above). **It is deliberately
+  not in the ledger.** G5's "the state is in the ledger" is about *review* state
+  — rounds, comments, dispositions, resolutions: the things another reviewer,
+  another machine, or a later reader has to agree with. How wide a column is on
+  this screen is none of those. Recording it would put an entry in a history
+  whose whole value is that everything in it is a claim about the document, and
+  it would travel to a teammate whose screen is a different size. The narrow
+  default is a **default and never a clamp**: under about 1100px the two side
+  columns start folded, because 260 and 380 of chrome leave a document no wider
+  than the bar beside it (measured in a terminal multiplexer's browser pane,
+  which is the first-class consumer) — and a reviewer who opens a column at that
+  width has said what they want, so the stored answer outranks the guess from
+  then on. That is the whole of the small-screen share here; the rest of mobile
+  is H16's.
 - **vim and other editors are first-class without a plugin** — fix the raw text
   in an editor and the working-tree diff is taken in as a suggestion (G8, "fix
   it and it is submitted"), and type inline annotations (the CriticMarkup
