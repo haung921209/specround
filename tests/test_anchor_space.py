@@ -205,3 +205,107 @@ def test_the_cli_refusal_is_a_state_error(run, doc, doc_text, round_id, anchored
     result = run("reanchor", doc, "--author", "agent:reanchor", "--json")
     assert result.code == 3
     assert "round open" in result.error["message"]
+
+
+# -- repairing a ledger that already holds them ---------------------------
+
+
+def test_a_repair_is_a_dry_run_until_it_is_asked_for(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    count = store.ledger.count()
+
+    report = store.repair_document(doc, author="agent:doctor")
+    assert report.applied is False
+    assert report.repaired == [anchored_comment]
+    assert store.ledger.count() == count  # said what it would do, did nothing
+
+
+def test_a_repair_re_interprets_the_quote_in_the_base_it_is_painted_on(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    """The exact text was right all along — only the offsets came from elsewhere."""
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    store.repair_document(doc, author="agent:doctor", apply=True)
+
+    comment = store.fold().comments[anchored_comment]
+    assert comment.misplaced is False
+    assert comment.current_anchor.exact == QUOTE_TEXT
+    assert comment.current_anchor.matches(store.base_text(round_id))
+
+
+def test_a_repair_appends_and_never_edits(store, doc, doc_text, round_id, anchored_comment):
+    """Append-only holds through the repair: the bad record stays, corrected after it."""
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    before = store.ledger.read()
+    store.repair_document(doc, author="agent:doctor", apply=True)
+
+    after = store.ledger.read()
+    assert after[: len(before)] == before
+    assert after[-1]["type"] == ANCHOR_REANCHOR
+    assert len(after) == len(before) + 1
+
+
+def test_a_repair_that_cannot_find_the_text_records_an_orphan(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    """Nothing is guessed into place here either — that rule does not bend for a repair.
+
+    The fuzzy rung re-cut the quote from the revision, so what the ledger now
+    holds is the *revised* sentence: text the base does not contain at all.
+    """
+    pollute(store, doc, anchored_comment, doc_text.replace("30 seconds", "45 seconds"))
+    report = store.repair_document(doc, author="agent:doctor", apply=True, min_similarity=0.99)
+
+    assert report.orphaned == [anchored_comment]
+    assert store.fold().comments[anchored_comment].orphaned is True
+
+
+def test_a_second_repair_has_nothing_left_to_do(store, doc, doc_text, round_id, anchored_comment):
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    store.repair_document(doc, author="agent:doctor", apply=True)
+    count = store.ledger.count()
+
+    again = store.repair_document(doc, author="agent:doctor", apply=True)
+    assert again.repaired == []
+    assert store.ledger.count() == count
+
+
+def test_a_repair_on_a_clean_ledger_is_a_no_op(store, doc, round_id, anchored_comment):
+    report = store.repair_document(doc, author="agent:doctor", apply=True)
+    assert report.repaired == [] and report.orphaned == []
+    assert store.ledger.count() == 2
+
+
+def test_a_repair_does_not_read_the_document_on_disk(
+    store, doc, doc_text, round_id, anchored_comment
+):
+    """The ledger is what is broken, so the repair must not need the file to be anything.
+
+    A polluted ledger got that way because the document moved on, and it may
+    have moved again, or been deleted, since. Making the repair depend on the
+    file's state would make it unavailable exactly when it is needed.
+    """
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+    doc.unlink()
+
+    report = store.repair_document(doc, author="agent:doctor", apply=True)
+    assert report.repaired == [anchored_comment]
+    assert store.fold().comments[anchored_comment].misplaced is False
+
+
+def test_the_doctor_verb_reports_and_then_repairs(
+    run, store, doc, doc_text, round_id, anchored_comment
+):
+    pollute(store, doc, anchored_comment, DRAFT + doc_text)
+
+    preview = run("doctor", doc, "--author", "agent:doctor", "--json")
+    assert preview.code == 0
+    assert preview.json["applied"] is False
+    assert preview.json["repaired"] == [anchored_comment]
+
+    applied = run("doctor", doc, "--author", "agent:doctor", "--apply", "--json")
+    assert applied.code == 0
+    assert applied.json["applied"] is True
+    assert run("round", "status", doc, "--json").json["counts"]["misplaced"] == 0

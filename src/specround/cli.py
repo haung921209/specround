@@ -855,6 +855,47 @@ def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, _carry_lines(carried, f"re-anchored {target.key} against {_short(report.base)}")
 
 
+def _doctor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Repair anchors that belong to another text than the base they are drawn on.
+
+    Read-only by default for the reason ``harvest`` is: it writes to a history
+    somebody else may be reading. Unlike ``harvest`` it never touches the
+    document — and it does not read it either, so a file that has moved on or
+    been deleted is no obstacle to fixing the ledger about it.
+    """
+    # missing_ok: the repair is about the ledger, and the document may well be gone.
+    target = _target(args, missing_ok=True)
+    report = target.store.repair_document(
+        target.path, author=_author(args), apply=args.apply
+    )
+    payload = {
+        **target.envelope(),
+        "base": report.base,
+        "applied": report.applied,
+        "repaired": list(report.repaired),
+        "orphaned": list(report.orphaned),
+        "skipped": list(report.skipped),
+        "strategies": dict(report.strategies),
+        "reasons": dict(report.reasons),
+    }
+    if not report.found:
+        settled = "nothing to repair" if not report.skipped else (
+            f"nothing left to repair ({len(report.skipped)} already tried against this base)"
+        )
+        return payload, [f"{target.key} — {settled}"]
+
+    verb = "repaired" if report.applied else "would repair"
+    lines = [f"{target.key} against {_short(report.base)} — {verb}"]
+    for cid in report.repaired:
+        lines.append(f"  {cid}  re-read in this base ({report.strategies.get(cid, '?')})")
+    for cid in report.orphaned:
+        lines.append(f"  {cid}  orphaned — {_clip(report.reasons.get(cid, ''), _BODY_WIDTH)}")
+    if not report.applied:
+        lines.append("")
+        lines.append("a dry run — pass --apply to append these corrections")
+    return payload, lines
+
+
 def _harvest(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     """Take the inline markers out of the document and into the ledger (G6).
 
@@ -1490,10 +1531,29 @@ def build_parser() -> argparse.ArgumentParser:
     rebind = verbs.add_parser(
         "reanchor",
         parents=[common, writing],
-        help="carry every anchored comment onto the document as it is now",
+        help="re-drive the carry onto the base this document is painted on",
+        description="Carry every anchored comment onto the base the round froze. Opening a "
+        "round already does this, so this is the idempotent re-drive; once the file on disk "
+        "has moved past that base it is refused, because nothing has frozen the revision.",
     )
     rebind.add_argument("doc")
     rebind.set_defaults(handler=_reanchor, verb_name="reanchor")
+
+    mending = verbs.add_parser(
+        "doctor",
+        parents=[common, writing],
+        help="repair anchors whose offsets were cut from some other text",
+        description="Find anchors that do not hold in the base they are painted on (I12) and "
+        "re-interpret their quote there, appending the correction. Written by older versions "
+        "that re-anchored onto the live file. A dry run unless --apply.",
+    )
+    mending.add_argument("doc")
+    mending.add_argument(
+        "--apply",
+        action="store_true",
+        help="append the corrections (default: report what they would be)",
+    )
+    mending.set_defaults(handler=_doctor, verb_name="doctor")
 
     reaping = verbs.add_parser(
         "harvest",

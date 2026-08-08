@@ -109,6 +109,38 @@ class ReanchorReport:
 
 
 @dataclass(frozen=True)
+class RepairReport:
+    """What a repair pass found, and whether it was allowed to write it down.
+
+    Separate from :class:`ReanchorReport` because the two answer different
+    questions. That one reports a document that moved; this one reports a
+    *ledger* that is wrong — anchors whose offsets were cut from some text other
+    than the base they are painted on (I12). Reading it as a re-anchor would
+    hide the distinction that matters to whoever is looking at the numbers:
+    nothing about the document changed, and nothing about the review did either.
+    """
+
+    #: The base these anchors are painted on, and the one they are moved into.
+    base: str
+    #: Re-interpreted in that base, by quote rather than by offset.
+    repaired: list[str] = field(default_factory=list)
+    #: The quote is not in that base either — recorded, never guessed.
+    orphaned: list[str] = field(default_factory=list)
+    #: Already tried against this base by an earlier pass.
+    skipped: list[str] = field(default_factory=list)
+    #: Which rung placed each repaired comment.
+    strategies: dict[str, str] = field(default_factory=dict)
+    #: Why each orphaned one could not be placed.
+    reasons: dict[str, str] = field(default_factory=dict)
+    #: False for a dry run — the default, because this writes to somebody's history.
+    applied: bool = False
+
+    @property
+    def found(self) -> bool:
+        return bool(self.repaired or self.orphaned)
+
+
+@dataclass(frozen=True)
 class Placement:
     """One inline annotation, and where it landed in the round's base.
 
@@ -833,6 +865,97 @@ class ReviewStore:
                 )
                 report.orphaned.append(comment.id)
         return report
+
+    def repair_document(
+        self,
+        doc: Path,
+        *,
+        author: str,
+        apply: bool = False,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> RepairReport:
+        """Put anchors cut from another text back into the base they are drawn on (I12).
+
+        For the ledgers that already hold them. Before the carry moved into
+        :meth:`open_round`, a re-anchor run while the base was frozen wrote
+        anchors cut from the live file — self-consistent, so nothing refused
+        them, and painted over a base whose offsets they had nothing to do with.
+        Those records exist and cannot be edited away (I1), so the fix is the
+        one this ledger has always used: **append the correction**.
+
+        What gets re-interpreted is the **quote**, through the ordinary ladder,
+        against the painting base. That is exactly the part of a misplaced
+        anchor that is still true — the reviewer really did write about that
+        sentence, and only the offsets belong to somebody else's text. A quote
+        the base does not contain is recorded as an orphan rather than guessed
+        into place; a repair does not get a weaker rule than a carry.
+
+        **The document on disk is never read.** A ledger got into this state
+        because the file moved on, and it may have moved again or be gone — so
+        needing the file to be anything would make the repair unavailable in
+        exactly the case it exists for.
+
+        A dry run is the default: this writes to somebody's review history.
+        """
+        key = self.doc_key(canonical_path(doc))
+        state = self.fold()
+        base = self.painting_base(state, key)
+        if base is None:
+            return RepairReport(base="", applied=apply)
+        text = self._snapshot_text(base)
+
+        repaired: list[str] = []
+        orphaned: list[str] = []
+        skipped: list[str] = []
+        strategies: dict[str, str] = {}
+        reasons: dict[str, str] = {}
+        for comment in self._anchored_comments(state, key):
+            if not comment.misplaced:
+                continue
+            if comment.bound_to == base:
+                # An earlier pass already put this question to this base and got
+                # its answer. Asking again would append the same answer forever.
+                skipped.append(comment.id)
+                continue
+            result = reanchor(comment.current_anchor, text, min_similarity=min_similarity)
+            if result.found:
+                repaired.append(comment.id)
+                strategies[comment.id] = result.strategy or ""
+                if apply:
+                    self._check_anchor(result.anchor, base, "the repaired span")
+                    record: dict[str, Any] = {
+                        "type": ANCHOR_REANCHOR,
+                        "author": author,
+                        "target": comment.id,
+                        "base": base,
+                        "anchor": result.anchor.to_json(),
+                        "strategy": result.strategy,
+                    }
+                    if result.ambiguous:
+                        record["ambiguous"] = True
+                    self._append(record)
+            else:
+                orphaned.append(comment.id)
+                reasons[comment.id] = result.reason
+                if apply:
+                    self._append(
+                        {
+                            "type": ANCHOR_ORPHAN,
+                            "author": author,
+                            "target": comment.id,
+                            "base": base,
+                            "reason": result.reason,
+                        }
+                    )
+        return RepairReport(
+            base=base,
+            repaired=repaired,
+            orphaned=orphaned,
+            skipped=skipped,
+            strategies=strategies,
+            reasons=reasons,
+            applied=apply,
+        )
 
     def _anchored_comments(self, state: State, key: str) -> list[Comment]:
         """Comments on one document that have somewhere to be re-anchored."""
