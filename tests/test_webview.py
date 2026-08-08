@@ -984,6 +984,160 @@ def test_opening_a_reply_box_does_not_take_the_page_where_it_was_reading():
     assert 'area.scrollIntoView({ block: "nearest" })' in html
 
 
+# -- how the page is arranged --------------------------------------------
+
+
+def merged(stored, viewport, tmp_path):
+    return in_node("mergeView(input.stored, input.viewport)",
+                   {"stored": stored, "viewport": viewport}, tmp_path)
+
+
+WIDE = 1600
+NARROW = 820
+
+
+def test_a_wide_viewport_gets_the_layout_the_page_has_always_had(tmp_path):
+    """Nothing stored is the ordinary case, and it must not be a new layout.
+
+    The numbers are the ones the stylesheet carried before any of this existed, so
+    a reviewer who never touches a handle sees the page they already knew.
+    """
+    assert merged(None, WIDE, tmp_path) == {
+        "nav": 260, "threads": 380, "font": 15, "navShut": False, "threadsShut": False,
+    }
+
+
+def test_a_narrow_viewport_starts_with_the_side_columns_folded(tmp_path):
+    """The measured complaint, answered before the reviewer has to ask.
+
+    260 and 380 of chrome in a pane that narrow leave a document no wider than the
+    bar beside it. The only thing this does is choose where the page *starts*.
+    """
+    narrow = merged(None, NARROW, tmp_path)
+    assert (narrow["navShut"], narrow["threadsShut"]) == (True, True)
+    # And the widths are still there, so opening a column gives back a column
+    # rather than a sliver.
+    assert (narrow["nav"], narrow["threads"]) == (260, 380)
+
+
+def test_a_stored_choice_outranks_the_width_guess(tmp_path):
+    """`false` is an answer, and this is the whole reason the merge tests types.
+
+    A reviewer who opened the thread column on a narrow screen stored exactly
+    that. Read with a truthiness fallback it would be indistinguishable from an
+    absent key, and the page would fold the column again on every single load —
+    which is the setting not being remembered, in the one case it was set.
+    """
+    assert merged({"threadsShut": False}, NARROW, tmp_path)["threadsShut"] is False
+    # The other direction too: folded on a wide screen stays folded.
+    assert merged({"navShut": True}, WIDE, tmp_path)["navShut"] is True
+
+
+def test_one_bad_value_does_not_cost_the_reviewer_the_rest(tmp_path):
+    """Field by field, because a blob goes wrong one field at a time.
+
+    An older page that wrote fewer keys and a hand-edited file with one nonsense
+    value in it are the two real cases, and throwing the object away over either
+    would drop settings that were perfectly good.
+    """
+    salvaged = merged({"nav": "wider please", "threads": 500, "font": 19}, WIDE, tmp_path)
+    assert salvaged["nav"] == 260
+    assert (salvaged["threads"], salvaged["font"]) == (500, 19)
+
+
+def test_a_width_past_the_end_of_its_range_is_pulled_back(tmp_path):
+    """A drag that reached the edge of the screen is not a layout.
+
+    The floor is the point at which a column is folded without saying so, and
+    folding is a button with a way back — so the clamp keeps the two gestures from
+    meaning the same thing.
+    """
+    huge = merged({"nav": 9000, "threads": 9000, "font": 900}, WIDE, tmp_path)
+    assert (huge["nav"], huge["threads"], huge["font"]) == (560, 760, 26)
+    tiny = merged({"nav": 1, "threads": 1, "font": 1}, WIDE, tmp_path)
+    assert (tiny["nav"], tiny["threads"], tiny["font"]) == (140, 240, 11)
+
+
+def test_an_unreadable_blob_draws_the_default_layout(tmp_path):
+    """There is nobody to report this to, and a reviewer only wanted to read."""
+    for text in ["{not json", "", "null", "[1, 2]", '"a string"']:
+        assert in_node("readView(input, 1600)", text, tmp_path) == {
+            "nav": 260, "threads": 380, "font": 15, "navShut": False, "threadsShut": False,
+        }
+
+
+def test_only_the_keys_this_page_writes_go_back_into_storage(tmp_path):
+    """This page is the only writer of the key, so it hands back nothing extra."""
+    written = in_node("JSON.parse(writeView(input))",
+                      {"nav": 300, "threads": 400, "font": 17, "navShut": True,
+                       "threadsShut": False, "somethingElse": "not ours"},
+                      tmp_path)
+    assert set(written) == {"nav", "threads", "font", "navShut", "threadsShut"}
+
+
+def test_the_arrangement_survives_a_round_trip_through_storage(tmp_path):
+    """"It stays" is this, and a narrow viewport must not undo it on the way back."""
+    kept = {"nav": 180, "threads": 700, "font": 21, "navShut": True, "threadsShut": False}
+    assert in_node("readView(writeView(input), 820)", kept, tmp_path) == kept
+
+
+def test_dragging_a_handle_opens_the_column_it_is_about(tmp_path):
+    """A width says "show me this much", so it cannot leave the column folded.
+
+    Without this, dragging a folded column's handle moves a number nobody can
+    see — a handle that responds to the mouse and changes nothing on screen, which
+    reads as broken rather than as folded.
+    """
+    folded = {"nav": 260, "threads": 380, "font": 15, "navShut": True, "threadsShut": True}
+    dragged = in_node('viewAfter(input, {kind: "size", field: "nav", px: 310})', folded, tmp_path)
+    assert (dragged["nav"], dragged["navShut"]) == (310, False)
+    # And it says nothing about the other column.
+    assert dragged["threadsShut"] is True
+
+
+def test_double_clicking_a_handle_restores_that_column_and_leaves_the_other(tmp_path):
+    started = {"nav": 520, "threads": 700, "font": 15, "navShut": False, "threadsShut": False}
+    reset = in_node('viewAfter(input, {kind: "reset", field: "threads"})', started, tmp_path)
+    assert (reset["threads"], reset["nav"]) == (380, 520)
+
+
+def test_folding_keeps_the_width_so_unfolding_gives_the_same_column_back(tmp_path):
+    """Two fields, not one, and this is what the second one buys.
+
+    A fold that wrote the width to zero would have nothing to restore, and every
+    unfold would hand back the default instead of the column the reviewer sized.
+    """
+    sized = {"nav": 180, "threads": 640, "font": 15, "navShut": False, "threadsShut": False}
+    both = in_node(
+        '[{kind: "fold", field: "threads"}, {kind: "fold", field: "threads"}]'
+        ".reduce(viewAfter, input)",
+        sized, tmp_path,
+    )
+    assert (both["threads"], both["threadsShut"]) == (640, False)
+
+
+def test_the_reading_size_steps_and_stops_at_the_ends_of_its_range(tmp_path):
+    """The buttons are held to the same bounds a stored value is."""
+    at = {"nav": 260, "threads": 380, "font": 15, "navShut": False, "threadsShut": False}
+    assert in_node('viewAfter(input, {kind: "font", step: 1}).font', at, tmp_path) == 16
+    assert in_node('viewAfter(input, {kind: "font", step: -1}).font', at, tmp_path) == 14
+    ceiling = "Array(40).fill({kind: 'font', step: 1}).reduce(viewAfter, input).font"
+    floor = "Array(40).fill({kind: 'font', step: -1}).reduce(viewAfter, input).font"
+    assert in_node(ceiling, at, tmp_path) == 26
+    assert in_node(floor, at, tmp_path) == 11
+
+
+def test_an_arrangement_action_the_reducer_does_not_know_is_a_typo_and_says_so(tmp_path):
+    """Same rule as the reply reducer: a dead button must not be a silent one."""
+    caught = in_node(
+        "(() => { try { viewAfter(input, {kind: 'shrink', field: 'nav'}); return 'no error'; }"
+        " catch (error) { return error.message; } })()",
+        {"nav": 260, "threads": 380, "font": 15, "navShut": False, "threadsShut": False},
+        tmp_path,
+    )
+    assert caught == "unknown view action: shrink"
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 

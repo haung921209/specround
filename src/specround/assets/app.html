@@ -515,6 +515,124 @@ function paintable(comments) {
   return comments.filter((c) => c.current_anchor && !c.misplaced);
 }
 
+// -- how the page is arranged ---------------------------------------------
+//
+// Column widths, whether a column is folded away, and the size the text is read
+// at. All of it is one object, two conversions and a clamp — and every way it
+// actually breaks (a stored blob from a version that wrote fewer keys, a
+// hand-edited value, a drag that ran off the screen) is arithmetic, which is why
+// it belongs on this side of the fence rather than in the handlers.
+
+const VIEW_KEY = "specround.view";
+
+// The layout as it has always looked, and the bounds a drag may not leave. The
+// floors are not taste: a bar narrower than the badges it lists, or a thread
+// column narrower than a card, is a column that has been folded without saying
+// so — and folding is a button, with a way back. A ceiling for the same reason
+// with the document on the losing side.
+const VIEW_DEFAULTS = { nav: 260, threads: 380, font: 15 };
+const VIEW_BOUNDS = { nav: [140, 560], threads: [240, 760], font: [11, 26] };
+
+// Under this the three columns stop fitting: 260 and 380 of chrome leave a
+// document about as wide as the bar beside it, which is the complaint this was
+// built for (a browser pane in a terminal multiplexer, 2026-08-08). So a narrow
+// viewport *starts* folded — and starting is all this number does. It is a
+// default and never a clamp: a reviewer who opens a column at this width has
+// said what they want, and from then on the stored answer outranks the guess.
+// Everything else about a small screen is H16's.
+const VIEW_FOLD_UNDER = 1100;
+
+function clampView(field, value) {
+  // Out of bounds and not a number are one case on purpose. A stored `"260px"`,
+  // a `null` from a half-written blob and a drag that reached the far edge of
+  // the screen all have the same honest answer — the nearest width this layout
+  // can actually be — and a page that refused to draw over any of them would be
+  // a page one bad character in localStorage can break.
+  const bounds = VIEW_BOUNDS[field];
+  if (!bounds) throw new Error("unknown view field: " + field);
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return VIEW_DEFAULTS[field];
+  return Math.max(bounds[0], Math.min(bounds[1], number));
+}
+
+function foldDefaults(viewport) {
+  // What a viewport this wide starts as, before anything stored is consulted.
+  return { navShut: Number(viewport) < VIEW_FOLD_UNDER, threadsShut: Number(viewport) < VIEW_FOLD_UNDER };
+}
+
+function mergeView(stored, viewport) {
+  // Field by field rather than wholesale, because the two ways a stored blob
+  // goes wrong are an older page that wrote fewer keys and one nonsense value
+  // in an otherwise good object — and neither is a reason to throw away the
+  // rest of what the reviewer set up.
+  //
+  // The folds read `typeof === "boolean"` rather than falling back on truthiness
+  // for the one reason that matters here: `false` is an answer. A reviewer who
+  // opened a column on a narrow screen stored exactly that, and a `||` would
+  // hand it back the width-based guess every time the page loaded.
+  const held = stored && typeof stored === "object" ? stored : {};
+  const folds = foldDefaults(viewport);
+  const width = (field) => clampView(field, held[field] === undefined ? VIEW_DEFAULTS[field] : held[field]);
+  return {
+    nav: width("nav"),
+    threads: width("threads"),
+    font: width("font"),
+    navShut: typeof held.navShut === "boolean" ? held.navShut : folds.navShut,
+    threadsShut: typeof held.threadsShut === "boolean" ? held.threadsShut : folds.threadsShut,
+  };
+}
+
+function readView(text, viewport) {
+  // Whatever is under the key, which is text this page wrote last time and also
+  // text anything else could have put there. Unparseable is not an error to
+  // report — there is nobody to report it to, and the default layout is a
+  // perfectly good answer to give a reviewer who only wanted to read.
+  let stored = null;
+  try { stored = text ? JSON.parse(text) : null; } catch (error) { stored = null; }
+  return mergeView(stored, viewport);
+}
+
+function writeView(view) {
+  // The five keys and nothing else, so that a blob which arrived carrying
+  // something extra does not get handed its own additions back. This page is
+  // the only writer of this key, and what it writes is what it reads.
+  return JSON.stringify({
+    nav: view.nav, threads: view.threads, font: view.font,
+    navShut: view.navShut, threadsShut: view.threadsShut,
+  });
+}
+
+function viewAfter(view, action) {
+  // One place for every gesture that rearranges the page, for the reason
+  // `replyAfter` has one: two splitters, two fold buttons and two size buttons
+  // are six handlers, and six copies of "clamp it and keep the rest" is six
+  // chances for one of them to be slightly different.
+  if (action.kind === "size" || action.kind === "reset") {
+    // A drag or a double-click on a handle is a statement about a width, and a
+    // width says "show me this much" — so both of them unfold the column they
+    // are about. Otherwise dragging a folded column's handle would move a
+    // number nobody can see, which reads as a dead handle.
+    const next = Object.assign({}, view);
+    next[action.field] = action.kind === "reset"
+      ? VIEW_DEFAULTS[action.field]
+      : clampView(action.field, action.px);
+    next[action.field + "Shut"] = false;
+    return next;
+  }
+  if (action.kind === "fold") {
+    const key = action.field + "Shut";
+    // The width is left alone, so unfolding gives back the column that was
+    // folded rather than the one it started as.
+    return Object.assign({}, view, { [key]: !view[key] });
+  }
+  if (action.kind === "font") {
+    return Object.assign({}, view, { font: clampView("font", view.font + action.step) });
+  }
+  // Every caller passes a literal, so an unknown kind is a typo — and a typo
+  // that returned the state unchanged would look exactly like a dead button.
+  throw new Error("unknown view action: " + action.kind);
+}
+
 // -- end of the pure part -------------------------------------------------
 
 // -- painting anchors ------------------------------------------------------
