@@ -42,6 +42,9 @@
   .modes { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
   .modes button { border: 0; background: transparent; color: var(--ink); padding: 5px 12px; cursor: pointer; font: inherit; }
   .modes button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  /* A mode this document has nothing for. It stays in place, greyed, with the
+     reason on its title — see `diffReason`. */
+  .modes button:disabled { opacity: .45; cursor: not-allowed; }
   button, select, input, textarea { font: inherit; color: var(--ink); }
   .btn {
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
@@ -367,6 +370,37 @@ function modeClass(mode, commentable) {
   return commentable ? mode + " live" : mode;
 }
 
+function diffReason(data) {
+  // Why the diff mode is not on offer, or "" when it is. The mode is two texts
+  // compared and it needs both — the base a round froze, and the file as it is
+  // now. Offering it anyway draws an empty page, which tells a reviewer less
+  // than a disabled button naming the half that is missing. The two ways it goes
+  // missing are different situations to be in: no round yet is where a review
+  // starts, and an unreadable file is something to go and look at.
+  if (!data) return "";
+  if (data.diff && data.diff.available) return "";
+  if (!data.round) return "no round yet — a diff needs a base to compare against";
+  return "the document is not readable — a diff needs the file as it is now";
+}
+
+function readable(data) {
+  // Whether there is a text to draw. Deliberately not "is there a round": those
+  // two came apart the moment a document with no round started reading the file
+  // itself, and conflating them is what put a paragraph on the page where the
+  // document should have been. The only answer of "nothing" is no base *and* no
+  // file, and there the server's reason is the whole page.
+  return Boolean(data && data.reading);
+}
+
+function modeFor(mode, data) {
+  // The mode to actually be in, which is not always the one that was up. The
+  // mode outlives the document: clicking through a tree (H15) keeps it, and most
+  // documents in a tree have no round — so a reviewer browsing in diff mode
+  // would land on one empty page after another. The render always has something
+  // to show, so that is where it falls back to.
+  return mode === "diff" && diffReason(data) ? "render" : mode;
+}
+
 function visibleDocuments(documents, activeOnly) {
   // The activity filter, and the whole of it: the bar always receives the full
   // listing and hides rows here. Asking the server for a filtered list instead
@@ -551,8 +585,14 @@ function drawRender(host, data) {
 function drawRaw(host, data) {
   host.className = modeClass("raw", data.commentable);
   host.textContent = "";
-  rawLines(data.base || "").forEach((line, index) => {
-    host.appendChild(lineRow(String(index + 1), "", line.text, line.start, "base", ""));
+  // The space the server says it is reading, not `base` by assumption: with no
+  // round the text is the live file, and an offset is only meaningful in the text
+  // it was counted in. Through `textIn` for the same reason every other converter
+  // goes through it — two of them measuring different documents is the bug this
+  // page cannot afford.
+  const space = data.reading;
+  rawLines(textIn(space)).forEach((line, index) => {
+    host.appendChild(lineRow(String(index + 1), "", line.text, line.start, space, ""));
   });
 }
 
@@ -561,7 +601,10 @@ function drawDiff(host, data) {
   host.textContent = "";
   const diff = data.diff;
   if (!diff.available) {
-    host.innerHTML = '<p class="empty">No diff: this needs both a round and a readable document.</p>';
+    // The mode button is disabled for exactly this, so getting here means
+    // something reached `draw` past it. The sentence comes off the same function
+    // the button's reason does — two wordings for one situation is two answers.
+    host.innerHTML = '<p class="empty">' + escapeHtml(diffReason(data)) + "</p>";
     return;
   }
   const only = $("changesonly") && $("changesonly").checked;
@@ -630,7 +673,13 @@ function lineRow(left, right, text, start, space, cls, sign) {
 function draw() {
   const data = state.data;
   const host = $("doc");
-  if (!data.round) {
+  // Same race `renderControls` names: a mode button is clickable before the first
+  // state has arrived.
+  if (!data) return;
+  // Gated on having a text to show, not on having a round — see `readable`. With
+  // no round there is nothing to write and still something to read, and this is
+  // where the second half used to be thrown away.
+  if (!readable(data)) {
     host.className = "";
     host.innerHTML = '<p class="empty">' + escapeHtml(data.blocked || "nothing to show") + "</p>";
     return;
@@ -1073,12 +1122,26 @@ function stopEditing() {
 
 // -- wiring ---------------------------------------------------------------
 
-function setMode(mode) {
+function applyMode(mode) {
+  // The mode bar and nothing else. Kept apart from the redraw because `load` has
+  // its own order to keep — the document before the threads that point into it —
+  // and a mode setter that redrew in the middle of that would decide it here.
   state.mode = mode;
+  const reason = diffReason(state.data);
   document.querySelectorAll(".modes button").forEach((element) => {
     element.setAttribute("aria-pressed", String(element.dataset.mode === mode));
+    if (element.dataset.mode !== "diff") return;
+    // Disabled and carrying the reason, rather than hidden. A mode that vanishes
+    // looks like a mode this tool does not have, and a reviewer who wanted it
+    // would go looking for the flag that turns it on.
+    element.disabled = Boolean(reason);
+    element.title = reason || "the document as it is now, against this round's base";
   });
   if (mode !== "raw" && state.editing) stopEditing();
+}
+
+function setMode(mode) {
+  applyMode(mode);
   renderControls();
   draw();
 }
@@ -1152,6 +1215,9 @@ async function load() {
   if (!$("author").value) $("author").value = data.author;
   if (data.actor) $("actor").value = data.actor;
   drawFiles();
+  // The mode came from whichever document was up before this one and may not
+  // survive the move (H15), so it is settled before anything draws.
+  applyMode(modeFor(state.mode, data));
   renderControls();
   draw();
   drawThreads();

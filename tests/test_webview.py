@@ -206,7 +206,80 @@ def test_a_document_with_no_round_is_readable_and_says_what_to_do(view):
     payload = state(view)
     assert payload["round"] is None
     assert payload["commentable"] is False
+    assert "read only" in payload["blocked"]
     assert "specround round open" in payload["blocked"]
+
+
+def test_a_document_with_no_round_reads_the_live_file(view, doc_text):
+    """"Read only" has to carry a text, or it is a blank page.
+
+    The routes already served a document with no round and blocked the two verbs
+    the format ties to an open round (I4). What they did not say was *which* text
+    the render and raw modes show — and both took it from the round's base, so a
+    document nobody had opened a round on had nothing to draw. That is not
+    read-only, it is unreadable, and the reviewer was only reading.
+    """
+    payload = state(view)
+    assert payload["reading"] == "revision"
+    assert payload["live"] == doc_text
+    # No round means no base, and the payload still says so rather than passing
+    # the live text off as one (I7).
+    assert payload["base"] is None
+    assert payload["render"].startswith("<h1>")
+    assert "Timeouts are 30 seconds." in payload["render"]
+
+
+def test_with_no_round_the_reading_follows_the_file(view, doc, doc_text):
+    """Nothing froze this text, so what is shown is the file as it is now."""
+    doc.write_text(doc_text.replace("30 seconds", "45 seconds"), encoding="utf-8")
+    payload = state(view)
+    assert payload["reading"] == "revision"
+    assert REVISED_QUOTE in payload["live"]
+    assert "45 seconds" in payload["render"]
+
+
+def test_with_no_round_there_is_no_diff_to_show(view):
+    """The diff compares two texts, and one of them does not exist yet."""
+    payload = state(view)
+    assert payload["diff"]["available"] is False
+    assert payload["diff"]["rows"] == []
+
+
+def test_opening_a_round_moves_the_reading_onto_the_base(view, store, doc, doc_text):
+    """I7 is untouched: with a round, what is shown is the base it froze.
+
+    The read-only path adds a text where there was none. It does not make the
+    view follow the file once a round exists — that would move the ground under
+    the comments this round is a review of.
+    """
+    assert state(view)["reading"] == "revision"
+    store.open_round(doc, author="alice")
+    doc.write_text(doc_text.replace("30 seconds", "45 seconds"), encoding="utf-8")
+    payload = state(view)
+    assert payload["reading"] == "base"
+    assert payload["base"] == doc_text
+    assert "30 seconds" in payload["render"]
+    assert "45 seconds" not in payload["render"]
+    # And the revision is where the change shows, exactly as it did before.
+    assert payload["diff"]["available"] is True
+    assert payload["diff"]["identical"] is False
+
+
+def test_no_round_and_no_file_leaves_nothing_to_read(view, doc):
+    """The one case that has no text at all — and it still says why."""
+    doc.unlink()
+    payload = state(view)
+    assert payload["reading"] is None
+    assert payload["render"] == ""
+    assert payload["live"] is None
+    assert "specround round open" in payload["blocked"]
+
+
+def test_reading_a_document_is_not_permission_to_comment_on_it(view):
+    """Showing the text does not open a round (I4). The refusal is unchanged."""
+    status, payload = call(view, "/api/comment", {"body": "hello", "whole": True})
+    assert status == 409
+    assert "specround round open" in payload["error"]["message"]
 
 
 def test_two_open_rounds_ask_which_one_rather_than_picking(view, store, doc):
@@ -500,6 +573,86 @@ def test_the_gutter_looks_clickable_only_where_a_click_records_something(tmp_pat
         "diff",
     ]
     assert "#doc.live .line .ln" in page().decode("utf-8")
+
+
+
+def test_the_page_draws_on_having_a_text_not_on_having_a_round(tmp_path):
+    """The blank screen, at the line that drew it.
+
+    `draw` asked whether there was a *round* and put the blocked reason on the
+    page in place of everything else — so every document nobody had opened a round
+    on was a paragraph telling the reviewer to open one, and the text they had
+    clicked to read was nowhere. The question it should have asked, and now does,
+    is whether there is a text.
+    """
+    verdicts = in_node(
+        "input.map(readable)",
+        [
+            {"reading": "base"},  # a round froze a text
+            {"reading": "revision"},  # no round, and the file is there to read
+            {"reading": None},  # neither — the server's reason is the whole page
+        ],
+        tmp_path,
+    )
+    assert verdicts == [True, True, False]
+    # And the drawing does not ask the old question. `diffReason` still asks about
+    # the round, which is right there — a diff needs the base a round froze. What
+    # must not come back is the round deciding whether anything is drawn at all.
+    html = page().decode("utf-8")
+    drawing = html[html.index("function draw()") :]
+    drawing = drawing[: drawing.index("\n}\n")]
+    assert "readable(data)" in drawing
+    assert "data.round" not in drawing
+
+
+def test_the_diff_mode_says_why_it_is_not_on_offer(tmp_path):
+    """A mode that would draw an empty page is a mode the page should not offer.
+
+    The reason names the missing half, because the two ways a diff has nothing to
+    compare are different situations to be in: no round yet is the beginning of a
+    review, and an unreadable file is something to go and look at.
+    """
+    reasons = in_node(
+        "input.map(diffReason)",
+        [
+            {"round": {"id": "r-1"}, "diff": {"available": True}},
+            {"round": None, "diff": {"available": False}},
+            {"round": {"id": "r-1"}, "diff": {"available": False}},
+        ],
+        tmp_path,
+    )
+    assert reasons[0] == ""
+    assert "no round" in reasons[1]
+    assert "not readable" in reasons[2]
+
+
+def test_a_mode_the_document_cannot_show_is_not_the_mode_it_opens_in(tmp_path):
+    """Browsing a tree carries the mode from document to document (H15).
+
+    Clicking a file with no round while the diff mode is up used to leave the
+    reviewer on a mode that document has nothing for. The mode falls back rather
+    than the page going quiet — the same click, one document over, still reads.
+    """
+    assert in_node('modeFor("diff", {round: null, diff: {available: false}})', None, tmp_path) == (
+        "render"
+    )
+    assert in_node('modeFor("diff", {round: {id: "r-1"}, diff: {available: true}})', None, tmp_path) == (
+        "diff"
+    )
+    assert in_node('modeFor("raw", {round: null, diff: {available: false}})', None, tmp_path) == "raw"
+
+
+def test_the_raw_mode_reads_whatever_the_state_says_it_is_reading():
+    """One lookup, so the mode and the offsets its gutter posts cannot disagree.
+
+    It used to take `data.base` directly, which is why a document with no round
+    drew nothing: there was no base and the mode had no other text to ask for.
+    Going through the same lookup every other converter uses is what keeps the
+    line offsets counted in the space the server said it was serving.
+    """
+    html = page().decode("utf-8")
+    assert "rawLines(textIn(space))" in html
+    assert "rawLines(data.base" not in html
 
 
 # -- focus: the highlight, and which side of the screen moves ------------

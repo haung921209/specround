@@ -39,6 +39,14 @@ disk has moved on, the diff mode is where that shows — and a selection on a li
 only the revision has is carried into the base by the re-anchor ladder, or
 refused with a reason. It is never guessed onto a nearby span.
 
+**With no round there is no anchor space, and still a document to read.** The
+two verbs the format ties to an open round stay blocked (I4) — but blocking a
+comment was never a reason to withhold the text, and a view that showed nothing
+until somebody opened a round answered "read only" with a blank page. So those
+two modes read the live file instead, and ``reading`` in the state payload says
+which of the two texts they are on. Nothing else moves: no round is opened by
+looking, and the moment one exists the modes are back on its base.
+
 **A directory is served the same way, from one process (H15).** The workspace
 layer adds navigation and nothing else: every request names the document it is
 about, and the answer is the same per-document projection a file view gives.
@@ -94,9 +102,13 @@ __all__ = [
 #: written against.
 VIEW_SCHEMA = "specround.view/v0"
 
-#: Which text a selection's offsets count in. ``base`` is the snapshot the round
-#: froze — the render and raw modes, and the diff's unchanged and removed lines.
-#: ``revision`` is the document as it is now, which only the diff mode can show.
+#: Which text a selection's offsets count in — and, as ``reading`` in
+#: :meth:`WebView.state_payload`, which text the render and raw modes are
+#: showing. ``base`` is the snapshot the round froze, and is the answer whenever
+#: there is a round: a comment made on this round anchors in the text the round
+#: is a review of (I7). ``revision`` is the document as it is now — the diff's
+#: added lines, and what the other two modes read when there is no round at all
+#: and therefore no anchor space to be in.
 BASE = "base"
 REVISION = "revision"
 SPACES = (BASE, REVISION)
@@ -512,7 +524,8 @@ class WebView:
                 "'specround round open'"
             )
         return None, (
-            f"no rounds on {self.key} yet — open one with 'specround round open'"
+            f"no rounds on {self.key} yet — read only. Comments need a round: "
+            "'specround round open'"
         )
 
     def _writable(self, state: State) -> Round:
@@ -541,6 +554,7 @@ class WebView:
         round_, blocked = self.resolve_round(state)
         live = self.live_text()
         base = self.store.base_text(round_.id) if round_ is not None else None
+        reading, shown = self._reading(base, live)
         comments = comments_on(state, self.key)
         payload: dict[str, Any] = {
             "schema": VIEW_SCHEMA,
@@ -558,9 +572,10 @@ class WebView:
             "comments": [comment_json(c) for c in comments],
             "commentable": round_ is not None and round_.open,
             "blocked": blocked,
+            "reading": reading,
             "base": base,
             "live": live,
-            "render": markdown.render(base) if base is not None else "",
+            "render": markdown.render(shown) if shown is not None else "",
             "diff": self._diff_payload(base, live),
             "counts": {
                 "comments": len(comments),
@@ -572,6 +587,30 @@ class WebView:
             },
         }
         return payload
+
+    def _reading(self, base: str | None, live: str | None) -> tuple[str | None, str | None]:
+        """Which text the render and raw modes show, and which space that is.
+
+        With a round it is the base that round froze. It has to be: those two
+        modes are the ones a comment is made in, and a comment on this round is
+        verified against its base (I7). Following the file there would move the
+        ground under a review that has already started.
+
+        With no round there is no anchor space at all — nothing has been frozen,
+        so nothing can be anchored, and :attr:`commentable` already says so. What
+        was missing was a text: both modes read the base, and a document nobody
+        had opened a round on had none, so it drew as a blank page. Reading is
+        not the thing a round grants (I4), so the live file stands in, read only.
+
+        ``None`` for both is the one case with nothing to show — no round froze a
+        text and the file is not there to read either. Then :attr:`blocked` is
+        the whole answer.
+        """
+        if base is not None:
+            return BASE, base
+        if live is not None:
+            return REVISION, live
+        return None, None
 
     def _diff_payload(self, base: str | None, live: str | None) -> dict[str, Any]:
         if base is None or live is None:
