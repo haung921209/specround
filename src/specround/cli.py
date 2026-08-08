@@ -56,7 +56,7 @@ from specround.imports import BatchError, apply_plan, load_batch, parse_text, pl
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import HarvestReport, Placement, ReviewStore
-from specround.webview import DEFAULT_HOST, WebView
+from specround.webview import DEFAULT_HOST, DERIVED, FALLBACK, PINNED, PortTaken, WebView
 from specround.wire import (
     anchor_json,
     comment_json,
@@ -1101,15 +1101,17 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     if Path(args.doc).expanduser().is_dir():
         return _view_workspace(args)
     target = _target(args, missing_ok=True)
-    view = WebView(
-        store=target.store,
-        path=target.path,
-        author=_author(args),
-        actor=_actor(args),
-        round_hint=args.round or None,
-        host=args.host,
-        port=args.port,
-    ).bind()
+    view = _bind(
+        WebView(
+            store=target.store,
+            path=target.path,
+            author=_author(args),
+            actor=_actor(args),
+            round_hint=args.round or None,
+            host=args.host,
+            port=args.port,
+        )
+    )
     state = target.store.fold()
     round_, blocked = view.resolve_round(state)
     if args.round and round_ is None:
@@ -1120,6 +1122,8 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
         "url": view.url,
         "host": view.host,
         "port": view.port,
+        "port_source": view.port_source,
+        "port_note": _port_note(view),
         "token": view.token,
         "round": round_json(state, round_) if round_ is not None else None,
         "commentable": round_ is not None and round_.open,
@@ -1134,6 +1138,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     else:
         lines.append(f"serving {target.key}")
     lines.append(f"store  {target.store.root}")
+    lines.append(_port_line(view))
     if blocked:
         lines.append(f"note   {blocked}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
@@ -1175,16 +1180,18 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         )
     opening = listing.documents[0]
     store = space.store_for(opening.path)
-    view = WebView(
-        store=store,
-        path=opening.path,
-        author=_author(args),
-        actor=_actor(args),
-        host=args.host,
-        port=args.port,
-        workspace=space,
-        doc=opening.key,
-    ).bind()
+    view = _bind(
+        WebView(
+            store=store,
+            path=opening.path,
+            author=_author(args),
+            actor=_actor(args),
+            host=args.host,
+            port=args.port,
+            workspace=space,
+            doc=opening.key,
+        )
+    )
     counts = listing.to_json()["counts"]
     payload = {
         "doc": view.key,
@@ -1194,6 +1201,8 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         "url": view.url,
         "host": view.host,
         "port": view.port,
+        "port_source": view.port_source,
+        "port_note": _port_note(view),
         "token": view.token,
         "workspace": {**listing.to_json(), "selected": opening.key},
     }
@@ -1214,10 +1223,56 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         # naming one of them would be naming the wrong one for every other
         # document in the bar.
         lines.append(f"stores {len(stores)} — one per document, listed in the workspace payload")
+    lines.append(_port_line(view))
     if listing.note:
         lines.append(f"note   {listing.note}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
     return payload, lines, _serving(view, args.open)
+
+
+def _bind(view: WebView) -> WebView:
+    """Take the port, translating the one refusal a caller can act on.
+
+    A pinned port that is held is the caller's to fix, like a malformed
+    command — so it is a ``2`` and not the ``1`` a bare ``OSError`` would get.
+    The derived port never arrives here: it falls back instead, and says so.
+    """
+    try:
+        return view.bind()
+    except PortTaken as exc:
+        raise UsageError(str(exc)) from exc
+
+
+def _port_note(view: WebView) -> str | None:
+    """Why this URL is not the one this document usually gets, or ``None``.
+
+    Prose in the payload, like ``blocked`` beside it: a ``--json`` consumer never
+    reads the printed lines, and a fallback that only showed up there would be a
+    URL changing under an embedder with no field to explain it.
+    """
+    if view.port_source != FALLBACK:
+        return None
+    return (
+        f"{view.wanted_port} is this document's usual port and something else holds it "
+        f"({view.port_reason}), so this view took a free one — the URL differs from last time"
+    )
+
+
+def _port_line(view: WebView) -> str:
+    """One line saying which port this is and whether it will come back.
+
+    The question a reader has is "can I keep this URL", and each of the four
+    answers is different. A fallback is the one that has to be loud: it is the
+    case where the address moved without anybody asking it to.
+    """
+    note = _port_note(view)
+    if note is not None:
+        return f"port   {view.port} — {note}"
+    if view.port_source == DERIVED:
+        return f"port   {view.port} — derived from the path, so a restart lands here again"
+    if view.port_source == PINNED:
+        return f"port   {view.port} — pinned with --port"
+    return f"port   {view.port} — a free port (--port 0), so a restart will land elsewhere"
 
 
 def _serving(view: WebView, open_browser: bool) -> Callable[[], None]:
@@ -1459,7 +1514,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     viewing.add_argument(
-        "--port", type=int, default=0, metavar="N", help="pin the port (default: any free one)"
+        "--port",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "pin the port; 0 asks for any free one (default: derived from the "
+            "document's path, so a restart keeps the URL)"
+        ),
     )
     viewing.add_argument(
         "--host", default=DEFAULT_HOST, help=f"address to bind (default: {DEFAULT_HOST})"

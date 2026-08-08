@@ -14,6 +14,7 @@ would make the fold itself raise (I7).
 import json
 import re
 import shutil
+import socket
 import subprocess
 import urllib.error
 import urllib.parse
@@ -23,15 +24,36 @@ import pytest
 
 from specround import markdown
 from specround.anchors import anchor_for
-from specround.webview import _GETS, _POSTS, VIEW_SCHEMA, WebView, page
+from specround.webview import (
+    DERIVED,
+    EPHEMERAL,
+    FALLBACK,
+    PINNED,
+    PORT_CEILING,
+    PORT_FLOOR,
+    VIEW_SCHEMA,
+    PortTaken,
+    WebView,
+    _GETS,
+    _POSTS,
+    derived_port,
+    page,
+)
+from specround.workspace import Workspace
 
 REVISED_QUOTE = "Timeouts are 45 seconds."
 
 
 @pytest.fixture
 def view(store, doc):
-    """A running view over the fixture document, on a port the OS picked."""
-    served = WebView(store=store, path=doc, author="alice")
+    """A running view over the fixture document, on a port the OS picked.
+
+    ``port=0`` on purpose: the default is the *derived* port, and eight hundred
+    tests holding one predictable port each would be a suite that fights itself
+    (and the machine) for addresses. The derived path is exercised where it is
+    the thing under test, a few tests down.
+    """
+    served = WebView(store=store, path=doc, author="alice", port=0)
     served.start()
     try:
         yield served
@@ -816,6 +838,185 @@ def test_a_json_array_is_not_a_request(view):
     status, payload = call(view, "/api/comment", ["not", "an", "object"])
     assert status == 400
     assert "JSON object" in payload["error"]["message"]
+
+
+# -- the port a document comes back on -----------------------------------
+#
+# A view that moves every restart takes its embedder's tab with it: the browser
+# pane holding the URL goes dead the moment the server is restarted to pick up a
+# code change, and the review loop starts looking like it lives in the process
+# rather than in the ledger. So the port is a function of the document, on the
+# same normalization the store keys by, and every departure from it is said out
+# loud rather than discovered.
+
+
+def free_port() -> int:
+    """A port nothing is listening on, as of a moment ago."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def squat(port: int) -> socket.socket:
+    """Hold ``port`` the way another process would, or skip.
+
+    The suite does not own the machine's ports. When the one under test is
+    already held from outside, there is nothing to arrange and asserting about
+    it would be asserting about somebody else's process.
+    """
+    holder = socket.socket()
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        holder.bind(("127.0.0.1", port))
+        holder.listen(1)
+    except OSError as exc:
+        holder.close()
+        pytest.skip(f"port {port} is held from outside the suite ({exc})")
+    return holder
+
+
+@pytest.fixture
+def derived_free(doc):
+    """This document's derived port, confirmed free — or the test is skipped."""
+    port = derived_port(doc)
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            pytest.skip(f"port {port} is held from outside the suite ({exc})")
+    return port
+
+
+def test_one_document_derives_one_port(doc):
+    assert derived_port(doc) == derived_port(doc)
+
+
+def test_the_derived_port_sits_in_the_dynamic_range(tmp_path):
+    """Nothing registered, nothing privileged — the range meant for exactly this."""
+    ports = [derived_port(tmp_path / f"doc-{n}.md") for n in range(500)]
+    assert all(PORT_FLOOR <= port <= PORT_CEILING for port in ports)
+
+
+def test_different_documents_land_on_different_ports(tmp_path):
+    """"Different" is the honest claim, not "distinct": 16k ports, more documents.
+
+    Collisions are arithmetic, not a defect — the fallback below is what makes
+    them harmless. What would be a defect is a derivation that clumps, so the
+    margin here is wide enough to pass on chance and narrow enough to fail on a
+    hash that stopped spreading.
+    """
+    ports = {derived_port(tmp_path / f"doc-{n}.md") for n in range(100)}
+    assert len(ports) >= 95
+
+
+def test_the_derived_port_follows_the_store_key_not_the_spelling(tmp_path, doc):
+    """One document, one history, one port — the store's normalization, reused.
+
+    A symlink and the file behind it are the same document to the store (§1.2),
+    so a view opened through either has to be the same view. Deriving the port
+    off the raw string instead would put one document on two ports, and the
+    reviewer with the second URL would be reading the same ledger through an
+    address nothing else agrees on.
+    """
+    link = tmp_path / "link-to-spec.md"
+    link.symlink_to(doc)
+    assert derived_port(link) == derived_port(doc)
+
+
+def test_the_default_port_is_the_derived_one_and_a_restart_returns_to_it(store, doc, derived_free):
+    """The whole point: same document, same URL host and port, across restarts."""
+    first = WebView(store=store, path=doc, author="alice").bind()
+    assert first.port == derived_free
+    assert first.port_source == DERIVED
+    assert first.wanted_port is None
+    first.shutdown()
+
+    second = WebView(store=store, path=doc, author="alice").bind()
+    assert second.port == derived_free
+    assert second.port_source == DERIVED
+    second.shutdown()
+
+
+def test_the_token_still_changes_every_restart(store, doc, derived_free):
+    """A stable port is not a stable URL, and that is the design.
+
+    The port is addressing; the token is authorisation. Restarting is a new
+    grant, so the token is new — an embedder re-reads the printed line either
+    way, and a token that outlived the process would be one a stale tab could
+    still post through.
+    """
+    first = WebView(store=store, path=doc, author="alice").bind()
+    first.shutdown()
+    second = WebView(store=store, path=doc, author="alice").bind()
+    second.shutdown()
+    assert first.port == second.port
+    assert first.token != second.token
+    assert first.url != second.url
+
+
+def test_a_taken_port_falls_back_to_a_free_one_and_records_why(store, doc):
+    """Never a silent move: the reason the URL differs is on the view."""
+    wanted = derived_port(doc)
+    holder = squat(wanted)
+    try:
+        served = WebView(store=store, path=doc, author="alice")
+        served.start()
+        try:
+            assert served.port != wanted
+            assert served.port_source == FALLBACK
+            assert served.wanted_port == wanted
+            assert served.port_reason
+            # And it is a working view, not a degraded one.
+            assert state(served)["schema"] == VIEW_SCHEMA
+        finally:
+            served.shutdown()
+    finally:
+        holder.close()
+
+
+def test_an_explicit_port_outranks_the_derived_one(store, doc, derived_free):
+    port = free_port()
+    view = WebView(store=store, path=doc, author="alice", port=port).bind()
+    try:
+        assert view.port == port != derived_free
+        assert view.port_source == PINNED
+    finally:
+        view.shutdown()
+
+
+def test_a_pinned_port_that_is_taken_is_refused_rather_than_moved(store, doc):
+    """The caller named this port. Serving a different one would answer past them."""
+    holder = squat(free_port())
+    taken = holder.getsockname()[1]
+    try:
+        with pytest.raises(PortTaken) as caught:
+            WebView(store=store, path=doc, author="alice", port=taken).bind()
+    finally:
+        holder.close()
+    assert str(taken) in str(caught.value)
+
+
+def test_port_zero_is_how_you_ask_for_a_free_one(store, doc):
+    """The old default, kept as an opt-in for a caller that wants no stability."""
+    view = WebView(store=store, path=doc, author="alice", port=0).bind()
+    try:
+        assert view.port > 0
+        assert view.port_source == EPHEMERAL
+    finally:
+        view.shutdown()
+
+
+def test_a_directory_view_derives_from_the_tree_not_the_document_it_opens_on(store, doc, tmp_path):
+    """H15 serves a tree, so the tree is what the caller named and what decides.
+
+    Deriving from the opening document would move the whole workspace's port the
+    day someone adds a file that sorts before it — a port that depends on the
+    contents of a folder is not one anybody can rely on.
+    """
+    space = Workspace(root=tmp_path)
+    view = WebView(store=store, path=doc, author="alice", workspace=space, doc="spec.md")
+    assert view.port_path == space.root
+    assert derived_port(space.root) != derived_port(doc)
 
 
 # -- lifecycle -----------------------------------------------------------
