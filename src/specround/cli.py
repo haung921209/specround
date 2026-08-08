@@ -428,23 +428,34 @@ def _comment_rows(comments: Sequence[Comment], *, hidden: Sequence[str] = ()) ->
     even though the rows are not: hiding is a view decision, and a view that
     hid something without saying so would read as "there is nothing else".
     """
+    # The THREAD column exists exactly when it distinguishes something: the
+    # default listing hides resolved threads, so every row is an open one and
+    # the column would be noise. Once --all puts resolved rows on the screen,
+    # leaving them unmarked showed a closed conversation as an open one (the
+    # 2026-08-08 report behind the two-axis split hit this table).
+    threaded = any(comment.resolved for comment in comments)
     rows: list[list[str]] = []
     for comment in comments:
-        rows.append(
-            [
-                comment.id,
-                comment.kind,
-                comment.state,
-                comment.author,
-                _anchor_cell(comment),
-                _clip(comment.patch or comment.body, _BODY_WIDTH),
-            ]
-        )
-        rows.extend(
-            [f"{_REPLY_INDENT}{reply.id}", "reply", "", reply.author, "", _clip(reply.body, _BODY_WIDTH)]
-            for reply in comment.replies
-        )
-    lines = _table(["ID", "KIND", "STATE", "AUTHOR", "ANCHOR", "BODY"], rows)
+        row = [
+            comment.id,
+            comment.kind,
+            comment.state,
+            comment.author,
+            _anchor_cell(comment),
+            _clip(comment.patch or comment.body, _BODY_WIDTH),
+        ]
+        if threaded:
+            row.insert(3, "resolved" if comment.resolved else "")
+        rows.append(row)
+        for reply in comment.replies:
+            reply_row = [f"{_REPLY_INDENT}{reply.id}", "reply", "", reply.author, "", _clip(reply.body, _BODY_WIDTH)]
+            if threaded:
+                reply_row.insert(3, "")
+            rows.append(reply_row)
+    header = ["ID", "KIND", "STATE", "AUTHOR", "ANCHOR", "BODY"]
+    if threaded:
+        header.insert(3, "THREAD")
+    lines = _table(header, rows)
 
     # Footers rather than columns: each reports an uncommon case, and widening
     # every row for it would cost the common case to describe the exception.

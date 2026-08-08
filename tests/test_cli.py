@@ -1601,3 +1601,29 @@ def test_view_stopping_with_ctrl_c_is_a_clean_exit(run, doc, opened, monkeypatch
     result = run("view", doc, "--author", "alice")
     assert result.code == 0
     assert "stopped" in result.err
+
+
+def test_the_all_listing_marks_resolved_threads_in_their_rows(run, doc, opened):
+    """A resolved thread shown by --all must not look like an open one.
+
+    The report that forced the two-axis split (2026-08-08) hit this table:
+    seventeen rows, some resolved, none marked — the reader had no way to see
+    which conversations were over. The THREAD column appears exactly when the
+    listing contains a resolved thread, so the default view (which hides them)
+    keeps its width.
+    """
+    settled = a_comment(run, doc, quote="client sends")
+    still_open = a_comment(run, doc, quote="30 seconds")
+    run("resolve", doc, "--comment", settled, "--author", "alice", "--note", "done")
+
+    every = run("comments", doc, "--all").out.splitlines()
+    header = next(line for line in every if line.startswith("ID"))
+    assert "THREAD" in header
+    settled_row = next(line for line in every if line.startswith(settled))
+    still_open_row = next(line for line in every if line.startswith(still_open))
+    assert "resolved" in settled_row
+    assert "resolved" not in still_open_row
+
+    live_only = run("comments", doc).out.splitlines()
+    live_header = next(line for line in live_only if line.startswith("ID"))
+    assert "THREAD" not in live_header
