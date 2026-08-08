@@ -298,7 +298,18 @@ target is spec and prose documents — PR tools already do code well).
   accounts, one reviewer's own devices. Held open until a second device is
   actually used: the exposure step deserves its own look (token lifetime,
   HTTPS or not on a tailnet), and mobile ergonomics (touch selection → gutter)
-  is real work that should be pulled by use, not predicted
+  is real work that should be pulled by use, not predicted.
+  Axes named while thinking it through (2026-08-08): **getting the URL onto
+  the phone is the real friction** — a `--qr` that prints a scannable code is
+  cheap and enough; **server lifetime is the real decision** — phone-as-second-
+  screen (the desk session serves, philosophy unchanged) versus an always-on
+  daemon (reachable any time, but the ephemeral-process contract and its
+  reclamation would have to be rewritten) — second screen first, daemon only
+  if "no session was up and I reached for the phone" is actually observed;
+  **line-number tap is the primary mobile gesture** (touch drag-selection is
+  poor — the gutter tap already built carries mobile); and a passively
+  updating thread view would add a polling/SSE question that does not exist
+  on the desk
 - H17 mapping a round to its consuming session (user, thinking aloud
   2026-08-08). Today the agent *pulls* ("collect when asked"); the idea is a
   submitted suggestion or comment finding the session that is working on that
