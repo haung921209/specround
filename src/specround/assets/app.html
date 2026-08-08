@@ -216,7 +216,14 @@ const $ = (id) => document.getElementById(id);
 // server: the process holds no selection, which is what lets two tabs on one
 // port read two documents at once. Null until the first state arrives, and
 // always null for a file view, where the server serves the one document it has.
-const state = { data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false };
+// `reply` is the inline reply editors: `open` is the one card showing one, and
+// `drafts` is what has been typed on any card, open or not. Two fields because
+// they answer different questions — a card can hold words nobody is looking at,
+// and a card can be open with nothing typed into it yet.
+const state = {
+  data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false,
+  reply: { open: null, drafts: {} },
+};
 
 // -- transport ------------------------------------------------------------
 
@@ -404,6 +411,49 @@ function focusScroll(origin, present) {
   if (origin !== "card") return present.card ? "card" : "";
   if (present.mark) return "anchor";
   return present.orphaned ? "orphan" : "";
+}
+
+function replyAfter(reply, action) {
+  // The whole rule for the inline reply editors, in one place, so that the six
+  // handlers that move them cannot each hold a slightly different version of it.
+  //
+  // Two things are being kept true at once. At most one editor is open, because
+  // two textareas with a cursor in one of them is how a reviewer answers the
+  // wrong thread. And no editor closes on words it was not told to drop: the
+  // one gesture that means "I do not want this" is `discard` (the cancel
+  // button, and a reply that went through), while turning to another card only
+  // `open`s that one and leaves the first card's half-sentence on the card it
+  // was meant for. Losing a draft to a click that was about some other thread
+  // is the failure this split exists to make impossible.
+  //
+  // `close` is that same stowing without naming a replacement — what a top
+  // composer does when it takes the page's one cursor.
+  const drafts = Object.assign({}, reply.drafts);
+  if (action.kind === "reset") return { open: null, drafts: {} };
+  if (action.kind === "open") return { open: action.id, drafts };
+  if (action.kind === "close") return { open: null, drafts };
+  if (action.kind === "type") {
+    // An emptied box is not a draft. Otherwise a reviewer who selected their
+    // words and deleted them would still be told a draft was waiting.
+    if (action.text) drafts[action.id] = action.text;
+    else delete drafts[action.id];
+    return { open: reply.open, drafts };
+  }
+  if (action.kind === "discard") {
+    delete drafts[action.id];
+    return { open: reply.open === action.id ? null : reply.open, drafts };
+  }
+  // Every caller passes a literal, so an unknown kind is a typo, and a typo
+  // that returned the state unchanged would look exactly like a dead button.
+  throw new Error("unknown reply action: " + action.kind);
+}
+
+function replyLabel(reply, id) {
+  // A draft nobody can see has to say it is there. Without this, a card whose
+  // editor was stowed to open another one is indistinguishable from a card that
+  // lost what was typed into it — and "it lost my words" is the reading a
+  // reviewer will reach for first.
+  return !reply.drafts[id] || reply.open === id ? "reply" : "reply · draft";
 }
 
 // -- end of the pure part -------------------------------------------------

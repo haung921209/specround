@@ -593,6 +593,162 @@ def test_the_document_is_drawn_before_the_threads_that_point_into_it():
     assert document_half.start() < thread_half.start()
 
 
+# -- replying in the card ------------------------------------------------
+#
+# The box a reply is written in moved from the top of the column into the thread
+# it answers. What a machine can hold to account there is not the box but the
+# bookkeeping behind it — which card is open, and what has been typed on the ones
+# that are not — so that is what is lifted and run here.
+
+
+def reply_after(actions, tmp_path, start=None):
+    """Fold ``actions`` through the page's own reducer, from ``start``."""
+    given = {"reply": start or {"open": None, "drafts": {}}, "actions": actions}
+    return in_node("input.actions.reduce(replyAfter, input.reply)", given, tmp_path)
+
+
+def test_only_one_reply_editor_is_open_at_a_time(tmp_path):
+    """Two open boxes is one answer landing on the wrong thread.
+
+    The card is the only thing naming the target of a reply now that the title
+    at the top of the column is gone, so a second box with a cursor in it has
+    nothing on screen distinguishing it from the first.
+    """
+    ended = reply_after([{"kind": "open", "id": "c-1"}, {"kind": "open", "id": "c-2"}], tmp_path)
+    assert ended["open"] == "c-2"
+
+
+def test_turning_to_another_thread_keeps_what_the_first_one_was_told(tmp_path):
+    """Closing a box is a side effect here, not the reviewer's decision.
+
+    Clicking reply on another card says something about that card and nothing
+    about this one, so it must not be the gesture that throws half a sentence
+    away. The draft stays on the card it was addressed to and comes back when
+    that card is opened again.
+    """
+    ended = reply_after(
+        [
+            {"kind": "open", "id": "c-1"},
+            {"kind": "type", "id": "c-1", "text": "half a thought"},
+            {"kind": "open", "id": "c-2"},
+        ],
+        tmp_path,
+    )
+    assert ended == {"open": "c-2", "drafts": {"c-1": "half a thought"}}
+
+
+def test_cancel_is_the_only_click_that_throws_words_away(tmp_path):
+    """One gesture means "I do not want this", and only it destroys anything.
+
+    A reply that lands takes the same path, for the same reason: the words are
+    on the thread now, so the box has nothing left to hold.
+    """
+    typed = [{"kind": "open", "id": "c-1"}, {"kind": "type", "id": "c-1", "text": "no"}]
+    ended = reply_after([*typed, {"kind": "discard", "id": "c-1"}], tmp_path)
+    assert ended == {"open": None, "drafts": {}}
+
+
+def test_a_refused_reply_is_handed_back_rather_than_swallowed(tmp_path):
+    """The resolved-thread refusal (I11), from the page's side.
+
+    The box is closed before the request so that a reply which lands does not
+    get redrawn around its own text. A refusal therefore has to undo that, and
+    what it undoes to is the box open with the words still in it — otherwise the
+    server naming the fix ("reopen it") would arrive beside an empty column and
+    the reviewer would have to write the reply twice.
+    """
+    ended = reply_after(
+        [
+            {"kind": "open", "id": "c-1"},
+            {"kind": "type", "id": "c-1", "text": "one more thing"},
+            {"kind": "discard", "id": "c-1"},
+            {"kind": "open", "id": "c-1"},
+            {"kind": "type", "id": "c-1", "text": "one more thing"},
+        ],
+        tmp_path,
+    )
+    assert ended == {"open": "c-1", "drafts": {"c-1": "one more thing"}}
+
+
+def test_an_emptied_box_is_not_a_draft(tmp_path):
+    """A reviewer who deleted what they wrote did not leave a draft behind.
+
+    Without this the badge below would offer back an empty string, which reads
+    as "there is something here" about nothing.
+    """
+    ended = reply_after(
+        [
+            {"kind": "open", "id": "c-1"},
+            {"kind": "type", "id": "c-1", "text": "typed"},
+            {"kind": "type", "id": "c-1", "text": ""},
+        ],
+        tmp_path,
+    )
+    assert ended["drafts"] == {}
+
+
+def test_a_composer_at_the_top_stows_the_open_box_without_emptying_it(tmp_path):
+    """The rule is one cursor on the page, not one cursor in the column.
+
+    Commenting on the document, disposing, and resolving all still open at the
+    top, and any of them taking the cursor closes the card's box. None of them
+    is a decision about the reply, so none of them drops it.
+    """
+    ended = reply_after(
+        [
+            {"kind": "open", "id": "c-1"},
+            {"kind": "type", "id": "c-1", "text": "kept"},
+            {"kind": "close"},
+        ],
+        tmp_path,
+    )
+    assert ended == {"open": None, "drafts": {"c-1": "kept"}}
+
+
+def test_a_new_document_keeps_none_of_the_previous_ones_drafts(tmp_path):
+    """Drafts are addressed to comment ids, and ids belong to one ledger.
+
+    Carrying them across would mean offering a reply written for one document
+    back on whichever card of another happened to share its id.
+    """
+    ended = reply_after(
+        [{"kind": "open", "id": "c-1"}, {"kind": "type", "id": "c-1", "text": "gone"},
+         {"kind": "reset"}],
+        tmp_path,
+    )
+    assert ended == {"open": None, "drafts": {}}
+
+
+def test_a_draft_nobody_can_see_says_that_it_is_there(tmp_path):
+    """The one thing that makes stowing a draft different from losing it.
+
+    A card whose box was closed to open another looks exactly like a card that
+    threw the text away, and the reviewer cannot tell which happened by looking.
+    The button says. The open card does not, because its words are on screen.
+    """
+    stowed = {"open": "c-2", "drafts": {"c-1": "kept"}}
+    assert in_node("replyLabel(input, 'c-1')", stowed, tmp_path) == "reply · draft"
+    assert in_node("replyLabel(input, 'c-2')", stowed, tmp_path) == "reply"
+    open_with_words = {"open": "c-1", "drafts": {"c-1": "kept"}}
+    assert in_node("replyLabel(input, 'c-1')", open_with_words, tmp_path) == "reply"
+
+
+def test_an_action_the_reducer_does_not_know_is_a_typo_and_says_so(tmp_path):
+    """Every caller passes a literal, so there is no such thing at runtime.
+
+    Returning the state unchanged would make a misspelled kind look exactly like
+    a button that was wired to nothing — the failure the route and field gates
+    further down exist to keep out of this page.
+    """
+    caught = in_node(
+        "(() => { try { replyAfter(input, {kind: 'stow', id: 'c-1'}); return 'no error'; }"
+        " catch (error) { return error.message; } })()",
+        {"open": None, "drafts": {}},
+        tmp_path,
+    )
+    assert caught == "unknown reply action: stow"
+
+
 # -- suggestions (G8) ----------------------------------------------------
 
 
