@@ -147,6 +147,13 @@ class Comment:
     #: The reserved additive object, exactly as the record carried it. The fold
     #: does not look inside — preserving it is the whole contract (§2).
     ext: dict[str, Any] | None = None
+    #: I12: :attr:`current_anchor` does not hold in the base this comment is
+    #: painted on. **The pure fold never sets this** — deciding it means opening
+    #: a snapshot, so :class:`~specround.store.ReviewStore` stamps it on the way
+    #: out, the same one-layer-out arrangement I7 already uses. ``False`` from a
+    #: bare fold therefore means "not checked", not "checked and clean"; every
+    #: read that matters goes through a store.
+    misplaced: bool = False
 
     @property
     def disposition(self) -> Disposition | None:

@@ -296,6 +296,7 @@ class ReviewStore:
         """
         state = self.ledger.state()
         self._verify_anchors(state)
+        self._flag_misplaced(state)
         return state
 
     def _snapshot_text(self, base: str) -> str:
@@ -344,6 +345,50 @@ class ReviewStore:
                     self._check_anchor(
                         attempt.anchor, attempt.base, f"the anchor on {attempt.id!r}"
                     )
+
+    def painting_base(self, state: State, key: str) -> str | None:
+        """The snapshot a surface draws ``key`` as — the latest round's base.
+
+        Every surface reads one text and paints every comment on it: the web
+        view renders this snapshot in all three modes (I7), and the CLI quotes
+        against it. Which round that is has one answer and it is the newest,
+        because a review moves forward — so this is the space
+        :attr:`~specround.fold.Comment.current_anchor` has to be in.
+        """
+        for round_ in reversed(list(state.rounds.values())):
+            if round_.doc == key:
+                return round_.base
+        return None
+
+    def _flag_misplaced(self, state: State) -> None:
+        """I12: stamp every comment whose anchor does not hold where it is drawn.
+
+        A separate question from I7, and the reason the bug it catches survived:
+        I7 asks whether an anchor agrees with the snapshot **it names**, and a
+        re-anchor cut from a revision agrees with that revision perfectly. What
+        nobody asked was whether it agrees with the snapshot it is *painted on*.
+        The two coincide only while every anchor lives in a round's base, which
+        is what :meth:`open_round` now maintains.
+
+        This does **not** raise. A ledger that already holds such anchors is
+        real (measured: 12 of 17 comments on one document), and refusing to fold
+        it would take away the only way to read it — including
+        :meth:`repair_document`, which is how it gets fixed. So the finding is
+        carried on the comment and the surfaces refuse to draw it, which is the
+        difference between a silent wrong answer and a visible one.
+        """
+        bases: dict[str, str | None] = {}
+        for comment in state.comments.values():
+            anchor = comment.current_anchor
+            if anchor is None:
+                continue
+            key = state.rounds[comment.round].doc
+            if key not in bases:
+                bases[key] = self.painting_base(state, key)
+            base = bases[key]
+            if base is None:  # pragma: no cover - a comment implies a round
+                continue
+            comment.misplaced = not anchor.matches(self._snapshot_text(base))
 
     def round_base(self, round_id: str) -> str:
         """The snapshot reference this round froze."""
