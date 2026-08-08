@@ -1252,9 +1252,14 @@ def _port_note(view: WebView) -> str | None:
     """
     if view.port_source != FALLBACK:
         return None
+    # Naming the likely holder earns its clause: on the port a document always
+    # gets, the thing most likely to be sitting there is that document's own
+    # earlier view. "Possibly" rather than "probably" — nothing here checked, and
+    # a guess dressed as a finding is what this codebase refuses everywhere else.
     return (
-        f"{view.wanted_port} is this document's usual port and something else holds it "
-        f"({view.port_reason}), so this view took a free one — the URL differs from last time"
+        f"{view.wanted_port} is this document's usual port and something already holds it "
+        f"({view.port_reason}) — possibly a view of this document that is still up. This one "
+        "took a free port, so the URL differs from last time"
     )
 
 
