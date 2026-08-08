@@ -518,20 +518,25 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     state = target.store.fold()
     round_ = _live_round(state, target.key, args.round, verb="close")
-    outstanding = sorted(c.id for c in state.unresolved_in(round_.id))
-    if outstanding and not args.allow_unresolved:
+    outstanding = sorted(c.id for c in state.undisposed_in(round_.id))
+    if outstanding and not args.allow_undisposed:
         # The store refuses this too, and it stays the gate. This check exists
         # only to name the flag a shell caller actually has — the library's own
         # message names its keyword argument, which is right there and wrong here.
+        #
+        # It says *undisposed*, and the second sentence says why: the reader who
+        # hits this has often just resolved the thread and needs to know that
+        # ending the talk was not the thing being asked for.
         raise InvariantError(
-            f"round {round_.id} has {len(outstanding)} unresolved comment(s) "
-            f"({', '.join(outstanding)}): dispose them, or pass --allow-unresolved "
-            "to record that they were left open"
+            f"round {round_.id} has {len(outstanding)} undisposed comment(s) "
+            f"({', '.join(outstanding)}): dispose them, or pass --allow-undisposed "
+            "to record that they were left open. Resolving the thread does not "
+            "count — that closes the conversation, this asks for a verdict"
         )
     close_id = target.store.close_round(
         round_.id,
         author=_author(args),
-        allow_unresolved=args.allow_unresolved,
+        allow_undisposed=args.allow_undisposed,
         note=args.note or None,
     )
     state = target.store.fold()
@@ -540,44 +545,57 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         **target.envelope(),
         "round": round_json(state, closed),
         "close": close_id,
-        "unresolved": list(closed.unresolved_at_close),
+        "undisposed": list(closed.undisposed_at_close),
     }
     lines = [f"closed {round_.id} on {target.key}"]
-    if closed.unresolved_at_close:
+    if closed.undisposed_at_close:
         lines.append(
-            f"left unresolved ({len(closed.unresolved_at_close)}): "
-            + ", ".join(closed.unresolved_at_close)
+            f"left undisposed ({len(closed.undisposed_at_close)}): "
+            + ", ".join(closed.undisposed_at_close)
         )
     return payload, lines
 
 
 def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Where the whole review stands, with the two outstanding axes kept apart.
+
+    ``undisposed`` counts comments nobody has given a verdict; ``unresolved``
+    counts conversations nobody has ended. They were one number under one word
+    once, and the word was the one the ``resolve`` verb uses — so resolving a
+    thread and watching the count hold still read as the tool ignoring the
+    command, when it was answering a different question. Both are reported,
+    named for the verb that moves each.
+    """
     # Read-only: a document that was renamed or deleted still has history, and
     # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
     target = _target(args, missing_ok=True)
     state = target.store.fold()
     rounds = rounds_on(state, target.key)
     comments = comments_on(state, target.key)
-    unresolved = [c.id for c in comments if c.unresolved]
+    undisposed = [c.id for c in comments if c.undisposed]
+    unresolved_threads = [c.id for c in comments if not c.resolved]
     orphans = [c.id for c in comments if c.orphaned]
     open_ids = [r.id for r in rounds if r.open]
     payload = {
         **target.envelope(),
         "rounds": [round_json(state, r) for r in rounds],
         "open": open_ids,
-        "unresolved": unresolved,
+        "undisposed": undisposed,
+        "unresolved_threads": unresolved_threads,
         "orphans": orphans,
         "counts": {
             "rounds": len(rounds),
             "comments": len(comments),
-            "unresolved": len(unresolved),
+            "undisposed": len(undisposed),
+            "unresolved_threads": len(unresolved_threads),
             "orphans": len(orphans),
             "events": state.count,
         },
     }
     lines = [
         f"{target.key} — {len(rounds)} round(s), {len(open_ids)} open, "
-        f"{len(comments)} comment(s), {len(unresolved)} unresolved, "
+        f"{len(comments)} comment(s), {len(undisposed)} undisposed, "
+        f"{len(unresolved_threads)} unresolved thread(s), "
         f"{len(orphans)} orphaned",
         f"store  {target.store.root}",
     ]
@@ -585,19 +603,23 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         lines.append("")
         lines.extend(
             _table(
-                ["ROUND", "STATUS", "COMMENTS", "UNRESOLVED", "BASE", "TITLE"],
+                # The two columns sit side by side on purpose: adjacent numbers
+                # that disagree are the shortest way to say they are two
+                # questions, and this table is where the reader is looking.
+                ["ROUND", "STATUS", "COMMENTS", "UNDISPOSED", "UNRESOLVED", "BASE", "TITLE"],
                 [
                     [
                         r.id,
                         r.status,
                         str(len(state.comments_in(r.id))),
-                        str(sum(1 for c in state.comments_in(r.id) if c.unresolved)),
+                        str(sum(1 for c in state.comments_in(r.id) if c.undisposed)),
+                        str(sum(1 for c in state.comments_in(r.id) if not c.resolved)),
                         _short(r.base),
                         _clip(r.title, _BODY_WIDTH),
                     ]
                     for r in rounds
                 ],
-                right=frozenset({2, 3}),
+                right=frozenset({2, 3, 4}),
             )
         )
     else:
@@ -702,8 +724,8 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         if chosen is None or chosen.doc != target.key:
             raise UsageError(f"no round {args.round!r} on {target.key}")
         items = [c for c in items if c.round == args.round]
-    if args.unresolved:
-        items = [c for c in items if c.unresolved]
+    if args.undisposed:
+        items = [c for c in items if c.undisposed]
     # The thread axis filters last, so --all reports against the same set the
     # other filters produced rather than against the whole document.
     hidden = [] if args.all else [c.id for c in items if c.resolved]
@@ -1170,7 +1192,7 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
     lines = [
         view.url,
         f"serving {counts['documents']} document(s) under {root} — "
-        f"{counts['active']} with review activity, {counts['unresolved']} unresolved",
+        f"{counts['active']} with review activity, {counts['undisposed']} undisposed",
         f"open   {opening.key}",
     ]
     stores = {document.store for document in listing.documents}
@@ -1266,9 +1288,9 @@ def build_parser() -> argparse.ArgumentParser:
     closer.add_argument("--round", metavar="ID", help="close this round rather than the open one")
     closer.add_argument("--note", default="", help="a closing note")
     closer.add_argument(
-        "--allow-unresolved",
+        "--allow-undisposed",
         action="store_true",
-        help="close over undisposed comments, recording which ones were left",
+        help="close over comments with no verdict, recording which ones were left",
     )
     closer.set_defaults(handler=_round_close, verb_name="round.close")
 
@@ -1339,7 +1361,7 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("doc")
     listing.add_argument("--round", metavar="ID", help="only comments in this round")
     listing.add_argument(
-        "--unresolved", action="store_true", help="only comments still owed an answer"
+        "--undisposed", action="store_true", help="only comments still owed a verdict"
     )
     listing.add_argument(
         "--all",

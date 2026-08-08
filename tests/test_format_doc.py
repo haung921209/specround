@@ -106,9 +106,9 @@ def test_the_worked_example_is_a_valid_ledger(doc_text):
 def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
     records = [json.loads(line) for line in jsonl_blocks(doc_text)[0]]
     state = fold(records)
-    # The prose says: no open rounds, one unresolved comment, deferred.
+    # The prose says: no open rounds, one undisposed comment, deferred.
     assert state.open_rounds == []
-    assert [(c.id, c.state) for c in state.unresolved] == [("c-7863abd8f91e", "deferred")]
+    assert [(c.id, c.state) for c in state.undisposed] == [("c-7863abd8f91e", "deferred")]
     assert len(state.comments) == 3
     assert sorted(c.state for c in state.comments.values()) == [
         "applied",
@@ -116,7 +116,7 @@ def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
         "rejected",
     ]
     closed = next(iter(state.rounds.values()))
-    assert closed.unresolved_at_close == ["c-7863abd8f91e"]
+    assert closed.undisposed_at_close == ["c-7863abd8f91e"]
     # And: two orphans after the third revision, one of them already settled —
     # the prose makes a point of the axes being independent.
     assert [c.id for c in state.orphans] == ["c-d35c1ebd2b14", "s-086c5beb81f0"]

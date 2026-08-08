@@ -41,7 +41,7 @@ EMPTY_SUMMARY: dict[str, Any] = {
     "rounds": 0,
     "open_rounds": 0,
     "comments": 0,
-    "unresolved": 0,
+    "undisposed": 0,
     "orphans": 0,
     "resolved": 0,
     "last_activity": None,
@@ -65,8 +65,12 @@ def document_summary(state: State, key: str) -> dict[str, Any]:
     not answer — the counts are over *every* round on the document rather than
     the one a view is writing to. It lives here with the rest of the wire shapes
     because a navigation bar and a ``--json`` caller must not learn two different
-    definitions of "unresolved"; the counts below are the same ones
+    definitions of "undisposed"; the counts below are the same ones
     :func:`round_json` and :func:`comment_json` derive, read off the same fold.
+
+    ``undisposed`` and ``resolved`` are the two axes a reader confuses, so both
+    are here and neither is derived from the other: how many comments nobody has
+    decided, and how many conversations somebody has ended.
 
     ``last_activity`` is the latest timestamp on anything recorded about this
     document. It is **display only**. The ledger is explicit that timestamps
@@ -87,7 +91,7 @@ def document_summary(state: State, key: str) -> dict[str, Any]:
         "rounds": len(rounds),
         "open_rounds": sum(1 for r in rounds if r.open),
         "comments": len(comments),
-        "unresolved": sum(1 for c in comments if c.unresolved),
+        "undisposed": sum(1 for c in comments if c.undisposed),
         "orphans": sum(1 for c in comments if c.orphaned),
         "resolved": sum(1 for c in comments if c.resolved),
         "last_activity": max(stamps) if stamps else None,
@@ -166,8 +170,15 @@ def comment_json(comment: Comment) -> dict[str, Any]:
 
     The three axes are three separate keys, because they are three separate
     questions and collapsing any two would make the answer unreadable:
-    ``unresolved`` (has anyone decided this?), ``orphaned`` (can it still be
+    ``undisposed`` (has anyone decided this?), ``orphaned`` (can it still be
     placed on the document?), ``resolved`` (is the conversation over?).
+
+    There is no ``unresolved`` key on a comment. The thread axis is ``resolved``
+    and a single comment's answer to "is this conversation over" is one boolean,
+    so a second key would only be the first one negated — under the word that
+    used to mean the *other* axis. A consumer still reading ``unresolved`` gets
+    a missing key, which is a bug it can see, rather than a boolean that quietly
+    inverted.
     """
     placed = comment.current_anchoring
     return {
@@ -181,7 +192,7 @@ def comment_json(comment: Comment) -> dict[str, Any]:
         "anchor": anchor_json(comment.anchor),
         "current_anchor": anchor_json(comment.current_anchor),
         "state": comment.state,
-        "unresolved": comment.unresolved,
+        "undisposed": comment.undisposed,
         "orphaned": comment.orphaned,
         "anchoring": anchoring_json(comment.anchoring),
         "ext": comment.ext,
@@ -196,6 +207,13 @@ def comment_json(comment: Comment) -> dict[str, Any]:
 
 
 def round_json(state: State, round_: Round) -> dict[str, Any]:
+    """One round, with both outstanding counts kept apart.
+
+    ``undisposed_count`` is what ``round.close`` has to account for (I6);
+    ``unresolved_thread_count`` is how much of the conversation this round
+    started is still going. A round can close with the first at zero and the
+    second not, which is ordinary — the fix landed and the talk carries on.
+    """
     comments = state.comments_in(round_.id)
     return {
         "id": round_.id,
@@ -208,8 +226,9 @@ def round_json(state: State, round_: Round) -> dict[str, Any]:
         "closed_by": round_.closed_by,
         "closed_ts": round_.closed_ts,
         "close_note": round_.close_note,
-        "unresolved_at_close": list(round_.unresolved_at_close),
+        "undisposed_at_close": list(round_.undisposed_at_close),
         "ext": round_.ext,
         "comment_count": len(comments),
-        "unresolved_count": sum(1 for c in comments if c.unresolved),
+        "undisposed_count": sum(1 for c in comments if c.undisposed),
+        "unresolved_thread_count": sum(1 for c in comments if not c.resolved),
     }

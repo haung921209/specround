@@ -184,12 +184,12 @@ def test_an_orphan_is_not_a_disposition(store, doc, anchored_comment):
     revise(doc, QUOTE_TEXT, "")
     store.reanchor_document(doc, author="agent:reanchor")
     state = store.fold()
-    assert state.orphans == state.unresolved  # both, right now
+    assert state.orphans == state.undisposed  # both, right now
 
     store.dispose(anchored_comment, author="alice", verdict="rejected", reason="dropped")
     state = store.fold()
     assert [c.id for c in state.orphans] == [anchored_comment]
-    assert state.unresolved == []  # settled, and still orphaned
+    assert state.undisposed == []  # settled, and still orphaned
 
 
 # -- scope ----------------------------------------------------------------
@@ -237,7 +237,7 @@ def test_suggestions_travel_the_same_way_as_comments(store, doc, round_id, doc_t
 def test_re_anchoring_does_not_need_an_open_round(store, doc, round_id, anchored_comment, doc_text):
     """A comment outlives its round; the revision that moves it usually lands later."""
     store.dispose(anchored_comment, author="alice", verdict="deferred", reason="next round")
-    store.close_round(round_id, author="alice", allow_unresolved=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True)
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
     report = store.reanchor_document(doc, author="agent:reanchor")
     assert report.rebound == [anchored_comment]
