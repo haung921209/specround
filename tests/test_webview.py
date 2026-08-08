@@ -22,7 +22,7 @@ import urllib.request
 
 import pytest
 
-from specround import markdown
+from specround import assetfiles, markdown
 from specround.anchors import anchor_for
 from specround.webview import (
     DERIVED,
@@ -1458,6 +1458,243 @@ def test_a_json_array_is_not_a_request(view):
     status, payload = call(view, "/api/comment", ["not", "an", "object"])
     assert status == 400
     assert "JSON object" in payload["error"]["message"]
+
+
+# -- the files a document points at --------------------------------------
+#
+# Over the socket, like everything else here: the browser is what asks for a
+# picture, and what it meets is a status, a content type, and a body. Asserting
+# on `assetfiles.resolve` alone would leave the token in front of it, the header
+# that stops sniffing, and the four refusals staying four untested.
+
+
+#: A one-pixel PNG — small, real, and not a fixture anybody has to keep.
+PIXEL = bytes.fromhex(
+    "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+    "01f15c4890000000a49444154789c6300010000050001"
+    "0d0a2db40000000049454e44ae426082"
+)
+
+
+def asset(view, ref, *, token=None, doc=None):
+    """One asset request. Returns ``(status, headers, body-bytes)``.
+
+    Not through ``call``: that decodes utf-8 and parses JSON, and the answer
+    here is a PNG on the way through.
+    """
+    query = {"t": view.token if token is None else token, "path": ref}
+    if doc is not None:
+        query["doc"] = doc
+    url = f"http://{view.host}:{view.port}/api/asset?" + urllib.parse.urlencode(query)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=10) as response:
+            return response.status, dict(response.headers), response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, dict(error.headers), error.read()
+
+
+def refusal(view, ref, **kwargs):
+    """The reason code behind a refused asset, with the status asserted."""
+    status, _, body = asset(view, ref, **kwargs)
+    assert status == 404, body
+    return json.loads(body)["error"]
+
+
+def test_a_picture_beside_the_document_is_served(view, doc):
+    (doc.parent / "shot.png").write_bytes(PIXEL)
+    status, headers, body = asset(view, "shot.png")
+    assert status == 200
+    assert body == PIXEL
+    assert headers["Content-Type"] == "image/png"
+
+
+def test_a_picture_in_a_subdirectory_is_served(view, doc):
+    (doc.parent / "img").mkdir()
+    (doc.parent / "img" / "shot.png").write_bytes(PIXEL)
+    status, _, body = asset(view, "img/shot.png")
+    assert status == 200
+    assert body == PIXEL
+
+
+def test_a_served_file_may_not_be_sniffed_into_something_else(view, doc):
+    """The whitelist decides the type; the browser does not get a second opinion.
+
+    A file named ``.png`` whose bytes look like markup is the case — without
+    ``nosniff`` a browser may decide it knows better and run it, on the origin
+    that holds this view's token.
+    """
+    (doc.parent / "shot.png").write_bytes(b"<html><script>alert(1)</script>")
+    status, headers, _ = asset(view, "shot.png")
+    assert status == 200
+    assert headers["Content-Type"] == "image/png"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert "default-src 'none'" in headers["Content-Security-Policy"]
+
+
+def test_an_asset_needs_the_token_like_everything_else(view, doc):
+    """A local server that reads files off this disk is not an open one.
+
+    Every tab in the browser can reach this port. The picture route is a read of
+    a named file, which is exactly the thing a token is in front of.
+    """
+    (doc.parent / "shot.png").write_bytes(PIXEL)
+    status, _, _ = asset(view, "shot.png", token="not-the-token")
+    assert status == 403
+
+
+def test_a_reference_that_climbs_out_of_the_directory_is_refused(view, doc, tmp_path):
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(PIXEL)
+    error = refusal(view, f"../{outside.name}")
+    assert error["reason"] == "outside"
+
+
+def test_an_absolute_reference_is_refused_as_outside(view, doc, tmp_path):
+    (doc.parent / "shot.png").write_bytes(PIXEL)
+    error = refusal(view, str(doc.parent / "shot.png"))
+    assert error["reason"] == "outside"
+    assert "absolute" in error["message"]
+
+
+def test_a_symlink_is_followed_when_it_lands_inside(view, doc):
+    """Following is the rule; where it lands is the question.
+
+    Refusing every link would be the easy boundary and the wrong one — a tree
+    that keeps its captures in a linked folder is an ordinary tree.
+    """
+    real = doc.parent / "real.png"
+    real.write_bytes(PIXEL)
+    (doc.parent / "linked.png").symlink_to(real)
+    status, _, body = asset(view, "linked.png")
+    assert status == 200
+    assert body == PIXEL
+
+
+def test_a_symlink_that_lands_outside_is_refused(view, doc, tmp_path):
+    """The real path is what is judged, so a link is not a way around the edge."""
+    outside = tmp_path.parent / "elsewhere.png"
+    outside.write_bytes(PIXEL)
+    (doc.parent / "sneaky.png").symlink_to(outside)
+    error = refusal(view, "sneaky.png")
+    assert error["reason"] == "outside"
+    assert str(outside) in error["message"]
+
+
+def test_a_type_that_is_not_an_image_is_refused(view, doc):
+    (doc.parent / "notes.txt").write_bytes(b"hello")
+    error = refusal(view, "notes.txt")
+    assert error["reason"] == "unsupported"
+
+
+def test_an_svg_is_refused_and_says_why_that_one_is_different(view, doc):
+    """v1 leaves SVG out, and an author who tried learns why in one line.
+
+    It is not "unknown type": an SVG opened directly is a document that can
+    script on this origin, and this origin holds the token.
+    """
+    (doc.parent / "diagram.svg").write_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+    error = refusal(view, "diagram.svg")
+    assert error["reason"] == "unsupported"
+    assert "script" in error["message"]
+
+
+def test_a_file_over_the_cap_is_refused_by_size_and_not_by_silence(view, doc, monkeypatch):
+    monkeypatch.setattr(assetfiles, "MAX_BYTES", 16)
+    (doc.parent / "huge.png").write_bytes(PIXEL)
+    error = refusal(view, "huge.png")
+    assert error["reason"] == "too-large"
+    assert str(len(PIXEL)) in error["message"]
+
+
+def test_a_reference_to_nothing_is_missing_and_says_so(view):
+    error = refusal(view, "absent.png")
+    assert error["reason"] == "missing"
+
+
+def test_the_four_refusals_are_four_different_reasons(view, doc, tmp_path, monkeypatch):
+    """The whole point of item 3: one status, never one reason.
+
+    A silent 404 for all four is a debugging session spent guessing which of the
+    four mistakes was made.
+    """
+    (doc.parent / "notes.txt").write_bytes(b"hello")
+    (doc.parent / "big.png").write_bytes(PIXEL)
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(PIXEL)
+    monkeypatch.setattr(assetfiles, "MAX_BYTES", 16)
+    reasons = {
+        refusal(view, "absent.png")["reason"],
+        refusal(view, f"../{outside.name}")["reason"],
+        refusal(view, "notes.txt")["reason"],
+        refusal(view, "big.png")["reason"],
+    }
+    assert reasons == set(assetfiles.REASONS)
+
+
+def test_an_empty_reference_is_refused_rather_than_serving_the_directory(view):
+    assert refusal(view, "")["reason"] == "missing"
+
+
+# -- ... and the same, over a tree ---------------------------------------
+
+
+@pytest.fixture
+def tree(tmp_path, clock):
+    """A workspace view over a two-level tree, with a picture in each place."""
+    root = tmp_path / "tree"
+    (root / "sub").mkdir(parents=True)
+    (root / "shared").mkdir()
+    document = root / "sub" / "spec.md"
+    document.write_text("# Sub\n\nProse.\n", encoding="utf-8")
+    (root / "sub" / "beside.png").write_bytes(PIXEL)
+    (root / "shared" / "common.png").write_bytes(PIXEL)
+    space = Workspace(root=root, clock=clock)
+    served = WebView(
+        store=space.store_for(document),
+        path=document,
+        author="alice",
+        port=0,
+        workspace=space,
+        doc="sub/spec.md",
+    )
+    served.start()
+    try:
+        yield served
+    finally:
+        served.shutdown()
+
+
+def test_in_a_tree_a_reference_still_counts_from_the_document(tree):
+    """Not from the root. `beside.png` in ``sub/spec.md`` means the one in ``sub``."""
+    status, _, body = asset(tree, "beside.png", doc="sub/spec.md")
+    assert status == 200
+    assert body == PIXEL
+
+
+def test_in_a_tree_a_sibling_directory_is_inside_the_edge(tree):
+    """The tree is the thing under review, so ``../shared/x.png`` is in it."""
+    status, _, body = asset(tree, "../shared/common.png", doc="sub/spec.md")
+    assert status == 200
+    assert body == PIXEL
+
+
+def test_a_tree_still_has_an_edge(tree, tmp_path):
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(PIXEL)
+    error = refusal(tree, "../../outside.png", doc="sub/spec.md")
+    assert error["reason"] == "outside"
+
+
+def test_a_file_view_serves_only_its_own_directory(view, doc, tmp_path):
+    """The narrower edge, and the reason the two are separate properties.
+
+    A view started on one file was handed one directory. A sibling folder in the
+    same parent is not something the caller pointed at.
+    """
+    sibling = doc.parent.parent / "sibling"
+    sibling.mkdir(exist_ok=True)
+    (sibling / "x.png").write_bytes(PIXEL)
+    assert refusal(view, "../sibling/x.png")["reason"] == "outside"
 
 
 # -- the port a document comes back on -----------------------------------
