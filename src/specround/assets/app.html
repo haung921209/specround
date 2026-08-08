@@ -391,6 +391,9 @@ function badges(entry) {
   if (entry.open_rounds) out.push({ text: entry.open_rounds + " open", kind: "open" });
   if (entry.undisposed) out.push({ text: entry.undisposed + " undisposed", kind: "warn" });
   if (entry.orphans) out.push({ text: entry.orphans + " orphaned", kind: "bad" });
+  // The other way a comment ends up undrawable (I12), and the one nobody
+  // expects — without it "0 orphaned" reads as "everything can be shown".
+  if (entry.misplaced) out.push({ text: entry.misplaced + " misplaced", kind: "bad" });
   if (!out.length && entry.rounds) out.push({ text: "reviewed", kind: "" });
   return out;
 }
@@ -463,12 +466,27 @@ function replyLabel(reply, id) {
   return !reply.drafts[id] || reply.open === id ? "reply" : "reply · draft";
 }
 
+function paintable(comments) {
+  // Which comments may be drawn on the base — one filter, so the marks, the
+  // carets and anything that counts them cannot disagree about the answer.
+  //
+  // `misplaced` (I12) is the server saying the offsets were cut from some text
+  // other than the base this page shows. The page cannot check that itself: it
+  // holds one snapshot and no way to know which one an anchor came from. What
+  // it can do is decline, and declining is the point — the alternative is not a
+  // missing mark but a mark on a sentence the comment was never about, which
+  // reads like a correct answer. That was measured on a real review at 12 of 17
+  // comments. Nothing a reviewer needs is lost: the card still carries the
+  // thread, and only the wrong claim about *where* is dropped.
+  return comments.filter((c) => c.current_anchor && !c.misplaced);
+}
+
 // -- end of the pure part -------------------------------------------------
 
 // -- painting anchors ------------------------------------------------------
 
 function paint(container, comments) {
-  const anchored = comments.filter((c) => c.current_anchor);
+  const anchored = paintable(comments);
   container.querySelectorAll("[data-s]").forEach((element) => {
     if ((element.dataset.space || "base") !== "base") return;
     const start = Number(element.dataset.s);
@@ -756,6 +774,10 @@ function card(comment) {
   // the one place that draws attention to it has something to aim at that will
   // not move when the colour does.
   if (comment.orphaned) tags.push(tag("orphaned", "bad orphan"));
+  // Not drawn, and saying so. An undrawn mark with no badge is indistinguishable
+  // from one that is simply scrolled out of view, which would leave the reviewer
+  // to discover by absence that the tool is withholding a placement.
+  if (comment.misplaced) tags.push(tag("misplaced", "bad orphan"));
   if (comment.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
   if (comment.ambiguous) tags.push(tag("ambiguous", "warn"));
   if (comment.ext && comment.ext.view) tags.push(tag("from " + comment.ext.view.space));

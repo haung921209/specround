@@ -43,6 +43,7 @@ EMPTY_SUMMARY: dict[str, Any] = {
     "comments": 0,
     "undisposed": 0,
     "orphans": 0,
+    "misplaced": 0,
     "resolved": 0,
     "last_activity": None,
 }
@@ -93,6 +94,10 @@ def document_summary(state: State, key: str) -> dict[str, Any]:
         "comments": len(comments),
         "undisposed": sum(1 for c in comments if c.undisposed),
         "orphans": sum(1 for c in comments if c.orphaned),
+        # Beside ``orphans`` because a reader scanning the bar would otherwise
+        # read "0 orphaned" as "every comment can be shown". I12 is the other
+        # way a comment ends up undrawable, and it is the one nobody expects.
+        "misplaced": sum(1 for c in comments if c.misplaced),
         "resolved": sum(1 for c in comments if c.resolved),
         "last_activity": max(stamps) if stamps else None,
     }
@@ -173,6 +178,13 @@ def comment_json(comment: Comment) -> dict[str, Any]:
     ``undisposed`` (has anyone decided this?), ``orphaned`` (can it still be
     placed on the document?), ``resolved`` (is the conversation over?).
 
+    ``misplaced`` is not a fourth axis but a warning about ``current_anchor``
+    itself (I12): the offsets belong to some other text than the base this
+    comment is painted on, so a consumer that draws them draws them on the wrong
+    sentence. It reads ``False`` on a comment folded without a store, because
+    only a store can open the snapshot to find out — see
+    :attr:`~specround.fold.Comment.misplaced`.
+
     There is no ``unresolved`` key on a comment. The thread axis is ``resolved``
     and a single comment's answer to "is this conversation over" is one boolean,
     so a second key would only be the first one negated — under the word that
@@ -194,6 +206,7 @@ def comment_json(comment: Comment) -> dict[str, Any]:
         "state": comment.state,
         "undisposed": comment.undisposed,
         "orphaned": comment.orphaned,
+        "misplaced": comment.misplaced,
         "anchoring": anchoring_json(comment.anchoring),
         "ext": comment.ext,
         "strategy": placed.strategy if placed else None,

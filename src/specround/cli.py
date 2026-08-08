@@ -55,7 +55,7 @@ from specround.fold import Comment, Round, State
 from specround.imports import BatchError, apply_plan, load_batch, parse_text, plan_import
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
-from specround.store import HarvestReport, Placement, ReviewStore
+from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
 from specround.webview import DEFAULT_HOST, DERIVED, FALLBACK, PINNED, PortTaken, WebView
 from specround.wire import (
     anchor_json,
@@ -471,6 +471,16 @@ def _comment_rows(comments: Sequence[Comment], *, hidden: Sequence[str] = ()) ->
     orphans = [c.id for c in comments if c.orphaned]
     if orphans:
         footers.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
+    misplaced = [c.id for c in comments if c.misplaced]
+    if misplaced:
+        # The ANCHOR column above still shows the quote, because the quote is
+        # real — it is the *place* that belongs to another text (I12). Saying so
+        # here is what stops the column from reading as a placement anyone can
+        # act on.
+        footers.append(
+            f"{len(misplaced)} misplaced — quoted from another text than this round's base, "
+            f"not drawn: {', '.join(misplaced)}"
+        )
     moved = [(c.id, _moved_marks(c)) for c in comments if not c.orphaned]
     flagged = [f"{cid} ({', '.join(marks)})" for cid, marks in moved if marks]
     if flagged:
@@ -517,11 +527,22 @@ def _round_open(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     )
     state = target.store.fold()
     round_ = state.rounds[round_id]
-    payload = {**target.envelope(), "round": round_json(state, round_)}
+    # Opening a round is what carries the comments already on the document into
+    # its base, so it is also what has to report the carry. Silence here would
+    # make the one act that moves anchors the only one nobody sees.
+    carried = _carry_json(state, target.store.carry_of(round_id))
+    payload = {
+        **target.envelope(),
+        "round": round_json(state, round_),
+        "carried": carried,
+    }
     lines = [f"opened {round_id} on {target.key} (base {_short(round_.base)})"]
     if round_.title:
         lines.append(f"title  {round_.title}")
     lines.append(f"store  {target.store.root}")
+    if carried["changed"] or carried["unchanged"]:
+        lines.append("")
+        lines.extend(_carry_lines(carried, "carried onto this base"))
     return payload, lines
 
 
@@ -586,6 +607,12 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     undisposed = [c.id for c in comments if c.undisposed]
     unresolved_threads = [c.id for c in comments if not c.resolved]
     orphans = [c.id for c in comments if c.orphaned]
+    # I12, and a different question from the three above it: not "was it
+    # answered", "can it be placed", or "is the talk over", but "do the offsets
+    # we would draw belong to the text we would draw them on". It is a repair
+    # backlog rather than review work, which is why it gets a number a person
+    # can watch go to zero (``specround doctor``) instead of a listing.
+    misplaced = [c.id for c in comments if c.misplaced]
     open_ids = [r.id for r in rounds if r.open]
     payload = {
         **target.envelope(),
@@ -594,12 +621,14 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "undisposed": undisposed,
         "unresolved_threads": unresolved_threads,
         "orphans": orphans,
+        "misplaced": misplaced,
         "counts": {
             "rounds": len(rounds),
             "comments": len(comments),
             "undisposed": len(undisposed),
             "unresolved_threads": len(unresolved_threads),
             "orphans": len(orphans),
+            "misplaced": len(misplaced),
             "events": state.count,
         },
     }
@@ -610,6 +639,11 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         f"{len(orphans)} orphaned",
         f"store  {target.store.root}",
     ]
+    if misplaced:
+        lines.append(
+            f"{len(misplaced)} anchor(s) cut from another text than this round's base — "
+            f"not drawn. Repair with 'specround doctor {target.key}'"
+        )
     if rounds:
         lines.append("")
         lines.extend(
@@ -760,22 +794,15 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, _comment_rows(items, hidden=hidden)
 
 
-def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    target = _target(args)
-    report = target.store.reanchor_document(target.path, author=_author(args))
-    state = target.store.fold()
-    strategies = {
-        cid: state.comments[cid].anchoring.strategy
-        for cid in report.rebound
-        if state.comments[cid].anchoring is not None
-    }
-    reasons = {
-        cid: state.comments[cid].anchoring.reason
-        for cid in report.orphaned
-        if state.comments[cid].anchoring is not None
-    }
-    payload = {
-        **target.envelope(),
+def _carry_json(state: State, report: ReanchorReport) -> dict[str, Any]:
+    """One shape for a carry, whichever verb ran it.
+
+    ``round open`` and ``reanchor`` are the same movement seen from two sides —
+    the first makes the space and fills it, the second re-drives that fill. A
+    consumer that had to parse two shapes for one event would be parsing the
+    verb, not the outcome.
+    """
+    return {
         "base": report.base,
         "changed": report.changed,
         "rebound": list(report.rebound),
@@ -783,29 +810,89 @@ def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "unchanged": list(report.unchanged),
         "skipped": list(report.skipped),
         "ambiguous": list(report.ambiguous),
-        "strategies": strategies,
-        "reasons": reasons,
+        "strategies": {
+            cid: state.comments[cid].anchoring.strategy
+            for cid in report.rebound
+            if state.comments[cid].anchoring is not None
+        },
+        "reasons": {
+            cid: state.comments[cid].anchoring.reason
+            for cid in report.orphaned
+            if state.comments[cid].anchoring is not None
+        },
     }
 
+
+def _carry_lines(carried: Mapping[str, Any], headline: str) -> list[str]:
+    strategies = carried["strategies"]
+    ambiguous = carried["ambiguous"]
+
     def described(cid: str) -> str:
-        marks = [m for m in (strategies.get(cid), "ambiguous" if cid in report.ambiguous else "") if m]
+        marks = [m for m in (strategies.get(cid), "ambiguous" if cid in ambiguous else "") if m]
         return f"{cid} ({', '.join(marks)})" if marks else cid
 
-    lines = [f"re-anchored {target.key} against {_short(report.base)}"]
-    for label, ids, describe in (
-        ("rebound", report.rebound, True),
-        ("orphaned", report.orphaned, False),
-        ("unchanged", report.unchanged, False),
-        ("skipped", report.skipped, False),
+    lines = [headline]
+    for label, describe in (
+        ("rebound", True),
+        ("orphaned", False),
+        ("unchanged", False),
+        ("skipped", False),
     ):
+        ids = carried[label]
         shown = ", ".join(described(c) if describe else c for c in ids)
         lines.append(f"  {label:<10}{len(ids):>3}  {shown}".rstrip())
-    if report.ambiguous:
+    if ambiguous:
         lines.append("")
-        lines.append(
-            f"{len(report.ambiguous)} moved on a tie — worth a look: "
-            + ", ".join(report.ambiguous)
+        lines.append(f"{len(ambiguous)} moved on a tie — worth a look: " + ", ".join(ambiguous))
+    return lines
+
+
+def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    target = _target(args)
+    report = target.store.reanchor_document(target.path, author=_author(args))
+    carried = _carry_json(target.store.fold(), report)
+    payload = {**target.envelope(), **carried}
+    return payload, _carry_lines(carried, f"re-anchored {target.key} against {_short(report.base)}")
+
+
+def _doctor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Repair anchors that belong to another text than the base they are drawn on.
+
+    Read-only by default for the reason ``harvest`` is: it writes to a history
+    somebody else may be reading. Unlike ``harvest`` it never touches the
+    document — and it does not read it either, so a file that has moved on or
+    been deleted is no obstacle to fixing the ledger about it.
+    """
+    # missing_ok: the repair is about the ledger, and the document may well be gone.
+    target = _target(args, missing_ok=True)
+    report = target.store.repair_document(
+        target.path, author=_author(args), apply=args.apply
+    )
+    payload = {
+        **target.envelope(),
+        "base": report.base,
+        "applied": report.applied,
+        "repaired": list(report.repaired),
+        "orphaned": list(report.orphaned),
+        "skipped": list(report.skipped),
+        "strategies": dict(report.strategies),
+        "reasons": dict(report.reasons),
+    }
+    if not report.found:
+        settled = "nothing to repair" if not report.skipped else (
+            f"nothing left to repair ({len(report.skipped)} already tried against this base)"
         )
+        return payload, [f"{target.key} — {settled}"]
+
+    verb = "repaired" if report.applied else "would repair"
+    lines = [f"{target.key} against {_short(report.base)} — {verb}"]
+    for cid in report.repaired:
+        lines.append(f"  {cid}  re-read in this base ({report.strategies.get(cid, '?')})")
+    for cid in report.orphaned:
+        lines.append(f"  {cid}  orphaned — {_clip(report.reasons.get(cid, ''), _BODY_WIDTH)}")
+    if not report.applied:
+        lines.append("")
+        lines.append("a dry run — pass --apply to append these corrections")
     return payload, lines
 
 
@@ -1444,10 +1531,29 @@ def build_parser() -> argparse.ArgumentParser:
     rebind = verbs.add_parser(
         "reanchor",
         parents=[common, writing],
-        help="carry every anchored comment onto the document as it is now",
+        help="re-drive the carry onto the base this document is painted on",
+        description="Carry every anchored comment onto the base the round froze. Opening a "
+        "round already does this, so this is the idempotent re-drive; once the file on disk "
+        "has moved past that base it is refused, because nothing has frozen the revision.",
     )
     rebind.add_argument("doc")
     rebind.set_defaults(handler=_reanchor, verb_name="reanchor")
+
+    mending = verbs.add_parser(
+        "doctor",
+        parents=[common, writing],
+        help="repair anchors whose offsets were cut from some other text",
+        description="Find anchors that do not hold in the base they are painted on (I12) and "
+        "re-interpret their quote there, appending the correction. Written by older versions "
+        "that re-anchored onto the live file. A dry run unless --apply.",
+    )
+    mending.add_argument("doc")
+    mending.add_argument(
+        "--apply",
+        action="store_true",
+        help="append the corrections (default: report what they would be)",
+    )
+    mending.set_defaults(handler=_doctor, verb_name="doctor")
 
     reaping = verbs.add_parser(
         "harvest",

@@ -1,8 +1,16 @@
-"""Re-anchoring through the store: what lands in the ledger, and what does not.
+"""Carrying comments across a revision: what lands in the ledger, and what does not.
 
 The unit under test here is not the matcher (``test_reanchor.py`` covers that)
 but the bookkeeping around it — which passes append events, which stay quiet,
 and what ``fold`` says afterwards.
+
+**The carry happens when a round opens.** Freezing the revision is what creates
+the space the comments have to move into, so it is also what moves them; a
+separate verb the caller had to remember was a step that could be skipped, and
+skipping it (or running it with nothing frozen) is what put twelve comments on
+sentences they were not about. ``reanchor`` is still here as the idempotent
+re-drive of that same carry, and ``test_anchor_space.py`` holds the refusal that
+keeps it from inventing a space of its own.
 """
 
 import pytest
@@ -25,6 +33,12 @@ def revise(doc, old, new):
     doc.write_text(doc.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
 
 
+def carry(store, doc, **kwargs):
+    """Freeze the document as it is now and let the round opening carry the comments."""
+    round_id = store.open_round(doc, author="agent:reanchor", **kwargs)
+    return store.carry_of(round_id)
+
+
 def kinds(store):
     return [record["type"] for record in store.ledger.read()]
 
@@ -34,7 +48,7 @@ def kinds(store):
 
 def test_a_comment_follows_its_text_down_the_page(store, doc, anchored_comment, doc_text):
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
 
     assert report.rebound == [anchored_comment]
     assert report.orphaned == []
@@ -51,7 +65,7 @@ def test_a_comment_follows_its_text_down_the_page(store, doc, anchored_comment, 
 def test_the_original_record_is_never_rewritten(store, doc, anchored_comment, doc_text):
     before = store.ledger.read()[1]
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     assert store.ledger.read()[1] == before  # append-only, not update-in-place
 
 
@@ -64,7 +78,7 @@ def test_an_unchanged_document_writes_nothing(store, doc, anchored_comment):
 
 def test_a_second_pass_is_a_no_op(store, doc, anchored_comment, doc_text):
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     count = store.ledger.count()
 
     again = store.reanchor_document(doc, author="agent:reanchor")
@@ -77,7 +91,7 @@ def test_a_second_pass_is_a_no_op(store, doc, anchored_comment, doc_text):
 
 def test_a_deleted_span_is_recorded_as_an_orphan(store, doc, anchored_comment):
     revise(doc, QUOTE_TEXT, "")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
 
     assert report.orphaned == [anchored_comment]
     assert kinds(store)[-1] == ANCHOR_ORPHAN
@@ -92,7 +106,7 @@ def test_a_deleted_span_is_recorded_as_an_orphan(store, doc, anchored_comment):
 def test_an_orphan_keeps_its_last_good_anchor(store, doc, anchored_comment):
     """Orphaning reports that the text is gone; it does not forget where it was."""
     revise(doc, QUOTE_TEXT, "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     comment = store.fold().comments[anchored_comment]
     assert comment.current_anchor is not None
     assert comment.current_anchor.exact == QUOTE_TEXT
@@ -100,11 +114,11 @@ def test_an_orphan_keeps_its_last_good_anchor(store, doc, anchored_comment):
 
 def test_an_orphan_is_bound_again_when_the_text_comes_back(store, doc, anchored_comment, doc_text):
     revise(doc, QUOTE_TEXT, "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     assert store.fold().comments[anchored_comment].orphaned is True
 
     doc.write_text(doc_text.replace("# Widget", "# Widget v2"), encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
 
     assert report.rebound == [anchored_comment]
     comment = store.fold().comments[anchored_comment]
@@ -127,11 +141,11 @@ def test_an_orphan_is_bound_again_when_the_text_comes_back_to_the_same_place(
     difference the ledger has to carry.
     """
     revise(doc, QUOTE_TEXT, "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     assert store.fold().comments[anchored_comment].orphaned is True
 
-    doc.write_text(doc_text, encoding="utf-8")  # byte-identical to the round base
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    doc.write_text(doc_text, encoding="utf-8")  # byte-identical to the first base
+    report = carry(store, doc)
 
     assert report.rebound == [anchored_comment]
     assert report.unchanged == []
@@ -148,9 +162,9 @@ def test_a_restored_comment_is_not_re_reported_on_the_next_pass(
 ):
     """Recording the restoration must not turn into recording it every pass."""
     revise(doc, QUOTE_TEXT, "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     doc.write_text(doc_text, encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     count = store.ledger.count()
 
     again = store.reanchor_document(doc, author="agent:reanchor")
@@ -163,15 +177,15 @@ def test_a_placed_comment_at_its_old_offset_still_writes_nothing(
 ):
     """The quiet majority stays quiet: only a comment that *was* lost is news."""
     doc.write_text(doc_text, encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
     assert report.unchanged == [anchored_comment]
     assert report.changed is False
-    assert kinds(store) == ["round.open", "comment.add"]
+    assert kinds(store) == ["round.open", "comment.add", "round.open"]
 
 
 def test_an_orphan_is_not_re_reported_on_the_same_revision(store, doc, anchored_comment):
     revise(doc, QUOTE_TEXT, "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     count = store.ledger.count()
 
     report = store.reanchor_document(doc, author="agent:reanchor")
@@ -182,7 +196,7 @@ def test_an_orphan_is_not_re_reported_on_the_same_revision(store, doc, anchored_
 def test_an_orphan_is_not_a_disposition(store, doc, anchored_comment):
     """Two axes: whether anyone answered it, and whether we can still place it."""
     revise(doc, QUOTE_TEXT, "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     state = store.fold()
     assert state.orphans == state.undisposed  # both, right now
 
@@ -214,7 +228,7 @@ def test_only_comments_on_that_document_are_touched(tmp_path, clock, doc_text):
     }
 
     first.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    report = store.reanchor_document(first, author="agent:reanchor")
+    report = carry(store, first)
     assert report.rebound == [comments[first]]
     assert comments[second] not in report.rebound + report.unchanged + report.skipped
 
@@ -222,7 +236,7 @@ def test_only_comments_on_that_document_are_touched(tmp_path, clock, doc_text):
 def test_a_whole_document_comment_has_nothing_to_re_anchor(store, doc, round_id, doc_text):
     unanchored = store.add_comment(round_id, author="bob", body="the tone is off")
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
     assert unanchored not in report.rebound + report.orphaned + report.unchanged
 
 
@@ -230,16 +244,18 @@ def test_suggestions_travel_the_same_way_as_comments(store, doc, round_id, doc_t
     anchor = store.anchor_in_round(round_id, QUOTE_TEXT)
     suggestion = store.add_suggestion(round_id, author="agent:reviewer", patch="-30\n+60\n", anchor=anchor)
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
     assert report.rebound == [suggestion]
 
 
-def test_re_anchoring_does_not_need_an_open_round(store, doc, round_id, anchored_comment, doc_text):
+def test_the_carry_reaches_a_comment_whose_round_is_closed(
+    store, doc, round_id, anchored_comment, doc_text
+):
     """A comment outlives its round; the revision that moves it usually lands later."""
     store.dispose(anchored_comment, author="alice", verdict="deferred", reason="next round")
     store.close_round(round_id, author="alice", allow_undisposed=True)
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor")
+    report = carry(store, doc)
     assert report.rebound == [anchored_comment]
 
 
@@ -269,7 +285,7 @@ def test_an_ambiguous_move_is_flagged_in_the_ledger(tmp_path, clock):
     )
 
     path.write_text("pad\n" + text, encoding="utf-8")
-    report = store.reanchor_document(path, author="agent:reanchor")
+    report = carry(store, path)
 
     assert report.ambiguous == [comment]
     assert store.ledger.read()[-1]["ambiguous"] is True
@@ -277,7 +293,7 @@ def test_an_ambiguous_move_is_flagged_in_the_ledger(tmp_path, clock):
 
 def test_an_unambiguous_move_omits_the_flag(store, doc, anchored_comment, doc_text):
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     assert "ambiguous" not in store.ledger.read()[-1]
 
 
@@ -286,11 +302,11 @@ def test_an_unambiguous_move_omits_the_flag(store, doc, anchored_comment, doc_te
 
 def test_the_floor_decides_between_a_fuzzy_move_and_an_orphan(store, doc, anchored_comment):
     revise(doc, QUOTE_TEXT, "Timeouts are 45 seconds.")
-    report = store.reanchor_document(doc, author="agent:reanchor", min_similarity=0.99)
+    report = carry(store, doc, min_similarity=0.99)
     assert report.orphaned == [anchored_comment]
 
     doc.write_text(doc.read_text(encoding="utf-8") + "\ntrailing\n", encoding="utf-8")
-    report = store.reanchor_document(doc, author="agent:reanchor", min_similarity=0.5)
+    report = carry(store, doc, min_similarity=0.5)
     assert report.rebound == [anchored_comment]
     assert store.fold().comments[anchored_comment].anchoring.strategy == FUZZY
 
@@ -327,9 +343,9 @@ def test_an_anchor_event_must_target_an_anchored_comment(store, doc, round_id):
 
 def test_re_anchoring_leaves_a_ledger_the_reader_still_accepts(store, doc, anchored_comment, doc_text):
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
     revise(doc, "Timeouts are 30 seconds.", "")
-    store.reanchor_document(doc, author="agent:reanchor")
+    carry(store, doc)
 
     records = store.ledger.read()  # re-validates every line
     assert [r["seq"] for r in records] == list(range(len(records)))

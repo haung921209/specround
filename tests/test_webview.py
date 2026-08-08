@@ -196,7 +196,8 @@ def test_state_reports_the_round_the_three_modes_and_the_counts(opened, doc_text
     assert payload["render"].startswith("<h1>")
     assert payload["diff"]["identical"] is True
     assert payload["counts"] == {
-        "comments": 0, "undisposed": 0, "orphans": 0, "resolved": 0, "events": 1
+        "comments": 0, "undisposed": 0, "orphans": 0, "misplaced": 0,
+        "resolved": 0, "events": 1,
     }
 
 
@@ -594,6 +595,35 @@ def test_the_orphan_emphasis_lands_on_the_badge_the_card_already_writes(tmp_path
     assert 'tag("orphaned", "bad orphan")' in html
     assert 'querySelector(".tag.orphan")' in html
     assert ".tag.orphan.flash { animation:" in html
+
+
+def test_an_anchor_from_another_space_is_not_painted(tmp_path):
+    """I12: offsets that belong to some other text are not drawn on this one.
+
+    The page cannot check the claim — it never sees a snapshot — so it takes the
+    server's word and simply declines to draw. Declining is the whole point: the
+    alternative is not "no mark", it is a mark on a sentence the comment was
+    never about, which reads as a correct answer and is the failure that was
+    measured (12 of 17 comments on one review).
+    """
+    given = [
+        {"id": "c-ok", "current_anchor": {"exact": "a", "start": 0, "end": 1}, "misplaced": False},
+        {"id": "c-bad", "current_anchor": {"exact": "b", "start": 4, "end": 5}, "misplaced": True},
+        {"id": "c-whole", "current_anchor": None, "misplaced": False},
+    ]
+    assert in_node("paintable(input).map((c) => c.id)", given, tmp_path) == ["c-ok"]
+
+
+def test_the_bar_says_a_document_has_anchors_nothing_can_draw(tmp_path):
+    """Undrawable is as much a fact about a document as orphaned is."""
+    badges = in_node("badges({rounds: 1, misplaced: 2}).map((b) => b.text)", None, tmp_path)
+    assert "2 misplaced" in badges
+
+
+def test_a_comment_the_page_will_not_draw_says_so_on_its_card(tmp_path):
+    """An undrawn mark with no badge is indistinguishable from a scrolled-away one."""
+    html = page().decode("utf-8")
+    assert 'tag("misplaced", "bad orphan")' in html
 
 
 def test_the_document_is_drawn_before_the_threads_that_point_into_it():

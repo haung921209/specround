@@ -172,9 +172,9 @@ def test_a_history_written_through_the_api_folds_clean(store, doc, round_id, anc
         anchor=store.anchor_in_round(round_id, QUOTE_TEXT),
     )
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")  # rebinds
+    store.open_round(doc, author="alice")  # freezes the revision, which rebinds
     doc.write_text("# Gadget\n\nNothing above survives.\n", encoding="utf-8")
-    store.reanchor_document(doc, author="agent:reanchor")  # orphans
+    store.open_round(doc, author="alice")  # orphans
 
     state = store.fold()
     assert len(state.comments) == 3

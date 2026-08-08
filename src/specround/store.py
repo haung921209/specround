@@ -52,7 +52,7 @@ from specround.locations import (
     write_origin,
 )
 from specround.reanchor import MIN_SIMILARITY, POSITION, Rebind, reanchor
-from specround.snapshots import SnapshotStore
+from specround.snapshots import SnapshotStore, digest_text
 
 LEDGER_FILENAME = "ledger.jsonl"
 
@@ -106,6 +106,38 @@ class ReanchorReport:
     def changed(self) -> bool:
         """True when this pass appended anything."""
         return bool(self.rebound or self.orphaned)
+
+
+@dataclass(frozen=True)
+class RepairReport:
+    """What a repair pass found, and whether it was allowed to write it down.
+
+    Separate from :class:`ReanchorReport` because the two answer different
+    questions. That one reports a document that moved; this one reports a
+    *ledger* that is wrong — anchors whose offsets were cut from some text other
+    than the base they are painted on (I12). Reading it as a re-anchor would
+    hide the distinction that matters to whoever is looking at the numbers:
+    nothing about the document changed, and nothing about the review did either.
+    """
+
+    #: The base these anchors are painted on, and the one they are moved into.
+    base: str
+    #: Re-interpreted in that base, by quote rather than by offset.
+    repaired: list[str] = field(default_factory=list)
+    #: The quote is not in that base either — recorded, never guessed.
+    orphaned: list[str] = field(default_factory=list)
+    #: Already tried against this base by an earlier pass.
+    skipped: list[str] = field(default_factory=list)
+    #: Which rung placed each repaired comment.
+    strategies: dict[str, str] = field(default_factory=dict)
+    #: Why each orphaned one could not be placed.
+    reasons: dict[str, str] = field(default_factory=dict)
+    #: False for a dry run — the default, because this writes to somebody's history.
+    applied: bool = False
+
+    @property
+    def found(self) -> bool:
+        return bool(self.repaired or self.orphaned)
 
 
 @dataclass(frozen=True)
@@ -296,6 +328,7 @@ class ReviewStore:
         """
         state = self.ledger.state()
         self._verify_anchors(state)
+        self._flag_misplaced(state)
         return state
 
     def _snapshot_text(self, base: str) -> str:
@@ -344,6 +377,50 @@ class ReviewStore:
                     self._check_anchor(
                         attempt.anchor, attempt.base, f"the anchor on {attempt.id!r}"
                     )
+
+    def painting_base(self, state: State, key: str) -> str | None:
+        """The snapshot a surface draws ``key`` as — the latest round's base.
+
+        Every surface reads one text and paints every comment on it: the web
+        view renders this snapshot in all three modes (I7), and the CLI quotes
+        against it. Which round that is has one answer and it is the newest,
+        because a review moves forward — so this is the space
+        :attr:`~specround.fold.Comment.current_anchor` has to be in.
+        """
+        for round_ in reversed(list(state.rounds.values())):
+            if round_.doc == key:
+                return round_.base
+        return None
+
+    def _flag_misplaced(self, state: State) -> None:
+        """I12: stamp every comment whose anchor does not hold where it is drawn.
+
+        A separate question from I7, and the reason the bug it catches survived:
+        I7 asks whether an anchor agrees with the snapshot **it names**, and a
+        re-anchor cut from a revision agrees with that revision perfectly. What
+        nobody asked was whether it agrees with the snapshot it is *painted on*.
+        The two coincide only while every anchor lives in a round's base, which
+        is what :meth:`open_round` now maintains.
+
+        This does **not** raise. A ledger that already holds such anchors is
+        real (measured: 12 of 17 comments on one document), and refusing to fold
+        it would take away the only way to read it — including
+        :meth:`repair_document`, which is how it gets fixed. So the finding is
+        carried on the comment and the surfaces refuse to draw it, which is the
+        difference between a silent wrong answer and a visible one.
+        """
+        bases: dict[str, str | None] = {}
+        for comment in state.comments.values():
+            anchor = comment.current_anchor
+            if anchor is None:
+                continue
+            key = state.rounds[comment.round].doc
+            if key not in bases:
+                bases[key] = self.painting_base(state, key)
+            base = bases[key]
+            if base is None:  # pragma: no cover - a comment implies a round
+                continue
+            comment.misplaced = not anchor.matches(self._snapshot_text(base))
 
     def round_base(self, round_id: str) -> str:
         """The snapshot reference this round froze."""
@@ -404,11 +481,28 @@ class ReviewStore:
         author: str,
         title: str | None = None,
         ext: Mapping[str, Any] | None = None,
+        min_similarity: float = MIN_SIMILARITY,
     ) -> str:
-        """Freeze ``doc`` as a new round's base and record the round.
+        """Freeze ``doc`` as a new round's base, record the round, and carry.
 
         The snapshot is the round's base, not a commit: nothing is staged and
         nothing is committed to open a review (G10).
+
+        **Opening a round is the only act that makes a new anchor space, so it
+        is also the act that carries the comments into it.** Every surface paints
+        ``current_anchor`` over the round's base (I7), so a comment left behind
+        in the previous round's space would be drawn at offsets belonging to a
+        text nobody is looking at. Carrying here rather than in a verb somebody
+        has to remember is what keeps that from being a step you can skip: the
+        space and its occupants change in one act, and I12 holds by construction
+        rather than by discipline.
+
+        The carry is the ordinary ladder, appending the ordinary events, so a
+        comment that moved and a comment the revision lost read exactly as they
+        do anywhere else (G3). An unchanged document is content-addressed to the
+        same base, so nothing is appended and nothing is claimed to have moved.
+        ``min_similarity`` is the ladder's floor and belongs to whoever runs it —
+        which, now that the carry happens here, is whoever opens the round.
         """
         path = canonical_path(doc)
         if not path.is_file():
@@ -428,7 +522,9 @@ class ReviewStore:
             record["title"] = title
         if ext:
             record["ext"] = dict(ext)
-        return self._append(record)
+        round_id = self._append(record)
+        self._carry_onto(self.fold(), key, base, author=author, min_similarity=min_similarity)
+        return round_id
 
     def _verify_anchor(self, round_id: str, anchor: Anchor | Mapping[str, Any] | None) -> dict[str, Any] | None:
         """Check an anchor against the round's base before it becomes history.
@@ -636,13 +732,23 @@ class ReviewStore:
         author: str,
         min_similarity: float = MIN_SIMILARITY,
     ) -> ReanchorReport:
-        """Carry every anchored comment on ``doc`` onto the document as it is now.
+        """Carry every anchored comment on ``doc`` onto the base it is painted on.
 
-        This is G1 doing its work: the document was revised, and each comment
-        either follows its text to the new place or is reported orphaned. The
-        original records are never touched — a move appends
-        ``anchor.reanchor``, a loss appends ``anchor.orphan``, and the history
-        of both stays readable in order (G3, append-only).
+        This is G1 doing its work: each comment either follows its text to where
+        it now sits in that base or is reported orphaned. The original records
+        are never touched — a move appends ``anchor.reanchor``, a loss appends
+        ``anchor.orphan``, and the history of both stays readable in order (G3,
+        append-only).
+
+        **The target is a round's base, never the live file.** It used to be the
+        file, and that is the hole this closes: nothing had frozen the revision,
+        so the anchors this appended named a snapshot no surface ever draws,
+        while every surface went on painting them over the round's base (I7).
+        Each event was self-consistent, so nothing complained — measured at 12 of
+        17 comments landing on sentences they were not about. So when the
+        document on disk has moved past that base, this **refuses**: the way to
+        carry comments onto a revision is to freeze it, which is what
+        :meth:`open_round` does.
 
         Running it twice in a row is a no-op. A comment that moved now verifies
         where it landed, and a comment already processed against this exact
@@ -652,10 +758,76 @@ class ReviewStore:
         if not path.is_file():
             raise SpecroundError(f"cannot re-anchor {path}: not a file")
         key = self.doc_key(path)
-        base = self.snapshots.put_file(path)
-        text = self._snapshot_text(base)
-
         state = self.fold()
+        base = self.painting_base(state, key)
+        if base is None:
+            # No round, so no space and nothing anchored to move into one.
+            return ReanchorReport(base="")
+        live = digest_text(_document_text(path))
+        if live != base:
+            raise InvariantError(
+                f"{key} on disk is not the base round {self._round_at(state, base)} froze "
+                f"({_short(live)} vs {_short(base)}) — nothing has frozen the revision, so "
+                "an anchor cut from it would name a snapshot no view shows. Either open a "
+                "round on the revision ('specround round open') and the comments carry onto "
+                "it, or leave it: against this round's base there is nothing to move."
+            )
+        return self._carry_onto(state, key, base, author=author, min_similarity=min_similarity)
+
+    def carry_of(self, round_id: str) -> ReanchorReport:
+        """What opening ``round_id`` did to the comments already on its document.
+
+        Read back from the ledger rather than remembered. The anchorings naming
+        this round's base *are* the record of the carry, so this is the same
+        answer a return value would have carried — and unlike a return value it
+        is still the same answer a week later, to whoever asks.
+
+        ``unchanged`` is the quiet majority: anchored comments on the document
+        that needed no event because their offsets already held in this base.
+        """
+        state = self.fold()
+        round_ = state.rounds.get(round_id)
+        if round_ is None:
+            raise InvariantError(f"unknown round {round_id!r}")
+        report = ReanchorReport(base=round_.base)
+        for comment in self._anchored_comments(state, round_.doc):
+            landed = [a for a in comment.anchorings if a.base == round_.base]
+            if not landed:
+                report.unchanged.append(comment.id)
+                continue
+            attempt = landed[-1]
+            if attempt.orphaned:
+                report.orphaned.append(comment.id)
+                continue
+            report.rebound.append(comment.id)
+            if attempt.ambiguous:
+                report.ambiguous.append(comment.id)
+        return report
+
+    def _round_at(self, state: State, base: str) -> str:
+        for round_ in reversed(list(state.rounds.values())):
+            if round_.base == base:
+                return round_.id
+        return "?"  # pragma: no cover - the base came from a round
+
+    def _carry_onto(
+        self,
+        state: State,
+        key: str,
+        base: str,
+        *,
+        author: str,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> ReanchorReport:
+        """Move every anchored comment on ``key`` into ``base``'s space.
+
+        The one implementation of the carry. :meth:`open_round` runs it because
+        opening a round is the only act that makes a new anchor space, and
+        :meth:`reanchor_document` runs it to re-drive the same thing — two
+        callers, one ladder, so a comment cannot be carried two different ways
+        depending on which verb the caller reached for.
+        """
+        text = self._snapshot_text(base)
         report = ReanchorReport(base=base)
         for comment in self._anchored_comments(state, key):
             if comment.bound_to == base:
@@ -693,6 +865,97 @@ class ReviewStore:
                 )
                 report.orphaned.append(comment.id)
         return report
+
+    def repair_document(
+        self,
+        doc: Path,
+        *,
+        author: str,
+        apply: bool = False,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> RepairReport:
+        """Put anchors cut from another text back into the base they are drawn on (I12).
+
+        For the ledgers that already hold them. Before the carry moved into
+        :meth:`open_round`, a re-anchor run while the base was frozen wrote
+        anchors cut from the live file — self-consistent, so nothing refused
+        them, and painted over a base whose offsets they had nothing to do with.
+        Those records exist and cannot be edited away (I1), so the fix is the
+        one this ledger has always used: **append the correction**.
+
+        What gets re-interpreted is the **quote**, through the ordinary ladder,
+        against the painting base. That is exactly the part of a misplaced
+        anchor that is still true — the reviewer really did write about that
+        sentence, and only the offsets belong to somebody else's text. A quote
+        the base does not contain is recorded as an orphan rather than guessed
+        into place; a repair does not get a weaker rule than a carry.
+
+        **The document on disk is never read.** A ledger got into this state
+        because the file moved on, and it may have moved again or be gone — so
+        needing the file to be anything would make the repair unavailable in
+        exactly the case it exists for.
+
+        A dry run is the default: this writes to somebody's review history.
+        """
+        key = self.doc_key(canonical_path(doc))
+        state = self.fold()
+        base = self.painting_base(state, key)
+        if base is None:
+            return RepairReport(base="", applied=apply)
+        text = self._snapshot_text(base)
+
+        repaired: list[str] = []
+        orphaned: list[str] = []
+        skipped: list[str] = []
+        strategies: dict[str, str] = {}
+        reasons: dict[str, str] = {}
+        for comment in self._anchored_comments(state, key):
+            if not comment.misplaced:
+                continue
+            if comment.bound_to == base:
+                # An earlier pass already put this question to this base and got
+                # its answer. Asking again would append the same answer forever.
+                skipped.append(comment.id)
+                continue
+            result = reanchor(comment.current_anchor, text, min_similarity=min_similarity)
+            if result.found:
+                repaired.append(comment.id)
+                strategies[comment.id] = result.strategy or ""
+                if apply:
+                    self._check_anchor(result.anchor, base, "the repaired span")
+                    record: dict[str, Any] = {
+                        "type": ANCHOR_REANCHOR,
+                        "author": author,
+                        "target": comment.id,
+                        "base": base,
+                        "anchor": result.anchor.to_json(),
+                        "strategy": result.strategy,
+                    }
+                    if result.ambiguous:
+                        record["ambiguous"] = True
+                    self._append(record)
+            else:
+                orphaned.append(comment.id)
+                reasons[comment.id] = result.reason
+                if apply:
+                    self._append(
+                        {
+                            "type": ANCHOR_ORPHAN,
+                            "author": author,
+                            "target": comment.id,
+                            "base": base,
+                            "reason": result.reason,
+                        }
+                    )
+        return RepairReport(
+            base=base,
+            repaired=repaired,
+            orphaned=orphaned,
+            skipped=skipped,
+            strategies=strategies,
+            reasons=reasons,
+            applied=apply,
+        )
 
     def _anchored_comments(self, state: State, key: str) -> list[Comment]:
         """Comments on one document that have somewhere to be re-anchored."""
@@ -904,6 +1167,12 @@ class ReviewStore:
 # Either translation makes the clean text a different string from the base for a
 # CRLF document, which is the quiet kind of wrong: the anchors would be off by
 # one character per line and nothing would fail.
+
+
+def _short(ref: str) -> str:
+    """A snapshot reference, shortened — a refusal names both sides, readably."""
+    _, _, digest = ref.partition(":")
+    return (digest or ref)[:12]
 
 
 def _document_text(path: Path) -> str:

@@ -256,6 +256,13 @@ tool froze, so opening a review never involves staging or committing (G10).
 | `base` | ✓ | the snapshot reference `sha256:<64 hex>` |
 | `title` | | the round's name (an empty string is allowed) |
 
+**Opening a round is the only event that makes a new anchor space, so it is
+also what carries the comments into one** (§5.2). The `anchor.reanchor` and
+`anchor.orphan` records the carry appends follow this record and name this
+`base`; a document that did not change is addressed to the same snapshot, so
+nothing is appended. This is a rule about the tool rather than the format — the
+format's part of it is I12.
+
 ### `comment.add` — a comment
 
 | field | required | meaning |
@@ -482,6 +489,42 @@ the `strategy` vocabulary and "a recorded anchor is consistent with its own
 change. That is why scores are not carried — a tuning value that leaks into the
 contract cannot be changed.
 
+### 5.2 Which text a comment is carried *into* (I12)
+
+I7 asks whether an anchor agrees with the snapshot **it names**. That is not the
+same question as whether it agrees with the snapshot it is **shown on**, and the
+gap between the two is a real failure with a measurement behind it.
+
+Every surface draws a comment over a round's base — the view renders that
+snapshot in all three modes (SPEC §3 ①), the CLI quotes against it. So an
+anchor's offsets only mean anything in a round's base. An older re-anchor pass
+took its target from the **document on disk** instead: it froze whatever the
+file happened to be, cut anchors from that, and recorded them. Each record was
+self-consistent, so I7 passed every one of them, and every surface went on
+painting them over the round's base. On one real review, **12 of 17 comments
+were drawn on sentences they were not about**, and clicking a mark opened an
+unrelated thread. The two definitions of "the anchor's space" — the round's base
+and the current file — were living in one field.
+
+The rule that closes it has two halves.
+
+- **An anchoring's `base` is a round's base.** New space is made by `round.open`
+  and by nothing else, and opening carries the comments into it (§4). There is
+  no verb that freezes a text for anchors without freezing it for the review.
+- **I12: a comment's `current_anchor` holds in the base it is painted on.**
+  `current_anchor` is the last anchor bound to it, or the one it was made with.
+
+I12 is **reported, not refused**, and that is deliberate: ledgers written before
+this rule exist, and refusing to fold one would take away the only way to read
+or repair it. A comment that fails it is marked and **not drawn** — a mark on
+the wrong sentence reads like a correct answer, while a missing mark with a
+badge beside it does not. `specround doctor` repairs those records the way this
+format repairs anything: the quote is re-read in the right base and the
+correction is **appended** (I1), leaving the original where it is.
+
+Like §5.1 this is the tool's rule. What the format fixes is only that an
+anchoring names a `base` and that the reader may check it.
+
 ## 6. Invariants
 
 The reader enforces them. A violation is an exception, and there is no leniency
@@ -500,6 +543,7 @@ such as "skip just that line".
 | I9 | the `target` of a re-anchor or an orphan is a comment or suggestion **that has an anchor** | refused (a whole-document comment has nowhere to move) |
 | I10 | a resolve or reopen on a thread already in that state **does not change the state** | not refused — idempotent |
 | I11 | `reply`'s `target` is an **open** thread | refused (`thread.reopen` first) |
+| I12 | a comment's `current_anchor` is consistent with the base it is **painted on** — the latest round's, not merely the one the anchor names (§5.2) | **reported, not refused**: the comment is marked and no surface draws it, and `specround doctor` appends the correction |
 
 **The reading code is the writing gate.** A write folds `prior + the new record`
 and appends to the file only if that passes. So what arrives through the API and
@@ -523,10 +567,11 @@ and from then on no reader — `cat` included — can read that ledger (with no 
 to recover). Restoring the separator is not an update (I1): not one byte of any
 record changes.
 
-**Only I7 is enforced by the store rather than by the fold.** Everything else is
-decided from the lines alone, while I7 requires opening a snapshot — and the
-fold is a pure function that does not look at the filesystem (§8). Rather than
-give up one of the two, **the enforcement layer moved one level out**: the store
+**Only I7 and I12 are enforced by the store rather than by the fold.** Everything
+else is decided from the lines alone, while these two require opening a snapshot
+— and the fold is a pure function that does not look at the filesystem (§8).
+Rather than give up one of the two, **the enforcement layer moved one level out**:
+the store
 is what holds the objects, so **every read that goes through the store** checks
 the ledger's anchors against their own base snapshots. There is one
 implementation of the rule (`ReviewStore._check_anchor`) and the write path
