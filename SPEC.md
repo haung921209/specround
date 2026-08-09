@@ -348,6 +348,17 @@ target is spec and prose documents — PR tools already do code well).
   **a refusal is per item and the exit code is 0** (the shape `reanchor` already
   has for a comment it could not place — one paragraph moving does not make the
   other twenty a failure). A dry run is the default and `--apply` records.
+- **Integration surfaces are the formats, never the page's HTTP API (user
+  decision 2026-08-09, contract-first)**. What an adapter may depend on is
+  named in `docs/integrating.md`: the ledger and store layout (`ledger/v0`),
+  the CLI `--json` envelope (`cli/v0`), the exit codes, `view`'s
+  URL-first-line stdout, and `import/v0`. The web view's `/api/*` is internal
+  and unversioned — a consumer that needs it promotes it to `api/v0` first.
+  Splitting our own adapter into its own repository was considered and
+  deferred: its body is machine-local glue, the interfaces are days old, and
+  the trigger for extraction is a second independent consumer, not a
+  prediction. The generic piece worth sharing goes to `adapters/` as a
+  reference, the shape `cmux-diff-comments.py` already set.
 
 ## 4. Open (deepen when a decision is blocked — do not dig on prediction)
 
