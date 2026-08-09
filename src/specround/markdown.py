@@ -560,6 +560,8 @@ class _Renderer:
                 consumed = 2
             elif char == "`":
                 consumed = self._code(chunk, at, high, pending)
+            elif char == "!" and at + 1 < high and text[at + 1] == "[":
+                consumed = self._image(chunk, at, high, pending)
             elif char == "[":
                 consumed = self._link(chunk, at, high, pending)
             elif char == "<":
@@ -591,7 +593,53 @@ class _Renderer:
         return close + ticks - at
 
     def _link(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
-        text = chunk.text
+        found = self._reference(chunk.text, at, high)
+        if found is None:
+            return 0
+        label, close, href = found
+        self.text(chunk, pending, at)
+        self.out.append(f'<a href="{_attr(safe_href(href))}" rel="noreferrer">')
+        self._inline(chunk, at + 1, label)
+        self.out.append("</a>")
+        return close + 1 - at
+
+    def _image(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
+        """``![alt](src)`` — the one construct that draws its reference.
+
+        The label becomes an ``alt`` attribute, which takes it out of the anchor
+        space: attributes are not text runs, so nothing in the page claims to be
+        that stretch of the document. That is the honest trade and not a loss —
+        a reviewer with something to say about the picture says it in the raw
+        mode, where ``![alt](src)`` is ordinary text and anchors like any other,
+        and the two modes share one anchor space by construction (§3). The
+        alternative, emitting the alt text as a run *beside* the image, would put
+        a caption on the page that the document does not have.
+
+        A source :func:`safe_href` will not carry degrades to :meth:`_link`'s
+        answer — the ``!`` as literal text and the label as a link that goes
+        nowhere. An ``<img>`` with an empty ``src`` is a broken picture that in
+        some browsers re-requests the page it sits in; the label as text is what
+        the construct should have been.
+        """
+        found = self._reference(chunk.text, at + 1, high)
+        if found is None:
+            return 0
+        label, close, src = found
+        target = safe_href(src)
+        if not target:
+            return 0
+        self.text(chunk, pending, at)
+        alt = chunk.text[at + 2 : label]
+        self.out.append(f'<img src="{_attr(target)}" alt="{_attr(alt)}" loading="lazy">')
+        return close + 1 - at
+
+    def _reference(self, text: str, at: int, high: int) -> tuple[int, int, str] | None:
+        """``[label](target)`` starting at ``at``, as ``(label end, ``)`` , target)``.
+
+        One scan for the two constructs that use it. Two copies would be two
+        definitions of what a bracketed reference is, and they drift on the first
+        edge case somebody fixes in only one of them.
+        """
         depth = 0
         label = -1
         for index in range(at, high):
@@ -603,16 +651,12 @@ class _Renderer:
                     label = index
                     break
         if label == -1 or label + 1 >= high or text[label + 1] != "(":
-            return 0
+            return None
         close = text.find(")", label + 2, high)
         if close == -1:
-            return 0
-        href = text[label + 2 : close].split()[0] if text[label + 2 : close].strip() else ""
-        self.text(chunk, pending, at)
-        self.out.append(f'<a href="{_attr(safe_href(href))}" rel="noreferrer">')
-        self._inline(chunk, at + 1, label)
-        self.out.append("</a>")
-        return close + 1 - at
+            return None
+        inside = text[label + 2 : close]
+        return label, close, inside.split()[0] if inside.strip() else ""
 
     def _autolink(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         match = _AUTOLINK.match(chunk.text, at, high)

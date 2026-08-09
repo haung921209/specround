@@ -240,6 +240,56 @@ def test_an_autolink_is_its_own_label():
     assert [r.text for r in found] == ["https://example.com/a"]
 
 
+def test_an_image_draws_its_reference_instead_of_linking_it():
+    text = "![a shot](img/shot.png)\n"
+    html = render(text)
+    assert '<img src="img/shot.png"' in html
+    assert 'alt="a shot"' in html
+
+
+def test_the_text_around_an_image_keeps_its_offsets():
+    """The invariant does not care that the image itself is not a run.
+
+    It is soundness, not completeness: every run describes the source it claims.
+    What follows an image has to still be counted from the right place, which is
+    the half an image could plausibly break.
+    """
+    text = "before ![x](a.png) after\n"
+    found = exactness(text)
+    assert [r.text for r in found] == ["before ", " after"]
+
+
+def test_an_image_label_is_not_a_run_and_the_raw_mode_is_where_it_anchors():
+    """An `alt` is an attribute, so nothing on the page claims to be that text.
+
+    Inventing a run for it would put a caption on the page the document does not
+    have — and the same characters are ordinary anchorable text in the raw mode,
+    which shares this anchor space.
+    """
+    assert [r.text for r in exactness("![a shot](img/shot.png)\n")] == []
+
+
+def test_an_image_with_an_unsafe_source_falls_back_to_text_and_a_dead_link():
+    """A broken `src` is worse than no image: some browsers re-request the page.
+
+    So the construct degrades to what it renders as without image support at
+    all — the `!` as text, the label as a link that goes nowhere.
+    """
+    html = render("![x](javascript:alert(1))\n")
+    assert "<img" not in html
+    assert 'href=""' in html
+
+
+def test_an_escaped_bang_is_still_not_an_image():
+    html = render("\\![x](a.png)\n")
+    assert "<img" not in html
+    assert 'href="a.png"' in html
+
+
+def test_a_bang_that_is_not_followed_by_a_label_is_just_a_bang():
+    assert [r.text for r in exactness("cost! and more\n")] == ["cost! and more"]
+
+
 def test_a_thematic_break_renders_and_anchors_nothing():
     assert "<hr>" in render("a\n\n---\n\nb\n")
 

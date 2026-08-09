@@ -47,6 +47,14 @@ two modes read the live file instead, and ``reading`` in the state payload says
 which of the two texts they are on. Nothing else moves: no round is opened by
 looking, and the moment one exists the modes are back on its base.
 
+**A document's own files are served beside it, behind the same token.** A spec
+with a screen capture in it is reviewable against the thing it describes, and a
+view that answered 404 for the picture threw that away. The boundary work — what
+resolves where, and which of four refusals a request earned — is
+:mod:`specround.assetfiles`; what is here is the route, the token in front of it,
+and the headers that keep a served file from becoming a document. Nothing else
+about the page changes: the picture is a file on disk, not review state.
+
 **A directory is served the same way, from one process (H15).** The workspace
 layer adds navigation and nothing else: every request names the document it is
 about, and the answer is the same per-document projection a file view gives.
@@ -69,7 +77,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlsplit
 
-from specround import __version__, markdown
+from specround import __version__, assetfiles, markdown
+from specround.assetfiles import AssetRefused
 from specround.diffs import changed_span, diff, unified_patch
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, HUMAN, SUPERSEDE, VERDICTS
@@ -191,12 +200,19 @@ class Refusal(SpecroundError):
     carried out as sent, ``state`` for one the recorded history refuses — so a
     caller reading both surfaces learns one set of words. The status code is the
     same distinction for anything speaking HTTP.
+
+    ``reason`` is the finer axis, and empty for everything that does not need
+    one. It exists because the asset route answers four different mistakes with
+    one status on purpose (:mod:`specround.assetfiles`), and a caller telling
+    them apart by matching on the sentence would be a caller that breaks when
+    the sentence is reworded.
     """
 
-    def __init__(self, status: HTTPStatus, kind: str, message: str) -> None:
+    def __init__(self, status: HTTPStatus, kind: str, message: str, reason: str = "") -> None:
         super().__init__(message)
         self.status = status
         self.kind = kind
+        self.reason = reason
 
 
 def _usage(message: str) -> Refusal:
@@ -473,6 +489,45 @@ class WebView:
         if self.workspace is None:
             return None
         return {**self.workspace.list().to_json(), "selected": self.doc}
+
+    # -- assets ----------------------------------------------------------
+
+    @property
+    def asset_base(self) -> Path:
+        """What a reference in this document counts from — its own directory.
+
+        Always the document's, workspace or not. A relative path in a markdown
+        file means "beside this file" everywhere else that reads one, and a view
+        that resolved from the tree root instead would break every document that
+        keeps its captures next to itself the moment somebody served the folder
+        rather than the file.
+        """
+        return self.path.parent
+
+    @property
+    def asset_root(self) -> Path:
+        """The edge a reference may not cross — the tree, or else the directory.
+
+        Wider than :attr:`asset_base` for a workspace, and the same directory for
+        a file view. The reviewed tree is one thing being reviewed (H15), so a
+        document in it may point at ``../shared/img/x.png``; a view started on a
+        single file was given one directory and has no ground to serve out of a
+        sibling nobody named.
+        """
+        return self.workspace.root if self.workspace is not None else self.path.parent
+
+    def asset(self, ref: str) -> tuple[bytes, str]:
+        """The bytes of a file this document points at, and what it is.
+
+        Behind the same token as everything else — an image request is a request
+        to read a file off this machine, and the fact that a browser makes it
+        while drawing a page does not make it a smaller one.
+        """
+        try:
+            target = assetfiles.resolve(self.asset_root, self.asset_base, ref)
+            return assetfiles.read(target, ref), assetfiles.content_type(target)
+        except AssetRefused as exc:
+            raise Refusal(HTTPStatus.NOT_FOUND, "usage", str(exc), exc.reason) from exc
 
     # -- reading ---------------------------------------------------------
 
@@ -858,21 +913,29 @@ class _Handler(BaseHTTPRequestHandler):
         #: the query rather than a body. Per request, like everything else on a
         #: handler instance — the *server* holds no selection (H15).
         self.named_doc = (query.get("doc") or [None])[0]
+        #: The rest of the query, for the one route that reads more of it. Kept
+        #: on the handler rather than passed down, because a handler instance is
+        #: one request and the server is the thing that must stay stateless.
+        self.query = query
         token = (query.get("t") or [None])[0] or self.headers.get("X-Specround-Token")
         if not self.view.authorised(token, self.headers.get("Origin")):
             # Deliberately the same answer for a wrong token and a wrong origin:
             # this is not an account, and telling a caller which half it failed
             # is telling it what to fix.
-            self._send(HTTPStatus.FORBIDDEN, b"specround: not this view's token\n", "text/plain")
+            self._send(
+                HTTPStatus.FORBIDDEN,
+                b"specround: not this view's token\n",
+                "text/plain; charset=utf-8",
+            )
             return
         route = routes.get(split.path)
         if route is None:
-            self._send(HTTPStatus.NOT_FOUND, b"specround: no such route\n", "text/plain")
+            self._send(HTTPStatus.NOT_FOUND, b"specround: no such route\n", "text/plain; charset=utf-8")
             return
         try:
             route(self)
         except Refusal as exc:
-            self._error(exc.status, exc.kind, str(exc))
+            self._error(exc.status, exc.kind, str(exc), exc.reason)
         except InvariantError as exc:
             # The ledger refused. It is the same class of answer the CLI exits 3
             # for, and the message is the ledger's own — the view does not
@@ -898,32 +961,64 @@ class _Handler(BaseHTTPRequestHandler):
             raise _usage("the request body must be a JSON object")
         return parsed
 
-    def _send(self, status: HTTPStatus, payload: bytes, content_type: str) -> None:
+    def _send(
+        self,
+        status: HTTPStatus,
+        payload: bytes,
+        content_type: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         # A temporary view of a file that changes under it caches nothing.
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
     def _json(self, payload: Mapping[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        self._send(status, body, "application/json")
+        self._send(status, body, "application/json; charset=utf-8")
 
-    def _error(self, status: HTTPStatus, kind: str, message: str) -> None:
-        self._json(
-            {"schema": VIEW_SCHEMA, "error": {"kind": kind, "status": int(status), "message": message}},
-            status,
-        )
+    def _error(self, status: HTTPStatus, kind: str, message: str, reason: str = "") -> None:
+        error: dict[str, Any] = {"kind": kind, "status": int(status), "message": message}
+        if reason:
+            error["reason"] = reason
+        self._json({"schema": VIEW_SCHEMA, "error": error}, status)
 
     # -- routes ----------------------------------------------------------
 
     def _page(self) -> None:
-        self._send(HTTPStatus.OK, page(), "text/html")
+        self._send(HTTPStatus.OK, page(), "text/html; charset=utf-8")
 
     def _state(self) -> None:
         self._json(self.view.select(self.named_doc).state_payload())
+
+    def _asset(self) -> None:
+        """A file the rendered document points at, served beside it.
+
+        The headers are the second half of the extension whitelist. ``nosniff``
+        is what keeps a file *named* ``.png`` from being read as anything else
+        by a browser that thinks it knows better, and the content policy is a
+        floor under everything the whitelist is meant to have already excluded —
+        if a type that can execute ever gets onto the list by mistake, this is
+        the line that still says no.
+        """
+        ref = (self.query.get("path") or [""])[0]
+        payload, kind = self.view.select(self.named_doc).asset(ref)
+        self._send(
+            HTTPStatus.OK,
+            payload,
+            kind,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+                "Content-Disposition": "inline",
+            },
+        )
 
     def _write(self, method: Callable[["WebView", Mapping[str, Any]], dict[str, Any]]) -> None:
         """Run a writing verb on the document the body named.
@@ -944,6 +1039,7 @@ class _Handler(BaseHTTPRequestHandler):
 _GETS: dict[str, Callable[[_Handler], None]] = {
     "/": _Handler._page,
     "/api/state": _Handler._state,
+    "/api/asset": _Handler._asset,
 }
 
 _POSTS: dict[str, Callable[[_Handler], None]] = {

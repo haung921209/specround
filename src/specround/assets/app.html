@@ -721,6 +721,34 @@ function viewAfter(view, action) {
   throw new Error("unknown view action: " + action.kind);
 }
 
+// A picture in a document is a relative path — `img/shot.png` — and the browser
+// resolves that against this page's address, which drops the query the token
+// rides in. So an image is pointed at the asset route instead, with the token
+// and the document (which is what the reference counts from) spelled out.
+//
+// Doing it here and not in the renderer is deliberate: the renderer turns one
+// document into HTML and knows nothing about which view is showing it, and a
+// token baked into rendered markup would be a token in something the server
+// caches.
+//
+// `null` means leave the reference exactly as written — an `https://` image, a
+// `data:` URI, a protocol-relative `//host/x.png` all address something this
+// process does not serve and has no business rewriting. A root-relative
+// `/x.png` is *not* one of those: it goes to the route like the rest and comes
+// back with the reason it cannot be served, which beats a bare 403 from a
+// request that never carried a token.
+//
+// Named rather than spelled inline so the route stays visible to the test that
+// holds the page and the server to the same list of routes.
+const ASSET_ROUTE = "/api/asset";
+
+function assetUrl(ref, doc, token) {
+  if (!ref || ref.startsWith("//") || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(ref)) return null;
+  const query = new URLSearchParams({ t: token, path: ref });
+  if (doc) query.set("doc", doc);
+  return ASSET_ROUTE + "?" + query.toString();
+}
+
 // -- end of the pure part -------------------------------------------------
 
 // -- painting anchors ------------------------------------------------------
@@ -786,6 +814,18 @@ function caret(comment) {
 function drawRender(host, data) {
   host.className = "";
   host.innerHTML = data.render;
+  linkAssets(host, data);
+}
+
+// Every `<img>` the render produced, pointed at the asset route. The decision
+// of which ones is `assetUrl`, up in the pure part; what is left here is the
+// walk over the DOM.
+function linkAssets(host, data) {
+  host.querySelectorAll("img[src]").forEach((image) => {
+    const url = assetUrl(image.getAttribute("src"),
+                         data.workspace ? data.workspace.selected : null, TOKEN);
+    if (url) image.setAttribute("src", url);
+  });
 }
 
 function drawRaw(host, data) {
