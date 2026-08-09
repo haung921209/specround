@@ -1077,6 +1077,11 @@ function anchorLabel(comment) {
 
 function drawThreads() {
   const data = state.data;
+  // The same race `draw` and `renderControls` name, reached by the checkbox
+  // that sits above this column: it is in the markup, so it is tickable before
+  // the first state has arrived, and reading the comments off nothing throws
+  // inside the handler rather than drawing an empty column.
+  if (!data) return;
   const shown = shownComments();
   // What the toggle left out, taken off the filter rather than counted again.
   // A second count of the same rule is a second rule, and this heading is where

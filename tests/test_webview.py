@@ -912,6 +912,27 @@ def test_ticking_the_box_redraws_the_document_and_not_only_the_column():
     assert document_half.start() < thread_half.start()
 
 
+def test_every_draw_a_control_can_reach_first_does_nothing_without_a_state():
+    """The page is clickable before ``load`` answers, and its own draws say so.
+
+    The mode buttons, the fold handles and the resolved checkbox are all in the
+    markup, so every one of them can be used in the window between the page
+    rendering and the first ``/api/state`` coming back. Two of the three draws
+    they reach already open by checking; the third read ``state.data.comments``
+    off ``null``, and a handler that throws is a click that leaves the checkbox
+    ticked with nothing redrawn — the page then disagreeing with its own control
+    until something unrelated redraws it.
+
+    Asserted for all three together because the guard is a rule about the whole
+    class, and a fourth draw wired to a fifth control is the way it comes back.
+    """
+    html = page().decode("utf-8")
+    for name in ("function draw()", "function renderControls()", "function drawThreads()"):
+        start = html.index(name)
+        body = html[start : html.index("\n}", start)]
+        assert "if (!data) return;" in body or "if (!state.data) return;" in body, name
+
+
 # -- replying in the card ------------------------------------------------
 #
 # The box a reply is written in moved from the top of the column into the thread
