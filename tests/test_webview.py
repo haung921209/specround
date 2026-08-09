@@ -1635,6 +1635,50 @@ def test_an_empty_reference_is_refused_rather_than_serving_the_directory(view):
     assert refusal(view, "")["reason"] == "missing"
 
 
+def test_a_capture_in_a_document_reaches_the_page_as_a_picture(view, doc):
+    """The whole thing, from the markdown to the bytes.
+
+    The three halves have to meet or none of them is worth anything: the render
+    has to produce an ``<img>``, the page has to point it at the route, and the
+    route has to hand back the file. This is the assertion that they do.
+    """
+    doc.write_text("# Spec\n\n![the screen](img/shot.png)\n", encoding="utf-8")
+    (doc.parent / "img").mkdir()
+    (doc.parent / "img" / "shot.png").write_bytes(PIXEL)
+
+    rendered = state(view)["render"]
+    assert '<img src="img/shot.png"' in rendered
+
+    src = re.search(r'<img src="([^"]+)"', rendered).group(1)
+    status, headers, body = asset(view, src)
+    assert status == 200
+    assert body == PIXEL
+    assert headers["Content-Type"] == "image/png"
+
+
+def test_the_page_points_a_relative_image_at_the_route_with_the_token(tmp_path):
+    assert (
+        in_node('assetUrl("img/shot.png", null, "tok")', None, tmp_path)
+        == "/api/asset?t=tok&path=img%2Fshot.png"
+    )
+
+
+def test_the_page_names_the_document_a_workspace_image_counts_from(tmp_path):
+    url = in_node('assetUrl("shot.png", "sub/spec.md", "tok")', None, tmp_path)
+    assert "doc=sub%2Fspec.md" in url
+
+
+def test_the_page_leaves_an_address_it_does_not_serve_alone(tmp_path):
+    """A remote image, a data URI, a protocol-relative host — none are ours."""
+    left = in_node(
+        '["https://example.com/x.png", "data:image/png;base64,AAA", "//host/x.png", ""]'
+        '.map((ref) => assetUrl(ref, null, "tok"))',
+        None,
+        tmp_path,
+    )
+    assert left == [None, None, None, None]
+
+
 # -- ... and the same, over a tree ---------------------------------------
 
 
