@@ -79,8 +79,19 @@ REJECTED = "rejected"
 ANSWERED = "answered"
 DEFERRED = "deferred"
 VERDICTS = (APPLIED, REJECTED, ANSWERED, DEFERRED)
-#: A terminal verdict settles a comment for good; a later disposition is refused.
+#: A terminal verdict settles a comment; a later disposition is refused unless
+#: that later disposition declares :data:`SUPERSEDE`.
 TERMINAL_VERDICTS = (APPLIED, REJECTED, ANSWERED)
+
+#: The disposition field that overturns a settled verdict (I5).
+#:
+#: Re-disposing is refused by default and that gate stays — a second verdict
+#: arriving by accident is how a recorded decision quietly changes. The flag is
+#: the caller saying "I know one is already there", which is the same shape as
+#: ``thread.reopen``'s required reason: an event that overturns a judgement
+#: already in the log has to be deliberate about it. It is written only when
+#: true, so an ordinary disposition is the same bytes it has always been.
+SUPERSEDE = "supersede"
 
 #: Event kinds that create a comment-like object a reply or disposition can target.
 COMMENT_KINDS = (COMMENT_ADD, SUGGESTION_ADD)
@@ -114,7 +125,14 @@ _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
         {"anchor": _OBJECT, "body": _TEXT},
     ),
     REPLY: ({"target": _STRING, "body": _STRING}, {}),
-    DISPOSITION: ({"target": _STRING, "verdict": _STRING, "reason": _STRING}, {}),
+    # ``supersede`` is what lets a settled comment take a second verdict (I5).
+    # It sits on the record rather than in ``ext`` because the fold has to read
+    # it: the reading code is the writing gate (format §6), so a permission the
+    # reader ignores would let a line be appended that no later read accepts.
+    DISPOSITION: (
+        {"target": _STRING, "verdict": _STRING, "reason": _STRING},
+        {SUPERSEDE: _FLAG},
+    ),
     ROUND_CLOSE: ({"round": _STRING}, {"unresolved": _STRING_LIST, "note": _TEXT}),
     ANCHOR_REANCHOR: (
         {"target": _STRING, "base": _REF, "anchor": _OBJECT, "strategy": _STRING},

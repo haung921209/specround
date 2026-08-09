@@ -71,6 +71,17 @@ specround reopen SPEC.md --comment c-d35c --why "it came back in revision 3"
 specround dispose SPEC.md --comment c-d35c --as applied --why "raised to 60"
 specround round close SPEC.md --allow-undisposed --note "retries move to round 2"
 
+# `deferred` parks a point without settling it, so a round can close over it and
+# the verdict that finishes it later is an ordinary dispose — no flag involved.
+specround dispose SPEC.md --comment c-7863 --as deferred --why "waiting on the retry spec"
+specround dispose SPEC.md --comment c-7863 --as applied  --why "the retry section landed"
+
+# Changing your mind about a verdict that already settled a comment is the case
+# worth saying out loud. Without --supersede it is refused, so a decision on the
+# record never moves by accident; with it, both verdicts stay in the log and the
+# last one is the one in force.
+specround dispose SPEC.md --comment c-d35c --as rejected --why "backed out" --supersede
+
 # After a revision: open the next round on it. Freezing the revision is what
 # makes the space the comments move into, so opening is also what carries them —
 # it reports which followed their text and which lost it.

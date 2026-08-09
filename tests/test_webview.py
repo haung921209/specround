@@ -24,6 +24,7 @@ import pytest
 
 from specround import markdown
 from specround.anchors import anchor_for
+from specround.fold import Comment
 from specround.webview import (
     DERIVED,
     EPHEMERAL,
@@ -39,6 +40,7 @@ from specround.webview import (
     derived_port,
     page,
 )
+from specround.wire import comment_json
 from specround.workspace import Workspace
 
 REVISED_QUOTE = "Timeouts are 45 seconds."
@@ -1381,8 +1383,8 @@ def test_a_disposition_settles_the_comment(opened, comment_id):
         {"target": comment_id, "verdict": "applied", "reason": "raised to 60"},
     )
     assert status == 200
-    assert payload["comment"]["state"] == "applied"
-    assert payload["comment"]["undisposed"] is False
+    assert payload["comment"]["verdict"] == "applied"
+    assert payload["comment"]["settled"] is True
 
 
 def test_deferring_leaves_the_comment_outstanding(opened, comment_id):
@@ -1391,7 +1393,8 @@ def test_deferring_leaves_the_comment_outstanding(opened, comment_id):
         "/api/dispose",
         {"target": comment_id, "verdict": "deferred", "reason": "waiting on the retry spec"},
     )
-    assert payload["comment"]["undisposed"] is True
+    assert payload["comment"]["verdict"] == "deferred"
+    assert payload["comment"]["settled"] is False
 
 
 def test_a_settled_comment_cannot_be_disposed_again(opened, comment_id):
@@ -1401,6 +1404,43 @@ def test_a_settled_comment_cannot_be_disposed_again(opened, comment_id):
     )
     assert status == 409
     assert "already settled" in payload["error"]["message"]
+
+
+def test_the_page_can_overturn_a_verdict_it_recorded(opened, comment_id):
+    """The view is a write surface of equal standing, so it carries the flag.
+
+    Without it, a verdict recorded here by a slip could only be undone from a
+    shell — and a gate you can only pass somewhere else is a gate people route
+    around.
+    """
+    call(opened, "/api/dispose", {"target": comment_id, "verdict": "applied", "reason": "done"})
+    status, payload = call(
+        opened,
+        "/api/dispose",
+        {
+            "target": comment_id,
+            "verdict": "rejected",
+            "reason": "backed out after the reply",
+            "supersede": True,
+        },
+    )
+    assert status == 200
+    assert payload["comment"]["verdict"] == "rejected"
+    assert [d["verdict"] for d in payload["comment"]["dispositions"]] == [
+        "applied",
+        "rejected",
+    ]
+    assert [d["supersede"] for d in payload["comment"]["dispositions"]] == [False, True]
+
+
+def test_the_page_cannot_supersede_a_comment_with_nothing_settled(opened, comment_id):
+    status, payload = call(
+        opened,
+        "/api/dispose",
+        {"target": comment_id, "verdict": "applied", "reason": "done", "supersede": True},
+    )
+    assert status == 409
+    assert "no settled verdict to overturn" in payload["error"]["message"]
 
 
 def test_an_unknown_verdict_is_refused(opened, comment_id):
@@ -1712,3 +1752,23 @@ def test_every_state_field_the_page_reads_is_a_field_the_server_sends(opened):
     read = set(re.findall(r"\bdata\.([a-z_]+)\b", html))
     assert read, "the page should read the state payload"
     assert read <= set(state(opened)), sorted(read - set(state(opened)))
+
+
+def test_every_comment_field_the_page_reads_is_a_field_the_wire_sends():
+    """The same check one level down, where the failure is worse.
+
+    A key that left :func:`comment_json` does not fail loudly in JavaScript — it
+    reads ``undefined``, which is falsy. When ``state`` and ``undisposed`` were
+    removed from the comment payload, a page still reading them would have drawn
+    every comment as decided, dropped the accent on the ones nobody had ruled
+    on, and hidden the dispose button behind a condition that was never true.
+    Nothing else here would notice: the functions that read a comment touch the
+    DOM, so they sit outside the block a JavaScript engine can lift and run.
+    """
+    html = page().decode("utf-8")
+    read = set(re.findall(r"\bcomment\.([a-z][A-Za-z_]*)", html))
+    assert read, "the page should read comments"
+    sent = set(
+        comment_json(Comment(id="c-x", round="r-x", kind="comment", author="a", ts="t"))
+    )
+    assert read <= sent, sorted(read - sent)

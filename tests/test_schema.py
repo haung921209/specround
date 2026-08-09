@@ -151,6 +151,27 @@ def test_deferred_is_the_only_non_terminal_verdict():
     assert set(VERDICTS) - set(TERMINAL_VERDICTS) == {"deferred"}
 
 
+def test_supersede_is_an_optional_boolean_on_a_disposition():
+    validate_event(valid("disposition"))
+    for flag in (True, False):
+        validate_event(valid("disposition", supersede=flag))
+    # A string is refused rather than read for truthiness. This field decides
+    # whether I5 lets the record through, and "false" is truthy in most of the
+    # languages the format invites to write these lines with.
+    with pytest.raises(SchemaError, match="must be true or false"):
+        validate_event(valid("disposition", supersede="true"))
+
+
+def test_supersede_belongs_to_dispositions_and_nothing_else():
+    """The field set is closed per kind, so the flag on another record is refused.
+
+    It reads like a general "I mean this" marker, which is the reason the reader
+    has to say no: on a ``thread.resolve`` it would look honoured and do nothing.
+    """
+    with pytest.raises(SchemaError, match="unknown field"):
+        validate_event(valid("thread.resolve", supersede=True))
+
+
 def test_actor_vocabulary_is_closed():
     from specround.events import ACTORS
 

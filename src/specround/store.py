@@ -34,6 +34,7 @@ from specround.events import (
     ROUND_CLOSE,
     ROUND_OPEN,
     SUGGESTION_ADD,
+    SUPERSEDE,
     THREAD_REOPEN,
     THREAD_RESOLVE,
 )
@@ -603,21 +604,38 @@ class ReviewStore:
             {"type": REPLY, "author": author, "target": target, "body": body}
         )
 
-    def dispose(self, target: str, *, author: str, verdict: str, reason: str) -> str:
+    def dispose(
+        self,
+        target: str,
+        *,
+        author: str,
+        verdict: str,
+        reason: str,
+        supersede: bool = False,
+    ) -> str:
         """Settle a comment: applied, rejected, answered, or deferred — with a reason.
 
         ``deferred`` is the only verdict that leaves a comment outstanding, so a
-        deferred comment can be disposed again later; the other three are final.
+        deferred comment can be disposed again later with nothing extra asked
+        for — deferring and completing later is the ordinary path, not an
+        override.
+
+        ``supersede`` is for the other case: overturning a verdict that already
+        settled the comment. It is refused without the flag (I5) and refused
+        *with* it when nothing is settled, so the flag never means two things.
+        The key is written only when true, which keeps every ordinary
+        disposition the same bytes — and therefore the same id — as before.
         """
-        return self._append(
-            {
-                "type": DISPOSITION,
-                "author": author,
-                "target": target,
-                "verdict": verdict,
-                "reason": reason,
-            }
-        )
+        record: dict[str, Any] = {
+            "type": DISPOSITION,
+            "author": author,
+            "target": target,
+            "verdict": verdict,
+            "reason": reason,
+        }
+        if supersede:
+            record[SUPERSEDE] = True
+        return self._append(record)
 
     # -- threads ---------------------------------------------------------
 

@@ -151,7 +151,7 @@ def assert_loop_landed(store: ReviewStore, doc: Path) -> None:
     assert len(state.comments) == 2
     assert state.open_rounds == []
     assert state.undisposed == []
-    assert {c.state for c in state.comments.values()} == {"applied"}
+    assert {c.verdict for c in state.comments.values()} == {"applied"}
     round_ = next(iter(state.rounds.values()))
     assert store.snapshots.get_text(round_.base) == DOC
     # Everything the loop produced lives in the central store, and the document's
@@ -222,7 +222,7 @@ def test_reading_history_back_needs_nothing_but_the_files(tmp_path, clock, no_su
     state = ReviewStore.for_document(doc).fold()
     assert len(state.rounds) == 1
     assert len(state.comments) == 2
-    assert [c.state for c in state.comments.values()] == ["applied", "applied"]
+    assert [c.verdict for c in state.comments.values()] == ["applied", "applied"]
     # And from the store directory alone, which is all a listing would have.
     assert ReviewStore.open(central_store_dir(doc)).fold() == state
 

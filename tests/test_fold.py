@@ -33,7 +33,7 @@ def test_fold_ignores_timestamp_order(tmp_path, clock):
         shuffled.append({**record, "ts": stamp})
     reversed_time = fold(shuffled)
     assert list(reversed_time.comments) == list(ordered.comments)
-    assert reversed_time.comments[cid].state == ordered.comments[cid].state
+    assert reversed_time.comments[cid].verdict == ordered.comments[cid].verdict
 
 
 def test_open_rounds_and_undisposed_comments_are_what_fold_is_for(store, doc, round_id):
@@ -130,14 +130,14 @@ def test_terminal_verdicts_settle_a_comment(store, round_id, verdict):
     comment = store.fold().comments[cid]
     assert comment.settled is True
     assert comment.undisposed is False
-    assert comment.state == verdict
+    assert comment.verdict == verdict
 
 
 def test_deferred_leaves_a_comment_outstanding(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="retries?")
     store.dispose(cid, author="alice", verdict="deferred", reason="needs the retry spec")
     comment = store.fold().comments[cid]
-    assert comment.state == "deferred"
+    assert comment.verdict == "deferred"
     assert comment.undisposed is True
     assert [c.id for c in store.fold().undisposed] == [cid]
 
@@ -147,7 +147,7 @@ def test_a_deferred_comment_can_be_disposed_again(store, round_id):
     store.dispose(cid, author="alice", verdict="deferred", reason="needs the retry spec")
     store.dispose(cid, author="alice", verdict="applied", reason="retry section added")
     comment = store.fold().comments[cid]
-    assert comment.state == "applied"
+    assert comment.verdict == "applied"
     assert [d.verdict for d in comment.dispositions] == ["deferred", "applied"]
     assert store.fold().undisposed == []
 
@@ -158,6 +158,98 @@ def test_a_settled_comment_cannot_be_re_disposed(store, round_id):
     with pytest.raises(InvariantError, match="already settled as 'rejected'"):
         store.dispose(cid, author="alice", verdict="applied", reason="changed my mind")
     assert len(store.fold().comments[cid].dispositions) == 1
+
+
+def test_the_reported_queue_workflow_needs_no_flag_at_all(store, round_id):
+    """Park a point, close the round on it, complete it later.
+
+    This is the workflow that prompted ``supersede``, and it turned out to need
+    none of it: ``deferred`` never settled the comment, so the completing
+    verdict was always an ordinary append. The test is here so the next reading
+    of I5 has the answer in front of it instead of inferring a refusal from the
+    word "re-dispose".
+    """
+    cid = store.add_comment(round_id, author="bob", body="retry policy is missing")
+    store.dispose(cid, author="alice", verdict="deferred", reason="queued for later")
+    store.close_round(round_id, author="alice", allow_undisposed=True)
+    assert store.fold().rounds[round_id].undisposed_at_close == [cid]
+
+    store.dispose(cid, author="alice", verdict="applied", reason="handled off the queue")
+    comment = store.fold().comments[cid]
+    assert comment.verdict == "applied"
+    assert comment.settled is True
+    assert [d.supersede for d in comment.dispositions] == [False, False]
+    assert store.fold().undisposed == []
+
+
+def test_supersede_overturns_a_settled_verdict_and_keeps_the_old_one(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="drop the retry section")
+    store.dispose(cid, author="alice", verdict="rejected", reason="out of scope")
+    store.dispose(cid, author="alice", verdict="applied", reason="scope grew", supersede=True)
+    comment = store.fold().comments[cid]
+    assert comment.verdict == "applied"
+    assert comment.settled is True
+    # Append-only: the overturned verdict is still on the record (I1), and only
+    # which one is in force moved.
+    assert [(d.verdict, d.supersede) for d in comment.dispositions] == [
+        ("rejected", False),
+        ("applied", True),
+    ]
+
+
+def test_a_superseding_record_reads_the_same_way_back_off_disk(store, doc, round_id):
+    """The flag is a field, so a re-read has to reach the same verdict.
+
+    If it lived in ``ext`` the write would pass its own gate here and the next
+    fold would refuse the file, which is the reason it is a field at all.
+    """
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="the proxy caps it")
+    store.dispose(cid, author="bob", verdict="applied", reason="re-read it", supersede=True)
+    reread = ReviewStore.for_document(doc).fold()
+    assert reread == store.fold()
+    assert reread.comments[cid].verdict == "applied"
+
+
+@pytest.mark.parametrize(
+    "standing, expected",
+    [(None, "has no disposition"), ("deferred", "is outstanding as 'deferred'")],
+)
+def test_supersede_is_refused_when_nothing_is_settled(store, round_id, standing, expected):
+    """A declaration that describes nothing is refused rather than ignored.
+
+    Same rule as ``round.close``'s undisposed list (I6). Letting it pass would
+    make the flag mean two things at once, and a caller who typed it out of
+    habit would never find out which one they got.
+    """
+    cid = store.add_comment(round_id, author="bob", body="retries?")
+    if standing is not None:
+        store.dispose(cid, author="alice", verdict=standing, reason="queued")
+    with pytest.raises(InvariantError, match=f"declares supersede but .*{expected}"):
+        store.dispose(cid, author="alice", verdict="applied", reason="done", supersede=True)
+    # The gate runs before the append, so nothing was written either way.
+    assert len(store.fold().comments[cid].dispositions) == (0 if standing is None else 1)
+
+
+def test_the_refusal_without_the_flag_names_the_way_through(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="applied", reason="done")
+    with pytest.raises(InvariantError, match="declares supersede"):
+        store.dispose(cid, author="alice", verdict="rejected", reason="on reflection")
+
+
+def test_an_ordinary_disposition_carries_no_supersede_key(store, round_id):
+    """False is absent, not written.
+
+    An id is derived from the record's bytes, so a key on every disposition
+    would move every disposition's id — including in ledgers written before this
+    field existed.
+    """
+    cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="applied", reason="done")
+    written = store.ledger.read()[-1]
+    assert "supersede" not in written
+    assert store.fold().comments[cid].dispositions[0].supersede is False
 
 
 def test_every_disposition_carries_its_reason(store, round_id):
@@ -238,7 +330,7 @@ def test_a_comment_in_a_closed_round_can_still_be_disposed(store, round_id):
     store.close_round(round_id, author="alice", allow_undisposed=True)
     # Deferred work outlives the round it was raised in.
     store.dispose(cid, author="alice", verdict="applied", reason="landed later")
-    assert store.fold().comments[cid].state == "applied"
+    assert store.fold().comments[cid].verdict == "applied"
 
 
 def test_duplicate_event_ids_are_refused(store, round_id):

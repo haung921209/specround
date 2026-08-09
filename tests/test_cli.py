@@ -215,7 +215,8 @@ def test_comment_anchors_to_the_quoted_span(run, doc, opened):
     comment = result.json["comment"]
     assert comment["anchor"]["exact"] == "30 seconds"
     assert comment["round"] == opened
-    assert comment["state"] == "open"
+    assert comment["verdict"] is None
+    assert comment["settled"] is False
 
 
 def test_comment_without_a_quote_lands_on_the_document(run, doc, opened):
@@ -232,8 +233,8 @@ def test_comments_lists_the_round_and_the_disposition(run, doc, opened):
 
     result = run("comments", doc, "--json")
     assert result.code == 0
-    states = {c["id"]: c["state"] for c in result.json["comments"]}
-    assert states[first] == "applied"
+    verdicts = {c["id"]: c["verdict"] for c in result.json["comments"]}
+    assert verdicts[first] == "applied"
     assert all(c["round"] == opened for c in result.json["comments"])
 
 
@@ -278,7 +279,7 @@ def test_round_open_reports_what_was_lost(run, doc, opened):
     assert carried["reasons"][comment]
     # An orphan is not a disposition: nobody answered it, it just cannot be
     # placed on the page any more.
-    assert run("comments", doc, "--json").json["comments"][0]["state"] == "open"
+    assert run("comments", doc, "--json").json["comments"][0]["verdict"] is None
 
 
 def test_reanchor_re_drives_the_carry_and_says_nothing_new(run, doc, opened):
@@ -430,7 +431,71 @@ def test_dispose_settles_a_comment_with_its_reason(run, doc, opened):
     assert result.code == 0
     assert result.json["disposition"]["verdict"] == "applied"
     assert result.json["disposition"]["reason"] == "raised to 60 in revision 2"
-    assert result.json["comment"]["undisposed"] is False
+    assert result.json["comment"]["settled"] is True
+
+
+def test_a_deferred_comment_is_completed_with_no_flag(run, doc, opened):
+    """The queue workflow end to end, at the surface a person actually types.
+
+    Deferring parks a point, the round closes over it, and the verdict that
+    finishes it later is an ordinary ``dispose``. None of it needs
+    ``--supersede`` — which is the part the report about this workflow had
+    backwards.
+    """
+    comment = a_comment(run, doc, quote=None, body="retry policy is missing")
+    assert run("dispose", doc, "--comment", comment, "--as", "deferred",
+               "--why", "queued", "--author", "alice").code == 0
+    assert run("round", "close", doc, "--author", "alice", "--allow-undisposed").code == 0
+
+    done = run("dispose", doc, "--comment", comment, "--as", "applied",
+               "--why", "handled off the queue", "--author", "alice", "--json")
+    assert done.code == 0, done.err
+    assert done.json["comment"]["verdict"] == "applied"
+    assert done.json["comment"]["settled"] is True
+    assert done.json["disposition"]["supersede"] is False
+
+
+def test_supersede_is_what_overturns_a_settled_verdict(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("dispose", doc, "--comment", comment, "--as", "rejected",
+        "--why", "out of scope", "--author", "alice")
+
+    refused = run("dispose", doc, "--comment", comment, "--as", "applied",
+                  "--why", "on reflection", "--author", "alice")
+    assert refused.code != 0
+    # A refusal that does not name the way through only teaches that the tool
+    # said no.
+    assert "supersede" in refused.err
+
+    done = run("dispose", doc, "--comment", comment, "--as", "applied",
+               "--why", "on reflection", "--author", "alice", "--supersede", "--json")
+    assert done.code == 0, done.err
+    assert done.json["comment"]["verdict"] == "applied"
+    assert done.json["disposition"]["supersede"] is True
+    assert [d["verdict"] for d in done.json["comment"]["dispositions"]] == [
+        "rejected",
+        "applied",
+    ]
+
+
+def test_supersede_on_a_comment_with_nothing_settled_is_refused(run, doc, opened):
+    comment = a_comment(run, doc)
+    refused = run("dispose", doc, "--comment", comment, "--as", "applied",
+                  "--why", "done", "--author", "alice", "--supersede")
+    assert refused.code != 0
+    assert "no settled verdict to overturn" in refused.err
+
+
+def test_dispose_says_on_its_own_line_when_it_overturned_something(run, doc, opened):
+    comment = a_comment(run, doc)
+    run("dispose", doc, "--comment", comment, "--as", "applied",
+        "--why", "done", "--author", "alice")
+    backed_out = run("dispose", doc, "--comment", comment, "--as", "rejected",
+                     "--why", "backed out", "--author", "alice", "--supersede")
+    assert backed_out.code == 0, backed_out.err
+    # Two verdicts on one comment read as a contradiction unless the line that
+    # recorded the second says it was meant.
+    assert "superseding" in backed_out.out
 
 
 def test_dispose_takes_a_prefix_of_the_id(run, doc, opened):
@@ -802,15 +867,24 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
         "resolutions",
         "resolved",
         "round",
-        "state",
+        "settled",
         "strategy",
         "ts",
-        "undisposed",
+        "verdict",
     }
     # The thread axis is `resolved` and only `resolved`. A consumer reaching for
     # the old key gets nothing back rather than a boolean that changed meaning.
     assert "unresolved" not in payload
-    assert set(payload["dispositions"][0]) == {"author", "id", "reason", "ts", "verdict"}
+    # Same rule on the disposition axis. `state` packed the verdict and "has
+    # anyone decided this" into one string, and `undisposed` was `settled`
+    # inverted; both were removed rather than aliased, so a stale consumer
+    # breaks visibly instead of reading a value that changed which question it
+    # answers.
+    assert "state" not in payload
+    assert "undisposed" not in payload
+    assert set(payload["dispositions"][0]) == {
+        "author", "id", "reason", "supersede", "ts", "verdict",
+    }
     assert set(payload["replies"][0]) == {"author", "body", "id", "ts"}
     assert set(payload["resolutions"][0]) == {
         "actor", "author", "id", "note", "resolved", "ts",

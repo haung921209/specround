@@ -756,7 +756,7 @@ function paint(container, comments) {
       );
       if (!covering.length) { fragment.appendChild(document.createTextNode(piece)); continue; }
       const mark = document.createElement("mark");
-      mark.className = "anch" + (covering.some((c) => c.undisposed) ? " open" : "");
+      mark.className = "anch" + (covering.some((c) => !c.settled) ? " open" : "");
       mark.dataset.comments = covering.map((c) => c.id).join(" ");
       mark.textContent = piece;
       fragment.appendChild(mark);
@@ -1028,7 +1028,11 @@ function card(comment) {
   const element = document.createElement("div");
   element.className = "card" + (state.focused === comment.id ? " here" : "");
   element.dataset.comment = comment.id;
-  const tags = [tag(comment.kind), tag(comment.state, comment.undisposed ? "open" : "")];
+  // "open" is this surface's word for a comment nobody has ruled on. The wire
+  // sends `verdict: null` and lets each reader spell that itself, so the accent
+  // asks the settled question directly instead of reading it back out of a
+  // string that had both answers packed into it.
+  const tags = [tag(comment.kind), tag(comment.verdict || "open", comment.settled ? "" : "open")];
   if (comment.resolved) tags.push(tag("resolved"));
   // `orphan` beside `bad` names what the badge is rather than how it looks, so
   // the one place that draws attention to it has something to aim at that will
@@ -1068,7 +1072,11 @@ function card(comment) {
   const actions = document.createElement("div");
   actions.className = "acts";
   actions.appendChild(button(replyLabel(state.reply, comment.id), () => openReply(comment.id)));
-  if (comment.undisposed) actions.appendChild(button("dispose", () => disposeBox(comment)));
+  // A settled comment keeps the button, under the name of what pressing it now
+  // does. Hiding it was the view's way of enforcing I5, which meant a verdict
+  // recorded by a slip could only be undone from a shell — and a gate you can
+  // only pass somewhere else is a gate people route around.
+  actions.appendChild(button(comment.settled ? "supersede" : "dispose", () => disposeBox(comment)));
   actions.appendChild(button(comment.resolved ? "reopen" : "resolve", () => threadBox(comment)));
   element.appendChild(actions);
   element.addEventListener("click", () => focus(comment.id, "card"));
@@ -1208,7 +1216,20 @@ async function sendReply(comment, body) {
 }
 
 function disposeBox(comment) {
-  const box = panel("dispose " + comment.id);
+  // On a settled comment this box overturns a decision instead of making one,
+  // and the ledger wants that said out loud (I5). The flag is derived from the
+  // state the page is already showing rather than offered as a checkbox: the
+  // reviewer picked this comment knowing it had a verdict, and a second control
+  // asking them to confirm what the button already said is a step to click
+  // through rather than a gate to pass.
+  const overturning = comment.settled;
+  const box = panel((overturning ? "supersede " : "dispose ") + comment.id);
+  if (overturning) {
+    const note = document.createElement("div");
+    note.className = "who";
+    note.textContent = "already " + comment.verdict + " — recording another verdict overturns it";
+    box.appendChild(note);
+  }
   const choice = document.createElement("select");
   state.data.verdicts.forEach((verdict) => {
     const option = document.createElement("option");
@@ -1226,7 +1247,10 @@ function disposeBox(comment) {
   const actions = document.createElement("div");
   actions.className = "acts";
   actions.appendChild(button("record", async () => {
-    const body = { target: comment.id, verdict: choice.value, reason: area.value, author: $("author").value };
+    const body = {
+      target: comment.id, verdict: choice.value, reason: area.value,
+      author: $("author").value, supersede: overturning,
+    };
     if (await act(body, "/api/dispose")) clearComposer();
   }, true));
   actions.appendChild(button("cancel", clearComposer));
