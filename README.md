@@ -206,6 +206,19 @@ CLI lists. Edit in raw mode and the submission is a suggestion diff (G8).
 Threads carry their replies, verdicts, and resolve/reopen, and resolved ones are
 hidden with a toggle rather than deleted (G11).
 
+**Pictures in the document show up.** `![the screen](img/shot.png)` draws,
+because a spec with a screen capture in it is reviewable against the thing it
+describes. The file is served from beside the document, behind the same token as
+everything else, and it may not leave the directory the view was started on — the
+whole tree for a directory view, so `../shared/img/x.png` works between two
+documents of one reviewed tree. Symlinks are followed and then judged on where
+they land. PNG, JPEG, GIF and WebP; SVG is left out for now, because an SVG
+opened directly is a document that can run scripts on the origin holding this
+view's token. A file that is not served says which of the four reasons it was —
+missing, outside, not a served type, over the size cap — instead of one silent
+404 for all four. The label becomes the `alt` text, so it is the raw mode where a
+comment on the picture itself anchors.
+
 **The page arranges to the pane it is in.** Drag either seam to resize the file
 bar or the thread column, double-click a seam for the width back, fold either
 side column away with `⇤` / `⇥` in the toolbar, and set the size the document and

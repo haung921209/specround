@@ -159,6 +159,35 @@ target is spec and prose documents — PR tools already do code well).
   width has said what they want, so the stored answer outranks the guess from
   then on. That is the whole of the small-screen share here; the rest of mobile
   is H16's.
+  **⑦ A document's own files are served beside it (landed 2026-08-09)**. A spec
+  with a screen capture in it is reviewable *against the thing it describes* — in
+  a real round a capture caught a sentence of prose that was simply wrong about
+  the screen it claimed to describe — and a view that answered 404 for
+  `![](img/shot.png)` threw that away. The `data:` alternative is worse: tens of
+  kilobytes of base64 in the document breaks the one mode whose job is to be the
+  text. So the file is served, **behind the same token as everything else** — an
+  image request is a request to read a file off this machine, and a browser
+  making it while drawing a page does not make it a smaller one. Two directories
+  and not one: a reference resolves against the **document's own directory**
+  (what a relative path means everywhere else that reads one) and may not leave
+  the **root** — that directory for a file view, the whole tree for a directory
+  view, so `../shared/img/x.png` works between two documents of one reviewed tree
+  and stops at its edge. **Symlinks are followed and then judged on where they
+  land**: refusing every link would be the easier rule and the wrong one (a tree
+  that keeps its captures in a linked folder is an ordinary tree), and the real
+  path is what closes `img -> /` as a way out. Types are a whitelist of what a
+  browser draws in an `<img>`, and **SVG is out of v1 on purpose** — opened
+  directly it is a document that can run scripts on *this* origin, the one
+  holding the token, and the defence (`script-src 'none'` and a sandbox beside
+  it) is one that has to be right in a place nothing else here depends on. The
+  four refusals — missing · outside · unsupported · too large — share one status
+  and **never one reason**: a silent 404 for the misspelt name, the climb out,
+  the `.svg` and the 40 MB PNG is a debugging session spent guessing. What this
+  also settled is that the renderer had **no image rule at all** (`![a](src)`
+  came out as a literal `!` plus a link), so the picture had to become an `<img>`
+  before a route could answer for it; its label becomes `alt` and therefore
+  leaves the anchor space, which is the honest trade — the same characters are
+  ordinary anchorable text in the raw mode, and ① makes that one space.
 - **vim and other editors are first-class without a plugin** — fix the raw text
   in an editor and the working-tree diff is taken in as a suggestion (G8, "fix
   it and it is submitted"), and type inline annotations (the CriticMarkup
