@@ -371,12 +371,23 @@ target is spec and prose documents — PR tools already do code well).
   whether an old patch may be applied as-is to an anchor that moved, and whether
   a suggestion carried by `fuzzy` needs a person's confirmation. Round locking
   (freezing head while suggestions are open) is later for that reason
-- H11 generalizing the file type (user suggestion 2026-08-06) — take the
-  raw/render pair beyond markdown: put per-type renderers in a plugin layer
-  (code, tabular data, notebooks, images…) and arbitrary artifacts such as
-  onboarding docs or spec notes ride the same review loop. Anchors, the ledger,
-  and rounds are type-agnostic, so the core is unchanged. Trigger = after the
-  markdown loop has settled in real use (do not build it before)
+- H11 generalizing the file type (user suggestion 2026-08-06; ladder assessed
+  2026-08-10) — take the raw/render pair beyond markdown: per-type renderers
+  in a plugin layer, and arbitrary artifacts ride the same review loop.
+  Anchors, the ledger, rounds, and the CLI are already type-agnostic — a code
+  file takes a round, comments, and line-gutter clicks today; only the
+  **render view** varies by type. The difficulty ladder: **rung 0** any text
+  via raw mode (already works) · **rung 1** code with offset-preserving
+  syntax highlight (spans wrapped around unchanged text — the `_link`
+  discipline, cheap) · **rung 2** a whitelist of inline HTML inside markdown
+  (`<details>` and kin — small, separate) · **rung 3** HTML documents
+  (source-offset-mapped render is the same craft as markdown.py; the real
+  cost is **security** — foreign HTML in the token-holding origin is the
+  class that kept SVG out of v1, so it needs iframe-sandbox/CSP isolation
+  done precisely). This is not "become a PR tool" (the non-goal stands): it
+  is "any artifact, same loop". Until rung 2 exists, documents reviewed here
+  should read without folding — a `<details>` that hides a contract hides it
+  from the review. Trigger per rung = real demand, not prediction
 - H10 a central store's path key orphans the history when a document is moved or
   renamed — **direction settled (first real round c-b5c77df9, 2026-08-07)**:
   re-binding in two layers. The authoritative oracle = **content-hash
