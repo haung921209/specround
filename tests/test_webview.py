@@ -712,6 +712,32 @@ def test_a_side_that_is_not_on_screen_is_not_scrolled_to(tmp_path):
     assert in_node('focusScroll("card", {mark: false, card: true})', None, tmp_path) == ""
 
 
+def test_focusing_a_comment_neither_surface_is_showing_does_nothing(tmp_path):
+    """Both sides absent at once, which is what hiding a resolved thread leaves.
+
+    The toggle takes the card and the mark away together, and `state.focused` can
+    still be naming that comment when it does — a thread focused and then
+    resolved, or the box unticked while one was open. Nothing is wrong there and
+    there is nowhere to go, so the answer has to be no answer rather than a
+    scroll to whichever half happens to be `null`.
+    """
+    assert in_node('focusScroll("mark", {mark: false, card: false})', None, tmp_path) == ""
+    quiet = 'focusScroll("card", {mark: false, card: false, orphaned: false})'
+    assert in_node(quiet, None, tmp_path) == ""
+
+
+def test_the_orphan_flash_survives_a_card_that_is_not_on_screen():
+    """The one branch of that no-op that still reaches for an element.
+
+    An orphaned thread that is also hidden asks for "orphan" with no card to
+    flash, and reading `.querySelector` off `null` would turn a filtered-out
+    comment into a thrown error part-way through focusing — which stops
+    `markFocus`'s work being finished and leaves the highlight wherever it was.
+    """
+    html = page().decode("utf-8")
+    assert 'const badge = card ? card.querySelector(".tag.orphan") : null;' in html
+
+
 def test_a_comment_the_document_lost_is_told_about_rather_than_left_silent(tmp_path):
     """Two ways to have no mark, and they are not the same event.
 
@@ -798,6 +824,113 @@ def test_the_document_is_drawn_before_the_threads_that_point_into_it():
     thread_half = re.search(r"\bdrawThreads\(\);", body)
     assert document_half is not None and thread_half is not None
     assert document_half.start() < thread_half.start()
+
+
+# -- the resolved toggle: one filter, two surfaces -----------------------
+#
+# "show resolved" governs the thread column and the marks in the document, and
+# for as long as each filtered for itself it governed only one of them: the
+# column dropped a resolved thread and the document went on painting its anchor.
+# A mark whose card has been filtered away is a door onto nothing — the click
+# focuses a comment there is nothing to open — and a reviewer reads that as the
+# tool having lost the thread rather than as the tool hiding it (reported on a
+# real review, 2026-08-09).
+
+
+def test_the_toggle_decides_one_set_of_comments(tmp_path):
+    """The filter itself, which is the only place the rule is written."""
+    given = [
+        {"id": "c-open", "resolved": False},
+        {"id": "c-done", "resolved": True},
+    ]
+    assert in_node("visibleComments(input, false).map((c) => c.id)", given, tmp_path) == [
+        "c-open"
+    ]
+    # Ticking the box is the way back, and it has to be the whole way back.
+    assert in_node("visibleComments(input, true).map((c) => c.id)", given, tmp_path) == [
+        "c-open",
+        "c-done",
+    ]
+
+
+def test_hiding_a_thread_hides_the_mark_it_put_in_the_document():
+    """The document half reads the toggle's set rather than every comment."""
+    html = page().decode("utf-8")
+    assert "paint(host, shownComments());" in html
+    assert "paint(host, data.comments)" not in html
+
+
+def test_both_surfaces_ask_the_same_function_which_reads_the_box_once():
+    """Two readings of one checkbox is the drift with an extra step in it.
+
+    The filter is stated once, in the pure part; the checkbox is read once, in
+    the one function that hands its answer to both halves. Neither half gets to
+    hold a version of the rule that the other could stop matching.
+    """
+    html = page().decode("utf-8")
+    assert html.count('$("showresolved").checked') == 1
+    threads = html[html.index("function drawThreads()") : html.index("function card(comment)")]
+    assert "shownComments()" in threads
+    # Including the count beside the heading: "hidden" is what the filter left
+    # out, and counting it again here would be the same rule spelled twice.
+    assert ".filter(" not in threads
+
+
+def test_a_span_a_hidden_thread_shares_with_a_live_one_keeps_the_mark(tmp_path):
+    """Overlap is where "hide the mark" would go too far.
+
+    Two anchors over the same sentence, one resolved and one not: the sentence
+    stays marked, because a thread nobody has hidden still points at it, and the
+    hidden id is simply not among the ones the mark carries. That falls out of
+    `paint` knowing no set but the one it is handed — so what is checked here is
+    that it reaches for no other, and that the ids on the mark come off that set.
+    """
+    html = page().decode("utf-8")
+    body = html[
+        html.index("function paint(container, comments)") : html.index("function caret(comment)")
+    ]
+    assert "state.data" not in body and "data.comments" not in body
+    assert 'mark.dataset.comments = covering.map((c) => c.id).join(" ");' in body
+    # And the click that mark carries opens the first of exactly those ids.
+    assert 'focus(mark.dataset.comments.split(" ")[0], "mark");' in body
+
+
+def test_ticking_the_box_redraws_the_document_and_not_only_the_column():
+    """The other half of the same bug: a filter both halves share, applied once.
+
+    Redrawing the threads alone leaves the marks as the previous state of the
+    toggle drew them — so unticking the box hid the cards and left their marks,
+    and ticking it back showed the cards while the marks it should have restored
+    stayed missing. The order is `load`'s, for `load`'s reason: a card is only
+    clickable once the mark it scrolls to exists.
+    """
+    html = page().decode("utf-8")
+    handler = html[html.index('$("showresolved").addEventListener') :]
+    document_half = re.search(r"\bdraw\(\);", handler)
+    thread_half = re.search(r"\bdrawThreads\(\);", handler)
+    assert document_half is not None and thread_half is not None
+    assert document_half.start() < thread_half.start()
+
+
+def test_every_draw_a_control_can_reach_first_does_nothing_without_a_state():
+    """The page is clickable before ``load`` answers, and its own draws say so.
+
+    The mode buttons, the fold handles and the resolved checkbox are all in the
+    markup, so every one of them can be used in the window between the page
+    rendering and the first ``/api/state`` coming back. Two of the three draws
+    they reach already open by checking; the third read ``state.data.comments``
+    off ``null``, and a handler that throws is a click that leaves the checkbox
+    ticked with nothing redrawn — the page then disagreeing with its own control
+    until something unrelated redraws it.
+
+    Asserted for all three together because the guard is a rule about the whole
+    class, and a fourth draw wired to a fifth control is the way it comes back.
+    """
+    html = page().decode("utf-8")
+    for name in ("function draw()", "function renderControls()", "function drawThreads()"):
+        start = html.index(name)
+        body = html[start : html.index("\n}", start)]
+        assert "if (!data) return;" in body or "if (!state.data) return;" in body, name
 
 
 # -- replying in the card ------------------------------------------------

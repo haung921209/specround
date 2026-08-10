@@ -603,6 +603,27 @@ function paintable(comments) {
   return comments.filter((c) => c.current_anchor && !c.misplaced);
 }
 
+function visibleComments(comments, showResolved) {
+  // Which comments the reviewer asked to see — the answer both surfaces of this
+  // page take, the cards in the thread column and the marks in the document.
+  //
+  // Separate from `paintable` because the two are different questions. That one
+  // is about what the document *can* draw and only the marks answer to it; this
+  // one is about what has been asked for, and a thread that is not on the
+  // screen must not be on the page anywhere else either. They were filtered
+  // apart — the column dropped a resolved thread and the document painted its
+  // anchor regardless — and what that leaves behind is worse than an extra
+  // colour: the mark is still a click target, the click focuses a comment there
+  // is no card for, and a door that opens onto nothing reads as the tool having
+  // lost the thread rather than as the tool hiding it.
+  //
+  // Resolving is the ordinary way a thread leaves the screen and the toggle is
+  // the way back, so both directions have to reach both surfaces. One filter is
+  // how that stays true: a second spelling of it is a rule that can be
+  // half-changed, which is exactly how this got here.
+  return comments.filter((c) => showResolved || !c.resolved);
+}
+
 // -- how the page is arranged ---------------------------------------------
 //
 // Column widths, whether a column is folded away, and the size the text is read
@@ -750,6 +771,15 @@ function assetUrl(ref, doc, token) {
 }
 
 // -- end of the pure part -------------------------------------------------
+
+function shownComments() {
+  // The set this page is showing, and the one reading of the checkbox that
+  // decides it. Both halves come through here rather than each asking the box
+  // themselves: the rule lives in `visibleComments`, and this is the single
+  // place the rule meets the control, so the column and the document cannot end
+  // up answering to two different readings of the same tick.
+  return visibleComments(state.data.comments, $("showresolved").checked);
+}
 
 // -- painting anchors ------------------------------------------------------
 
@@ -933,7 +963,9 @@ function draw() {
   if (state.mode === "raw") drawRaw(host, data);
   else if (state.mode === "diff") drawDiff(host, data);
   else drawRender(host, data);
-  paint(host, data.comments);
+  // The showing set and not every comment: a mark for a thread the column is
+  // hiding has nothing behind it to open.
+  paint(host, shownComments());
   if (state.focused) markFocus();
 }
 
@@ -1045,12 +1077,19 @@ function anchorLabel(comment) {
 
 function drawThreads() {
   const data = state.data;
-  const showResolved = $("showresolved").checked;
-  const hidden = data.comments.filter((c) => c.resolved).length;
-  const shown = data.comments.filter((c) => showResolved || !c.resolved);
+  // The same race `draw` and `renderControls` name, reached by the checkbox
+  // that sits above this column: it is in the markup, so it is tickable before
+  // the first state has arrived, and reading the comments off nothing throws
+  // inside the handler rather than drawing an empty column.
+  if (!data) return;
+  const shown = shownComments();
+  // What the toggle left out, taken off the filter rather than counted again.
+  // A second count of the same rule is a second rule, and this heading is where
+  // a reviewer would look to find out that anything is being withheld at all.
+  const hidden = data.comments.length - shown.length;
   $("threadhead").textContent =
     "threads — " + shown.length + " shown, " + data.counts.undisposed + " undisposed"
-    + (hidden && !showResolved ? ", " + hidden + " resolved and hidden" : "");
+    + (hidden ? ", " + hidden + " resolved and hidden" : "");
   const host = $("threads");
   host.textContent = "";
   if (!shown.length) {
@@ -1606,7 +1645,15 @@ $("foldnav").addEventListener("click", () => setView({ kind: "fold", field: "nav
 $("foldthreads").addEventListener("click", () => setView({ kind: "fold", field: "threads" }));
 $("fontdown").addEventListener("click", () => setView({ kind: "font", step: -1 }));
 $("fontup").addEventListener("click", () => setView({ kind: "font", step: 1 }));
-$("showresolved").addEventListener("change", drawThreads);
+$("showresolved").addEventListener("change", () => {
+  // Both halves, because the toggle governs both. Redrawing the column alone
+  // left the marks as whatever the previous state of the box had drawn — hiding
+  // the cards and keeping their marks on one click, showing the cards without
+  // giving the marks back on the next. The order is `load`'s and for `load`'s
+  // reason: a card is only clickable once the mark it scrolls to exists.
+  draw();
+  drawThreads();
+});
 $("refresh").addEventListener("click", () => load().catch((e) => notice(String(e.message || e), "bad")));
 $("float").addEventListener("mousedown", (event) => {
   // mousedown, not click: clicking clears the selection before the handler runs.
