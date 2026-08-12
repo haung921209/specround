@@ -207,6 +207,19 @@ token, stores it, and **says so** — on stdout and in `token_note` — after wh
 the URL the last view handed out gets a `403`. Same rule as the port: the URL
 moves when you asked it to, and never without a reason printed beside it.
 
+**A share is a second, weaker URL** — not a copy of the one in your pane.
+Handing your own URL to a room hands the room everything, disposing included,
+under any name it likes. `--share read` mints a token that looks; `--share
+comment` one that also comments, suggests, and replies. Neither disposes nor
+edits threads — a shared link collects opinions, it does not settle them. The
+share is deliberately *not* stored: restarting the view revokes every share at
+once, and your own URL comes back from the same restart unchanged. Hand out the
+`share` line, never the first one.
+
+```bash
+specround view SPEC.md --share comment    # one URL for you, a weaker one for the room
+```
+
 A spec is never one file, so `view` also takes a **directory**: one server for
 the tree, and a bar down the left listing the markdown under it. Each file
 carries what its own review looks like — open rounds, undisposed comments,

@@ -19,6 +19,7 @@ not know.
 | exit codes | `0` ok · `2` fix the invocation · `3` the history refuses · `1` anything else | [`README.md`](../README.md) — judge by `$?`, never by matching output text |
 | `view` stdout | the **first line is the URL**, before the server is up; `port …` and `token …` lines follow and say where each half of that URL came from | README / SPEC §3 |
 | a document's URL | the **same document comes back on the same URL** — port and token both derived from, or stored against, the document's path. It moves only when the port was taken (`port_source: fallback`) or `--rotate-token` was passed, and both say so | README, and "restarting a view" below |
+| a URL for anyone else | **hand out the `share` URL, never the owner one** — `--share read\|comment` mints a scoped second token (`share` in the JSON payload, a `share …` line on stdout; nothing shared disposes). It is not stored: stopping the view revokes every share, and the owner URL survives that same restart | README |
 | external comments in | `specround.import/v0` | [`import-format.md`](import-format.md) — per-tool converters stay outside the core |
 
 Two consequences worth spelling out:

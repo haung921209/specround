@@ -57,7 +57,15 @@ from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
 from specround.viewtokens import ROTATED, STORED, token_for
-from specround.webview import DEFAULT_HOST, DERIVED, FALLBACK, PINNED, PortTaken, WebView
+from specround.webview import (
+    DEFAULT_HOST,
+    DERIVED,
+    FALLBACK,
+    PINNED,
+    SHARE_SCOPES,
+    PortTaken,
+    WebView,
+)
 from specround.wire import (
     anchor_json,
     comment_json,
@@ -1214,6 +1222,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
             host=args.host,
             port=args.port,
             token=token,
+            share_scope=args.share or "",
         )
     )
     state = target.store.fold()
@@ -1231,6 +1240,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
         "token": view.token,
         "token_source": token_source,
         "token_note": _token_note(token_source),
+        "share": _share_payload(view),
         "round": round_json(state, round_) if round_ is not None else None,
         "commentable": round_ is not None and round_.open,
         "blocked": blocked,
@@ -1246,6 +1256,8 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     lines.append(f"store  {target.store.root}")
     lines.append(_port_line(view))
     lines.append(_token_line(token_source))
+    if view.share_scope:
+        lines.append(_share_line(view))
     if blocked:
         lines.append(f"note   {blocked}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
@@ -1301,6 +1313,7 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
             host=args.host,
             port=args.port,
             token=token,
+            share_scope=args.share or "",
             workspace=space,
             doc=opening.key,
         )
@@ -1319,6 +1332,7 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         "token": view.token,
         "token_source": token_source,
         "token_note": _token_note(token_source),
+        "share": _share_payload(view),
         "workspace": {**listing.to_json(), "selected": opening.key},
     }
     # The URL first and alone, exactly as the single-document view promises: a
@@ -1340,6 +1354,8 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         lines.append(f"stores {len(stores)} — one per document, listed in the workspace payload")
     lines.append(_port_line(view))
     lines.append(_token_line(token_source))
+    if view.share_scope:
+        lines.append(_share_line(view))
     if listing.note:
         lines.append(f"note   {listing.note}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
@@ -1426,6 +1442,28 @@ def _token_line(source: str) -> str:
     if source == STORED:
         return "token  this document's own, so the URL is the one it was served on last time"
     return "token  new — this document had none stored; from here the URL comes back"
+
+
+def _share_payload(view: WebView) -> dict[str, str] | None:
+    """The share grant's half of the payload, or ``None`` for an unshared view."""
+    if not view.share_scope:
+        return None
+    return {"url": view.share_url, "scope": view.share_scope}
+
+
+def _share_line(view: WebView) -> str:
+    """One line handing over the *other* URL, and saying what it is not.
+
+    The scope is on the line because the person reading it is about to paste
+    the URL somewhere, and "what can they do with it" is the question that
+    decides where. The lifetimes are on it for the same reason: a share dies
+    with this process, and the owner URL is the one that does not.
+    """
+    what = "looks" if view.share_scope == "read" else "comments too"
+    return (
+        f"share  {view.share_url} — scope {view.share_scope} ({what}, never disposes); "
+        "dies when this view stops, the owner URL above does not"
+    )
 
 
 def _serving(view: WebView, open_browser: bool) -> Callable[[], None]:
@@ -1722,6 +1760,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "issue a new token and store it, refusing the URL the last view handed "
             "out (the token is otherwise this document's, like the port)"
+        ),
+    )
+    viewing.add_argument(
+        "--share",
+        choices=SHARE_SCOPES,
+        help=(
+            "also mint a weaker second URL to hand to everyone else: 'read' looks, "
+            "'comment' also speaks, neither disposes. The share is not stored — "
+            "restarting the view revokes every share at once, and the owner URL "
+            "survives the same restart"
         ),
     )
     viewing.add_argument("--round", metavar="ID", help="write to this round rather than the open one")

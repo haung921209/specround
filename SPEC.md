@@ -472,7 +472,15 @@ target is spec and prose documents — PR tools already do code well).
   phone keeps in its history, with no expiry and one way to revoke it that
   somebody has to remember to run. Nothing here decides it — what exposure has
   to bring is named, not chosen: an expiry, a per-device grant, or rotation on
-  every start when `--host` is not loopback
+  every start when `--host` is not loopback.
+  **The per-device grant arrived first, as `--share` (2026-08-12).** The first
+  real LAN share handed the room the owner URL — every write verb, any author
+  string — which is what forced the split: the owner token persists and is the
+  reviewer's, the share token is minted per start, scoped (`read` looks,
+  `comment` also speaks, nothing shared disposes), and deliberately not stored,
+  so stopping the view is the revocation. That answers "who else gets in" for a
+  room on a LAN; what H16 still holds open for the *owner's own* second device
+  is expiry and transport (HTTPS on a tailnet), unchanged above
 - H17 mapping a round to its consuming session (user, thinking aloud
   2026-08-08). Today the agent *pulls* ("collect when asked"); the idea is a
   submitted suggestion or comment finding the session that is working on that
