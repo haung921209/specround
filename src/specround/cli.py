@@ -56,6 +56,7 @@ from specround.imports import BatchError, apply_plan, load_batch, parse_text, pl
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
+from specround.viewtokens import ROTATED, STORED, token_for
 from specround.webview import DEFAULT_HOST, DERIVED, FALLBACK, PINNED, PortTaken, WebView
 from specround.wire import (
     anchor_json,
@@ -1202,6 +1203,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     if Path(args.doc).expanduser().is_dir():
         return _view_workspace(args)
     target = _target(args, missing_ok=True)
+    token, token_source = token_for(target.path, rotate=args.rotate_token)
     view = _bind(
         WebView(
             store=target.store,
@@ -1211,6 +1213,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
             round_hint=args.round or None,
             host=args.host,
             port=args.port,
+            token=token,
         )
     )
     state = target.store.fold()
@@ -1226,6 +1229,8 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
         "port_source": view.port_source,
         "port_note": _port_note(view),
         "token": view.token,
+        "token_source": token_source,
+        "token_note": _token_note(token_source),
         "round": round_json(state, round_) if round_ is not None else None,
         "commentable": round_ is not None and round_.open,
         "blocked": blocked,
@@ -1240,6 +1245,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
         lines.append(f"serving {target.key}")
     lines.append(f"store  {target.store.root}")
     lines.append(_port_line(view))
+    lines.append(_token_line(token_source))
     if blocked:
         lines.append(f"note   {blocked}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
@@ -1281,6 +1287,11 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         )
     opening = listing.documents[0]
     store = space.store_for(opening.path)
+    # The tree, not the document it opens on — the same axis the port counts
+    # from (``WebView.port_path``). Keying the token on the opening document
+    # would give the workspace a URL whose halves disagree about what it is a
+    # view of, and move one of them the day a file sorts before that one.
+    token, token_source = token_for(root, rotate=args.rotate_token)
     view = _bind(
         WebView(
             store=store,
@@ -1289,6 +1300,7 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
             actor=_actor(args),
             host=args.host,
             port=args.port,
+            token=token,
             workspace=space,
             doc=opening.key,
         )
@@ -1305,6 +1317,8 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         "port_source": view.port_source,
         "port_note": _port_note(view),
         "token": view.token,
+        "token_source": token_source,
+        "token_note": _token_note(token_source),
         "workspace": {**listing.to_json(), "selected": opening.key},
     }
     # The URL first and alone, exactly as the single-document view promises: a
@@ -1325,6 +1339,7 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         # document in the bar.
         lines.append(f"stores {len(stores)} — one per document, listed in the workspace payload")
     lines.append(_port_line(view))
+    lines.append(_token_line(token_source))
     if listing.note:
         lines.append(f"note   {listing.note}")
     lines.append("stop with ctrl-c — nothing is left running, the ledger has it all")
@@ -1379,6 +1394,38 @@ def _port_line(view: WebView) -> str:
     if view.port_source == PINNED:
         return f"port   {view.port} — pinned with --port"
     return f"port   {view.port} — a free port (--port 0), so a restart will land elsewhere"
+
+
+def _token_note(source: str) -> str | None:
+    """Why this URL is not the one this document usually gets, or ``None``.
+
+    The token's half of :func:`_port_note`, and non-``None`` in the one case
+    that matches a fallback: the address held but the grant did not, so a pane
+    that kept the URL is now refused at it. Rotation is asked for rather than
+    stumbled into, which is exactly why the caller has to be able to see that
+    it happened without reading the printed lines.
+    """
+    if source != ROTATED:
+        return None
+    return (
+        "the stored token was replaced with --rotate-token, so this URL is not the one the "
+        "last view handed out — anything still holding that one gets 403 until it is given "
+        "this URL instead"
+    )
+
+
+def _token_line(source: str) -> str:
+    """One line saying whether the *whole* URL comes back, not just the port.
+
+    A stable port under a token minted per start was a URL that returned to the
+    right address and was refused there, which is the failure this pairs with
+    :func:`_port_line` to close. Three answers, and the loud one is rotation.
+    """
+    if source == ROTATED:
+        return f"token  rotated — {_token_note(source)}"
+    if source == STORED:
+        return "token  this document's own, so the URL is the one it was served on last time"
+    return "token  new — this document had none stored; from here the URL comes back"
 
 
 def _serving(view: WebView, open_browser: bool) -> Callable[[], None]:
@@ -1635,6 +1682,17 @@ def build_parser() -> argparse.ArgumentParser:
         "view",
         parents=[common, writing],
         help="serve a document — or a whole directory of them — to a browser",
+        description=(
+            "Serve a document to a browser: render, raw, and diff over one anchor "
+            "space. The URL is the first line of stdout and no browser is opened. "
+            "The same document comes back on the same URL, so a pane holding it "
+            "survives a restart. Rounds are resolved per request, not at startup — "
+            "closing a round and opening the next one reaches a running view, and "
+            "restarting to pick one up is never necessary. While a round is open, "
+            "render and raw show the base it froze (that is what a comment anchors "
+            "against); edits to the file show in the diff mode until the next round "
+            "freezes them."
+        ),
     )
     viewing.add_argument(
         "doc",
@@ -1651,11 +1709,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=(
             "pin the port; 0 asks for any free one (default: derived from the "
-            "document's path, so a restart keeps the URL)"
+            "document's path, and with the token kept beside it a restart keeps "
+            "the whole URL)"
         ),
     )
     viewing.add_argument(
         "--host", default=DEFAULT_HOST, help=f"address to bind (default: {DEFAULT_HOST})"
+    )
+    viewing.add_argument(
+        "--rotate-token",
+        action="store_true",
+        help=(
+            "issue a new token and store it, refusing the URL the last view handed "
+            "out (the token is otherwise this document's, like the port)"
+        ),
     )
     viewing.add_argument("--round", metavar="ID", help="write to this round rather than the open one")
     viewing.add_argument(

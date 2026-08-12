@@ -40,6 +40,7 @@ from specround.webview import (
     derived_port,
     page,
 )
+from specround.viewtokens import MINTED, ROTATED, STORED, token_for
 from specround.wire import comment_json
 from specround.workspace import Workspace
 
@@ -298,6 +299,36 @@ def test_a_closed_round_still_shows_its_review(opened, store, round_id):
     assert payload["round"]["id"] == round_id
     assert payload["commentable"] is False
     assert "reading only" in payload["blocked"]
+
+
+def test_closing_a_round_and_opening_the_next_reaches_a_running_view(view, store, doc, doc_text):
+    """A whole round cycle, served by one process that was never restarted.
+
+    **A guard, not a change detector.** It is green on the implementation that
+    came before it, because the round is already resolved per request and the
+    state payload folds the ledger every time. It is written down anyway: an
+    adapter reading a stale-looking render — the open round's base, which is
+    what I7 requires it to be — once concluded the server was stale and put a
+    restart into its round-cycling procedure. That procedure rotated the token
+    on every round, and a comment was refused and lost. What is by design has
+    to be pinned by a test, or the next reader diagnoses it as a bug again.
+    """
+    first = store.open_round(doc, author="alice", title="first pass")
+    assert state(view)["round"]["id"] == first
+    assert state(view)["base"] == doc_text
+
+    revised = doc_text.replace("30 seconds", "45 seconds")
+    doc.write_text(revised, encoding="utf-8")
+    # Still the base this round froze, while it is open — the edit is the diff's.
+    assert state(view)["base"] == doc_text
+
+    store.close_round(first, author="alice")
+    second = store.open_round(doc, author="alice", title="second pass")
+    payload = state(view)
+    assert payload["round"]["id"] == second
+    assert payload["base"] == revised
+    assert payload["commentable"] is True
+    assert "45 seconds" in payload["render"]
 
 
 def test_the_diff_reports_the_revision_against_the_frozen_base(opened, doc, doc_text):
@@ -2011,21 +2042,49 @@ def test_the_default_port_is_the_derived_one_and_a_restart_returns_to_it(store, 
     second.shutdown()
 
 
-def test_the_token_still_changes_every_restart(store, doc, derived_free):
-    """A stable port is not a stable URL, and that is the design.
+def test_a_view_nobody_hands_a_token_mints_its_own(store, doc):
+    """The class keeps no state of its own, and that includes the token (G5).
 
-    The port is addressing; the token is authorisation. Restarting is a new
-    grant, so the token is new — an embedder re-reads the printed line either
-    way, and a token that outlived the process would be one a stale tab could
-    still post through.
+    Persistence is the caller's — :mod:`specround.viewtokens` resolves it and
+    the CLI hands it in. Constructing a view twice in one process therefore
+    gives two grants, which is what "no state" has to mean: a library that
+    reached for a file on construction would be one an embedder could not
+    instantiate twice for two purposes.
     """
-    first = WebView(store=store, path=doc, author="alice").bind()
-    first.shutdown()
-    second = WebView(store=store, path=doc, author="alice").bind()
-    second.shutdown()
-    assert first.port == second.port
+    first = WebView(store=store, path=doc, author="alice", port=0)
+    second = WebView(store=store, path=doc, author="alice", port=0)
+    assert first.token and second.token
     assert first.token != second.token
-    assert first.url != second.url
+
+
+def test_a_restart_on_the_documents_token_keeps_the_whole_url(store, doc, derived_free):
+    """Port *and* token, so the URL an embedder's pane is holding still works.
+
+    The port alone was never enough. A pane that survived the restart and then
+    got a 403 out of the address it had kept is the failure this closes.
+    """
+    first_token, first_source = token_for(doc)
+    first = WebView(store=store, path=doc, author="alice", token=first_token).bind()
+    first.shutdown()
+    second_token, second_source = token_for(doc)
+    second = WebView(store=store, path=doc, author="alice", token=second_token).bind()
+    second.shutdown()
+    assert (first_source, second_source) == (MINTED, STORED)
+    assert first.url == second.url
+
+
+def test_a_rotated_token_refuses_the_url_the_last_view_handed_out(store, doc):
+    """What rotation is *for*: the previous grant stops working, at once."""
+    stale, _ = token_for(doc)
+    fresh, source = token_for(doc, rotate=True)
+    assert source == ROTATED and fresh != stale
+    served = WebView(store=store, path=doc, author="alice", port=0, token=fresh)
+    served.start()
+    try:
+        assert call(served, "/api/state", token=stale)[0] == 403
+        assert call(served, "/api/state", token=fresh)[0] == 200
+    finally:
+        served.shutdown()
 
 
 def test_a_taken_port_falls_back_to_a_free_one_and_records_why(store, doc):

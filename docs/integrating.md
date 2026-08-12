@@ -17,7 +17,8 @@ not know.
 | the ledger and the store layout | `specround.ledger/v0` | [`ledger-format.md`](ledger-format.md) — the format *is* the contract, including where a store lives and how a document's key is derived |
 | CLI output | `specround.cli/v0` | every verb takes `--json` and the envelope carries its schema; human tables are for humans and may be reworded |
 | exit codes | `0` ok · `2` fix the invocation · `3` the history refuses · `1` anything else | [`README.md`](../README.md) — judge by `$?`, never by matching output text |
-| `view` stdout | the **first line is the URL**, before the server is up; a `port …` line follows when the port fell back and says why | README / SPEC §3 |
+| `view` stdout | the **first line is the URL**, before the server is up; `port …` and `token …` lines follow and say where each half of that URL came from | README / SPEC §3 |
+| a document's URL | the **same document comes back on the same URL** — port and token both derived from, or stored against, the document's path. It moves only when the port was taken (`port_source: fallback`) or `--rotate-token` was passed, and both say so | README, and "restarting a view" below |
 | external comments in | `specround.import/v0` | [`import-format.md`](import-format.md) — per-tool converters stay outside the core |
 
 Two consequences worth spelling out:
@@ -29,6 +30,38 @@ Two consequences worth spelling out:
 - **Collect through the CLI.** `comments --json` / `round status --json` are
   the read path an adapter can parse; their field sets are closed and their
   envelope is versioned.
+
+## What a running view does *not* need restarting for
+
+An adapter that cycles rounds around a live view should not be restarting the
+server between them. This is written down because the opposite was inferred
+once, from a page that looked stale, and the restart it produced cost a
+reviewer's comment.
+
+- **The round is resolved per request, not at startup.** A view started with no
+  `--round` serves "the one open round" as of each request. Close a round from
+  another terminal and open the next one, and the running view moves to it —
+  new round, new base, new anchor space — with nobody restarting anything. The
+  same is true in the other direction: a view started before any round existed
+  begins commenting the moment one is opened.
+- **An open round's `render` and `raw` show the round's base, and that is not
+  staleness.** A comment on this round is verified against the snapshot the
+  round froze (I7), so the two modes a comment is made in have to show that
+  snapshot. Edit the file while the round is open and the edit appears in the
+  **diff** mode, which is what diff mode is for — not in the other two. Close
+  the round and open the next one and the new base is picked up, again without
+  a restart.
+
+Reading the first as staleness produces a restart-per-round procedure, and
+before the token was persisted every restart also rotated it: the URL the pane
+was holding started answering `403`, and a comment submitted through it was
+refused rather than saved. The behaviour above is pinned by tests
+(`test_webview.py`) so that a later reader diagnoses it as design rather than
+as a bug.
+
+**When a view genuinely has to be restarted** — the package was upgraded, the
+process died — the URL is unchanged, so an adapter that cached it can keep it.
+Only `--rotate-token` and a taken port move it, and both announce themselves.
 
 ## The surface that is *not* promised
 

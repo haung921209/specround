@@ -19,11 +19,21 @@ change, a view reclaimed and started again — kill the tab that was holding the
 review, and makes a loop that lives in the ledger look like it lives in this
 process. So the default port is derived from the document's path on the same
 normalization the store keys by (:func:`derived_port`), and the same document
-comes back on the same address. What that does *not* buy is a frozen URL: the
-token is minted per start, because a restart is a new grant. See
-:meth:`WebView.bind` for the three ways a port gets chosen, and for the one rule
-under them — a port that is not the expected one is a port whose reason is
-recorded, never one that quietly wandered.
+comes back on the same address. See :meth:`WebView.bind` for the three ways a
+port gets chosen, and for the one rule under them — a port that is not the
+expected one is a port whose reason is recorded, never one that quietly
+wandered.
+
+**And so is the token**, or the address would be the only stable half of a URL
+that also carries ``?t=``. A grant minted per start sends the pane that
+survived the restart back to the right port to be refused there, and what the
+reviewer had typed into that page goes with the 403 — a comment posted through
+a stale token is a refusal, not a draft. So the token persists on the same key
+the port does. That is :mod:`specround.viewtokens`, and it is the *caller's* to
+resolve: this class takes a token and keeps no state of its own (G5), so the
+CLI hands one in. "A restart is a new grant" survives as ``--rotate-token`` —
+opt-in, and printed, because a URL that moved without saying why is the one
+thing this refuses.
 
 Every route here either folds the ledger or appends to it through the same
 :class:`~specround.store.ReviewStore` methods the CLI calls, and it answers in
@@ -256,9 +266,12 @@ class WebView:
     host: str = DEFAULT_HOST
     #: Which port to take, and after :meth:`bind` the one that was taken.
     #: ``None`` — the default — means the one derived from the document's path,
-    #: so the same document keeps its URL across restarts. ``0`` asks for
+    #: so the same document keeps its address across restarts. ``0`` asks for
     #: whatever is free. Anything else is a request that is met or refused.
     port: int | None = None
+    #: The grant the URL carries. Empty means "mint one for this process", which
+    #: keeps the class stateless; a caller that wants the *same* URL next time
+    #: resolves it first (:mod:`specround.viewtokens`) and passes it here.
     token: str = ""
     #: The tree this view navigates, when it was started on a directory (H15).
     #: ``None`` is the file view, unchanged in every respect.
@@ -320,8 +333,13 @@ class WebView:
             recording *why* the URL moved is the whole difference between a
             fallback and a port that wanders.
 
-        A stable port is not a stable URL: the token is new every time (see
-        :attr:`url`), because a restart is a new grant and not a resumed one.
+        A stable port is only half of a stable URL — the other half is the
+        token in :attr:`url`, and this class does not decide it. A view given
+        no token mints one, which is right for a library that keeps no state:
+        the persistence that makes a restart land on the *same* URL belongs to
+        the caller, in :mod:`specround.viewtokens`. Handing a view the token
+        the port already agrees about is what makes an embedder's pane survive
+        a restart in full rather than in address only.
         """
         if self._server is not None:
             return self
@@ -370,6 +388,10 @@ class WebView:
         writes to a ledger is reachable by every tab, and an unguessable path is
         the cheap half of the answer. The other half is the ``Origin`` check in
         the handler.
+
+        It now outlives the process it was first served by, which is what makes
+        the URL keepable — and is also why revoking one has to be something a
+        caller can ask for rather than something a restart does for free.
         """
         return f"http://{self.host}:{self.port}/?t={self.token}"
 
