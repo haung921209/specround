@@ -35,6 +35,16 @@ CLI hands one in. "A restart is a new grant" survives as ``--rotate-token`` —
 opt-in, and printed, because a URL that moved without saying why is the one
 thing this refuses.
 
+**A share is a weaker second grant, not a copy of the first.** Handing the
+owner URL to a room hands the room everything — disposing included, under any
+name it likes — and the first real share did exactly that. So ``--share`` mints
+a second token beside the owner's: ``read`` looks, ``comment`` also speaks, and
+neither disposes nor edits threads — a shared link collects opinions, it does
+not settle them. The share token is deliberately *not* persisted: restarting
+the view is how every share is revoked at once, while the owner URL (above)
+survives the same restart untouched. One mechanism, two lifetimes, and each is
+the point of the other.
+
 Every route here either folds the ledger or appends to it through the same
 :class:`~specround.store.ReviewStore` methods the CLI calls, and it answers in
 :mod:`specround.wire`'s shapes. Nothing re-implements a rule: a view carrying its
@@ -111,6 +121,7 @@ __all__ = [
     "PortTaken",
     "REVISION",
     "Refusal",
+    "SHARE_SCOPES",
     "WebView",
     "VIEW_SCHEMA",
     "derived_port",
@@ -120,6 +131,12 @@ __all__ = [
 #: consumer should be able to tell that the shape it parses is the shape it was
 #: written against.
 VIEW_SCHEMA = "specround.view/v0"
+
+#: What a share grant may do. ``read`` is the state, the page, and the assets;
+#: ``comment`` adds the three verbs that *say* something (comment, suggestion,
+#: reply). There is deliberately no scope that disposes or edits threads —
+#: settling a review is the owner's, whatever the share was for.
+SHARE_SCOPES = ("read", "comment")
 
 #: Which text a selection's offsets count in — and, as ``reading`` in
 #: :meth:`WebView.state_payload`, which text the render and raw modes are
@@ -273,6 +290,14 @@ class WebView:
     #: keeps the class stateless; a caller that wants the *same* URL next time
     #: resolves it first (:mod:`specround.viewtokens`) and passes it here.
     token: str = ""
+    #: What the share grant may do — one of :data:`SHARE_SCOPES`, or empty for a
+    #: view that is not shared at all (the default, and then no second token
+    #: exists to guess).
+    share_scope: str = ""
+    #: The weaker second grant. Minted per start when :attr:`share_scope` is set
+    #: and never stored: a restart revokes every share at once, and the owner
+    #: URL — persisted by the caller — is what survives it.
+    share_token: str = ""
     #: The tree this view navigates, when it was started on a directory (H15).
     #: ``None`` is the file view, unchanged in every respect.
     workspace: Workspace | None = None
@@ -286,6 +311,11 @@ class WebView:
     def __post_init__(self) -> None:
         self.key = self.store.doc_key(self.path)
         self.token = self.token or secrets.token_urlsafe(16)
+        if self.share_scope and self.share_scope not in SHARE_SCOPES:
+            scopes = ", ".join(SHARE_SCOPES)
+            raise SpecroundError(f"a share is {scopes} — not {self.share_scope!r}")
+        if self.share_scope:
+            self.share_token = self.share_token or secrets.token_urlsafe(16)
         #: One of :data:`PORT_SOURCES`, once :meth:`bind` has run.
         self.port_source = ""
         #: The derived port that was not free, when that is why the port moved.
@@ -395,6 +425,15 @@ class WebView:
         """
         return f"http://{self.host}:{self.port}/?t={self.token}"
 
+    @property
+    def share_url(self) -> str:
+        """The address to hand to everyone else — the share grant, not the owner's.
+
+        Only meaningful when :attr:`share_scope` is set; an unshared view has no
+        second token, and this property would hand out ``?t=`` with nothing in it.
+        """
+        return f"http://{self.host}:{self.port}/?t={self.share_token}"
+
     def serve_forever(self) -> None:  # pragma: no cover - the CLI's blocking path
         self.bind()
         assert self._server is not None
@@ -444,14 +483,29 @@ class WebView:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5)
 
-    def authorised(self, token: str | None, origin: str | None) -> bool:
-        """Both halves: the caller knows the token and is not another origin."""
-        if not token or not hmac.compare_digest(token, self.token):
-            return False
+    def grant(self, token: str | None, origin: str | None) -> str:
+        """Which grant a request carries: ``owner``, ``share``, or ``""``.
+
+        Both halves still hold for either grant: the caller knows *a* token and
+        is not another origin. Which token it knows is what the return value
+        says, and the handler turns that into what the request may do.
+        """
+        if not token:
+            return ""
         # A same-origin fetch may or may not send Origin depending on the
         # browser; a cross-origin one always does. Absent is therefore fine and
         # a mismatch never is.
-        return origin in (None, "", f"http://{self.host}:{self.port}")
+        if origin not in (None, "", f"http://{self.host}:{self.port}"):
+            return ""
+        if hmac.compare_digest(token, self.token):
+            return "owner"
+        if self.share_token and hmac.compare_digest(token, self.share_token):
+            return "share"
+        return ""
+
+    def authorised(self, token: str | None, origin: str | None) -> bool:
+        """Both halves: the caller knows a token and is not another origin."""
+        return self.grant(token, origin) != ""
 
     # -- navigation ------------------------------------------------------
 
@@ -940,7 +994,8 @@ class _Handler(BaseHTTPRequestHandler):
         #: one request and the server is the thing that must stay stateless.
         self.query = query
         token = (query.get("t") or [None])[0] or self.headers.get("X-Specround-Token")
-        if not self.view.authorised(token, self.headers.get("Origin")):
+        grant = self.view.grant(token, self.headers.get("Origin"))
+        if not grant:
             # Deliberately the same answer for a wrong token and a wrong origin:
             # this is not an account, and telling a caller which half it failed
             # is telling it what to fix.
@@ -954,6 +1009,26 @@ class _Handler(BaseHTTPRequestHandler):
         if route is None:
             self._send(HTTPStatus.NOT_FOUND, b"specround: no such route\n", "text/plain; charset=utf-8")
             return
+        if grant == "share" and routes is _POSTS:
+            # Every GET is a look and every look is shared; the writes are where
+            # the scopes part ways. The message names the ceiling rather than
+            # the miss, because the caller's next question is "then what can I
+            # do", not "what did I just fail".
+            if self.view.share_scope != "comment":
+                self._error(
+                    HTTPStatus.FORBIDDEN,
+                    "share",
+                    "this link is a read share — it can look, and a comment share can also speak",
+                )
+                return
+            if split.path in _OWNER_POSTS:
+                self._error(
+                    HTTPStatus.FORBIDDEN,
+                    "share",
+                    "a share collects opinions, it does not settle them — disposing and "
+                    "thread edits belong to the owner URL",
+                )
+                return
         try:
             route(self)
         except Refusal as exc:
@@ -1071,3 +1146,8 @@ _POSTS: dict[str, Callable[[_Handler], None]] = {
     "/api/dispose": lambda h: h._write(WebView.dispose),
     "/api/thread": lambda h: h._write(WebView.thread),
 }
+
+#: The writes no share scope reaches. Comment, suggestion, and reply *say*
+#: something and belong to the ``comment`` scope; these two *settle* something,
+#: and settling is the owner's whatever the share was for.
+_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread"})

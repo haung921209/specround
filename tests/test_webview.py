@@ -24,6 +24,7 @@ import pytest
 
 from specround import assetfiles, markdown
 from specround.anchors import anchor_for
+from specround.errors import SpecroundError
 from specround.fold import Comment
 from specround.webview import (
     DERIVED,
@@ -2245,3 +2246,88 @@ def test_every_comment_field_the_page_reads_is_a_field_the_wire_sends():
         comment_json(Comment(id="c-x", round="r-x", kind="comment", author="a", ts="t"))
     )
     assert read <= sent, sorted(read - sent)
+
+
+# -- the share grant ------------------------------------------------------
+
+
+@pytest.fixture
+def shared(store, doc):
+    """A running view with a comment share minted beside the owner grant."""
+    served = WebView(store=store, path=doc, author="alice", port=0, share_scope="comment")
+    served.start()
+    try:
+        yield served
+    finally:
+        served.shutdown()
+
+
+def test_a_read_share_looks_and_does_not_write(store, doc, round_id):
+    served = WebView(store=store, path=doc, author="alice", port=0, share_scope="read")
+    served.start()
+    try:
+        status, _ = call(served, "/api/state", token=served.share_token)
+        assert status == 200
+        status, _ = call(served, "/", token=served.share_token)
+        assert status == 200
+        status, payload = call(
+            served, "/api/comment", {"whole": True, "body": "hi"}, token=served.share_token
+        )
+        assert status == 403
+        assert payload["error"]["kind"] == "share"
+        # Refused at the door, so nothing reached the ledger.
+        assert not served.store.fold().comments
+    finally:
+        served.shutdown()
+
+
+def test_a_comment_share_speaks(shared, round_id):
+    status, payload = call(
+        shared, "/api/comment", {"whole": True, "body": "from the room"}, token=shared.share_token
+    )
+    assert status == 200
+    assert payload["comment"]["body"] == "from the room"
+
+
+def test_no_share_scope_settles(shared, round_id):
+    """Dispose and thread edits stay the owner's, even for the comment scope.
+
+    The gate sits before the body is read: a share probing the owner verbs
+    learns the ceiling, not which arguments would have been valid.
+    """
+    for path in ("/api/dispose", "/api/thread"):
+        status, payload = call(shared, path, {}, token=shared.share_token)
+        assert status == 403, path
+        assert payload["error"]["kind"] == "share", path
+
+
+def test_the_owner_is_untouched_by_sharing(shared, round_id):
+    status, payload = call(shared, "/api/comment", {"whole": True, "body": "the owner's"})
+    assert status == 200
+    assert payload["comment"]["body"] == "the owner's"
+
+
+def test_a_share_is_minted_per_start_and_never_stored(store, doc):
+    """Two views, two shares — the share's lifetime *is* the revocation story.
+
+    The owner token comes back because the caller resolves and passes it; the
+    share never does, so restarting the view is what revokes every share at
+    once. A share that survived restarts would need its own revoke verb to be
+    safe to hand out.
+    """
+    first = WebView(store=store, path=doc, author="alice", port=0, share_scope="read")
+    second = WebView(store=store, path=doc, author="alice", port=0, share_scope="read")
+    assert first.share_token and second.share_token
+    assert first.share_token != second.share_token
+    assert first.share_token != first.token
+
+
+def test_an_unshared_view_has_no_second_door(view):
+    assert view.share_token == ""
+    status, _ = call(view, "/api/state", token="")
+    assert status == 403
+
+
+def test_a_share_outside_the_scopes_is_refused(store, doc):
+    with pytest.raises(SpecroundError):
+        WebView(store=store, path=doc, author="alice", share_scope="write")

@@ -1543,16 +1543,40 @@ def test_view_json_names_what_an_embedder_needs(run, doc, opened, served):
     assert set(payload) == {
         "schema", "verb", "doc", "path", "store", "url", "host", "port",
         "port_source", "port_note", "token", "token_source", "token_note",
-        "round", "commentable", "blocked",
+        "share", "round", "commentable", "blocked",
     }
     assert payload["schema"] == CLI_SCHEMA
     assert payload["verb"] == "view"
     assert payload["port"] > 0
     assert payload["token"] and payload["token"] in payload["url"]
+    assert payload["share"] is None
     assert payload["round"]["id"] == opened
     assert payload["commentable"] is True
     assert payload["blocked"] is None
     assert served == [payload["url"]]
+
+
+def test_view_share_hands_out_the_second_url(run, doc, opened, served):
+    """--share adds one labeled line and one payload half, and mixes nothing.
+
+    The owner URL stays the first line — the embedder's contract — and the
+    share URL never carries the owner's token: handing the printed share line
+    to a room must not hand the room the view.
+    """
+    result = run("view", doc, "--author", "alice", "--share", "comment", "--json")
+    assert result.code == 0
+    payload = result.json
+    assert payload["share"]["scope"] == "comment"
+    assert payload["share"]["url"].startswith("http://127.0.0.1:")
+    assert payload["share"]["url"] != payload["url"]
+    assert payload["token"] not in payload["share"]["url"]
+
+    plain = run("view", doc, "--author", "alice", "--share", "read")
+    assert plain.code == 0
+    assert plain.lines[0].startswith("http://127.0.0.1:")
+    share_lines = [line for line in plain.lines if line.startswith("share  ")]
+    assert len(share_lines) == 1
+    assert "scope read" in share_lines[0]
 
 
 def test_view_does_not_open_a_browser(run, doc, opened, served, monkeypatch):
@@ -1816,8 +1840,9 @@ def test_view_on_a_directory_serves_the_tree_from_one_server(run, tree, opened, 
     assert set(payload) == {
         "schema", "verb", "doc", "path", "store", "root", "url", "host", "port",
         "port_source", "port_note", "token", "token_source", "token_note",
-        "workspace",
+        "share", "workspace",
     }
+    assert payload["share"] is None
     assert payload["root"] == str(tree)
     assert [d["key"] for d in payload["workspace"]["documents"]] == [
         "second.md", "spec.md", "sub/third.md"
