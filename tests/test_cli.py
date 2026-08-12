@@ -29,6 +29,7 @@ import pytest
 from specround.cli import CLI_SCHEMA, main
 from specround.imports import IMPORT_SCHEMA
 from specround.store import ReviewStore
+from specround.viewtokens import token_for
 from specround.webview import WebView, derived_port
 
 REVISED = """# Widget protocol
@@ -1541,7 +1542,8 @@ def test_view_json_names_what_an_embedder_needs(run, doc, opened, served):
     payload = result.json
     assert set(payload) == {
         "schema", "verb", "doc", "path", "store", "url", "host", "port",
-        "port_source", "port_note", "token", "round", "commentable", "blocked",
+        "port_source", "port_note", "token", "token_source", "token_note",
+        "round", "commentable", "blocked",
     }
     assert payload["schema"] == CLI_SCHEMA
     assert payload["verb"] == "view"
@@ -1697,6 +1699,98 @@ def test_view_port_zero_asks_for_a_free_one(run, doc, opened, served):
     assert result.json["port_source"] == "ephemeral"
 
 
+# -- and which token, which is the other half of the same URL ------------
+#
+# A stable port with a token minted per start is a URL that comes back to the
+# same address and is refused there. So the token is the document's too, and it
+# obeys the rule the port obeys: it changes only when somebody asked for that,
+# and when it changes the output says so.
+
+
+@pytest.fixture
+def serving(monkeypatch):
+    """``served``, plus the handle a restart test needs to give the port back.
+
+    Standing in for ``serve_forever`` leaves the socket bound, which is right
+    for a test that only reads the URL — and wrong for one that then restarts,
+    because the first view would still be holding the port the second derives.
+    """
+    views: list[WebView] = []
+
+    def record(self) -> None:
+        views.append(self)
+
+    monkeypatch.setattr(WebView, "serve_forever", record)
+    yield views
+    for view in views:
+        view.shutdown()
+
+
+def test_view_restarted_on_the_same_document_hands_back_the_same_url(run, doc, opened, serving):
+    """The guarantee, end to end through the shell: same document, same URL.
+
+    Both halves in one assertion on purpose. Either one on its own is a URL an
+    embedder's pane cannot keep.
+    """
+    port = derived_port(doc)
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            pytest.skip(f"port {port} is held from outside the suite ({exc})")
+
+    first = run("view", doc, "--author", "alice", "--json").json
+    serving[-1].shutdown()  # the restart
+    second = run("view", doc, "--author", "alice", "--json").json
+
+    assert first["url"] == second["url"]
+    assert first["port"] == second["port"] == port
+    assert (first["token_source"], second["token_source"]) == ("minted", "stored")
+    assert first["token_note"] is None
+
+
+def test_view_says_on_stdout_whether_the_token_is_the_one_from_last_time(run, doc, opened, served):
+    """The reader's question is "can I keep this URL". Now both lines answer it."""
+    result = run("view", doc, "--author", "alice")
+    assert result.code == 0
+    assert any(line.startswith("token ") for line in result.lines[1:])
+
+
+def test_view_rotate_token_replaces_it_and_never_does_so_quietly(run, doc, opened, served):
+    """Opt-in, and loud: this is the one case where the URL moves under a pane.
+
+    The same rule the port fallback follows — a URL that changed with no reason
+    printed beside it is a URL nobody can trust.
+    """
+    before = run("view", doc, "--author", "alice", "--port", 0, "--json").json
+    plain = run("view", doc, "--author", "alice", "--port", 0, "--rotate-token")
+    after = run("view", doc, "--author", "alice", "--port", 0, "--json").json
+
+    assert plain.code == 0
+    assert plain.lines[0].startswith("http://127.0.0.1:")
+    assert "--rotate-token" in "\n".join(plain.lines[1:])
+
+    assert after["token"] and after["token"] != before["token"]
+    assert after["token_source"] == "stored"
+
+
+def test_view_rotate_token_says_what_it_did_in_the_payload_too(run, doc, opened, served):
+    """A ``--json`` consumer never reads the printed lines, and this one must know."""
+    before = run("view", doc, "--author", "alice", "--port", 0, "--json").json
+    after = run("view", doc, "--author", "alice", "--port", 0, "--rotate-token", "--json").json
+    assert after["token"] != before["token"]
+    assert after["token_source"] == "rotated"
+    assert after["token_note"] and "403" in after["token_note"]
+
+
+def test_view_rotate_token_is_what_the_next_start_gets_too(run, doc, opened, served):
+    """Rotation replaces what is stored, or it would be a one-request flag."""
+    rotated = run("view", doc, "--author", "alice", "--port", 0, "--rotate-token", "--json").json
+    again = run("view", doc, "--author", "alice", "--port", 0, "--json").json
+    assert again["token"] == rotated["token"]
+    assert again["token_source"] == "stored"
+
+
 # -- the view verb over a directory (H15) --------------------------------
 #
 # The tree's own behaviour is tested in test_workspace.py, over a socket. What
@@ -1721,7 +1815,8 @@ def test_view_on_a_directory_serves_the_tree_from_one_server(run, tree, opened, 
     payload = result.json
     assert set(payload) == {
         "schema", "verb", "doc", "path", "store", "root", "url", "host", "port",
-        "port_source", "port_note", "token", "workspace",
+        "port_source", "port_note", "token", "token_source", "token_note",
+        "workspace",
     }
     assert payload["root"] == str(tree)
     assert [d["key"] for d in payload["workspace"]["documents"]] == [
@@ -1741,6 +1836,18 @@ def test_view_on_a_directory_derives_its_port_from_the_directory(run, tree, open
     payload = run("view", str(tree), "--author", "alice", "--json").json
     assert payload["port"] == port
     assert payload["port_source"] == "derived"
+
+
+def test_view_on_a_directory_keys_its_token_on_the_directory(run, tree, doc, opened, served):
+    """Same axis as the port: the tree is what was named, so the tree owns both.
+
+    Keying on the document the tree happens to open on would give the workspace
+    a URL whose second half moved the day somebody added a file that sorts
+    before it — which is the failure the port already refuses.
+    """
+    payload = run("view", str(tree), "--author", "alice", "--json").json
+    assert payload["token"] == token_for(tree)[0]
+    assert payload["token"] != token_for(doc)[0]
 
 
 def test_view_on_a_directory_still_prints_the_url_first_and_alone(run, tree, opened, served):

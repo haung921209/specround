@@ -162,6 +162,8 @@ safe.
 specround view SPEC.md          # prints a URL; nothing opens
 specround view SPEC.md --open   # ...unless you ask
 specround view docs/            # the whole tree, from one server
+
+specround view SPEC.md --rotate-token   # new token; the old URL now gets a 403
 ```
 
 The URL is the first line of stdout and no browser is opened, because the
@@ -190,10 +192,20 @@ system draws outbound ports from, so this happens — the view takes a free one 
 `port_note`. A URL that moved without a reason is a URL you cannot trust; a URL
 that moved and told you why is a fact.
 
-A stable port is not a frozen URL. The token is minted every start, because a
-restart is a new grant and not a resumed session — so an embedder re-reads the
-printed line either way, and a token that outlived its process would be one a
-stale tab could still post through.
+**The token is the document's too**, or the port would be the only stable half
+of a URL that also carries `?t=`. Minting one per start sent the pane that
+survived the restart back to the right address to be refused there — and a
+comment posted through a stale token is a `403`, not a draft, so what had been
+typed into that page went with it. The token is now kept beside the port on the
+same key, in a file under `$XDG_DATA_HOME/specround/view-tokens` that only you
+can read. It is a cache and not history: no review lives in it, it is never
+written into the ledger you might hand to somebody, and deleting the directory
+costs one rotation.
+
+`--rotate-token` is where "a restart is a new grant" went. It issues a new
+token, stores it, and **says so** — on stdout and in `token_note` — after which
+the URL the last view handed out gets a `403`. Same rule as the port: the URL
+moves when you asked it to, and never without a reason printed beside it.
 
 A spec is never one file, so `view` also takes a **directory**: one server for
 the tree, and a bar down the left listing the markdown under it. Each file

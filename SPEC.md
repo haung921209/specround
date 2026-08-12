@@ -461,7 +461,18 @@ target is spec and prose documents — PR tools already do code well).
   **line-number tap is the primary mobile gesture** (touch drag-selection is
   poor — the gutter tap already built carries mobile); and a passively
   updating thread view would add a polling/SSE question that does not exist
-  on the desk
+  on the desk.
+  **Token lifetime got sharper, not answered, on 2026-08-12.** The token is
+  now the document's and persists between starts, because a stable port under
+  a per-start grant is a URL that comes back to the right address and is
+  refused there — a real review lost a comment to that 403. On loopback the
+  cost is nil, and the only revocation that used to exist for free (restart
+  the process) is now `--rotate-token`, explicit. On a `--host` opt-in that is
+  the whole question: a secret that outlives its process, sitting in a URL a
+  phone keeps in its history, with no expiry and one way to revoke it that
+  somebody has to remember to run. Nothing here decides it — what exposure has
+  to bring is named, not chosen: an expiry, a per-device grant, or rotation on
+  every start when `--host` is not loopback
 - H17 mapping a round to its consuming session (user, thinking aloud
   2026-08-08). Today the agent *pulls* ("collect when asked"); the idea is a
   submitted suggestion or comment finding the session that is working on that
