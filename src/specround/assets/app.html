@@ -44,6 +44,9 @@
   }
   header .doc { font-weight: 600; }
   header .meta { color: var(--dim); font-size: 13px; font-family: var(--mono); }
+  /* Only when clicking it goes somewhere — a pointer over text that does
+     nothing is a promise the page does not keep. */
+  header .meta.goto { cursor: pointer; text-decoration: underline dotted; }
   header .grow { flex: 1; }
   .modes { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
   .modes button { border: 0; background: transparent; color: var(--ink); padding: 5px 12px; cursor: pointer; font: inherit; }
@@ -469,6 +472,38 @@ function diffReason(data) {
   if (data.diff && data.diff.available) return "";
   if (!data.round) return "no round yet — a diff needs a base to compare against";
   return "the document is not readable — a diff needs the file as it is now";
+}
+
+function readingNote(data) {
+  // Which of the two texts is on screen, and how far the file has gone from it.
+  // The render is the round's base while a round is open (I7) and the page said
+  // so only in a `data-space` attribute — so a reviewer who had applied every
+  // comment reopened the URL, met the text they started from, and had no way to
+  // read that as anything but the round having failed to end. The drift is not
+  // an alarm: a base the revision has moved past is what a round in progress
+  // looks like. It is the silence about it that misleads.
+  if (!data || !data.reading) return "";
+  if (data.reading !== "base") return "reading the file — no round has frozen a base yet";
+  if (data.live === null || data.live === undefined) {
+    return "reading this round's base — the document is no longer on disk";
+  }
+  const diff = data.diff || {};
+  if (!diff.available || diff.identical) return "reading this round's base — the file matches it";
+  return "reading this round's base — the file is +" + diff.added + " / −" + diff.removed + " past it";
+}
+
+function settledNote(data) {
+  // A finished review waiting on the record of it. Both counts at zero on an
+  // open round is the answer to "is the round over?", and working it out meant
+  // comparing two numbers to zero and knowing which verb moves which. A round
+  // with no comments at all is not settled, it is unstarted — saying "nothing
+  // outstanding" there would name a step nobody is standing in front of.
+  if (!data || !data.round || data.round.status !== "open") return "";
+  const counts = data.counts || {};
+  if (!counts.comments) return "";
+  if (counts.undisposed || counts.resolved !== counts.comments) return "";
+  return "nothing outstanding — every comment disposed, every thread resolved. "
+    + "End the round with 'specround round close'";
 }
 
 function readable(data) {
@@ -1621,10 +1656,22 @@ async function load() {
   // and a bar full of basenames would make two documents look like one.
   if (data.workspace) state.doc = data.workspace.selected;
   $("docname").textContent = data.workspace ? data.workspace.selected : data.doc;
-  $("roundmeta").textContent = data.round
+  // The standing goes beside the round it is about, because the header is where
+  // a reviewer looks to find out what they are looking at. The two halves are
+  // different questions and they sit apart: which text is on screen and how far
+  // the file has gone (here, always) and whether the round is finished but for
+  // the record (the notice, only when it is).
+  const reading = readingNote(data);
+  $("roundmeta").textContent = (data.round
     ? data.round.id + " · " + data.round.status + " · base " + data.round.base.slice(7, 19)
       + (data.round.title ? " · " + data.round.title : "")
-    : "no round";
+    : "no round") + (reading ? " · " + reading : "");
+  // Clickable exactly when there is a difference to go and look at, so the
+  // sentence naming the drift is also the way to it.
+  const goto_diff = Boolean(data.diff && data.diff.available && !data.diff.identical);
+  $("roundmeta").classList.toggle("goto", goto_diff);
+  $("roundmeta").onclick = goto_diff ? () => setMode("diff") : null;
+  notice(settledNote(data), "info");
   if (!$("author").value) $("author").value = data.author;
   if (data.actor) $("actor").value = data.actor;
   drawFiles();

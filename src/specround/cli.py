@@ -49,6 +49,7 @@ from typing import Any, Callable, Mapping, Sequence
 from specround import __version__
 from specround.anchors import Anchor, count_occurrences
 from specround.critic import COMMENT, DELETE, INSERT, Annotation, MarkupError
+from specround.diffs import diff
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import ACTORS, ANSWERED, APPLIED, DEFERRED, HUMAN, REJECTED
 from specround.fold import OPEN, Comment, Round, State
@@ -244,6 +245,59 @@ def _target(args: argparse.Namespace) -> Target:
 def _has_history(store: ReviewStore, key: str) -> bool:
     """True when this store already holds a round for ``key``."""
     return store.ledger.exists() and bool(rounds_on(store.fold(), key))
+
+
+def _standing_lines(standing: Mapping[str, Any]) -> list[str]:
+    """:func:`_standing` in words, and only when there is something to say.
+
+    A file that matches its base is the quiet case and stays quiet. The other
+    two are not decoration: "+12 / -4 past this round's base" is how a reader
+    who has been revising sees that the snapshot under the review is not what
+    they have been editing, and "no longer on disk" is the state that used to
+    reach them as a tooltip on a disabled button, if at all.
+    """
+    if not standing["present"]:
+        return ["document  no longer on disk — the review below is the record of it"]
+    if standing["matches"] is False:
+        return [
+            f"document  +{standing['added']} / -{standing['removed']} past this round's base "
+            "(the base is what comments anchor in)"
+        ]
+    return []
+
+
+def _standing(target: Target, rounds: list[Round]) -> dict[str, Any]:
+    """Where the *document* stands against the text the review is about.
+
+    Counts say where the conversation stands and said nothing about this, which
+    left the two states a reader most needs indistinguishable from the ordinary
+    one: a file that has moved past the base (normal, and the whole point of a
+    revision) and a file that is not there any more (something to go and look
+    at). Both read as silence.
+
+    The comparison is against the newest round's base, open or closed, because
+    that is the snapshot the review is of. ``matches`` is ``None`` when there is
+    nothing to compare — no round yet, or no file — and the two are told apart
+    by ``present`` rather than by folding them into one word.
+    """
+    absent = {"present": False, "matches": None, "added": 0, "removed": 0}
+    if not target.path.is_file():
+        return absent
+    try:
+        live = target.path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # Unreadable is not missing, and neither is a comparison. Reporting it
+        # as present with nothing to say beats guessing which one it resembles.
+        return {"present": True, "matches": None, "added": 0, "removed": 0}
+    if not rounds:
+        return {"present": True, "matches": None, "added": 0, "removed": 0}
+    computed = diff(target.store.base_text(rounds[-1].id), live)
+    return {
+        "present": True,
+        "matches": computed.identical,
+        "added": computed.added,
+        "removed": computed.removed,
+    }
 
 
 def _author(args: argparse.Namespace) -> str:
@@ -654,9 +708,11 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     # can watch go to zero (``specround doctor``) instead of a listing.
     misplaced = [c.id for c in comments if c.misplaced]
     open_ids = [r.id for r in rounds if r.open]
+    standing = _standing(target, rounds)
     payload = {
         **target.envelope(),
         "rounds": [round_json(state, r) for r in rounds],
+        "document": standing,
         "open": open_ids,
         "undisposed": undisposed,
         "unresolved_threads": unresolved_threads,
@@ -679,10 +735,27 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         f"{len(orphans)} orphaned",
         f"store  {target.store.root}",
     ]
+    lines.extend(_standing_lines(standing))
     if misplaced:
         lines.append(
             f"{len(misplaced)} anchor(s) cut from another text than this round's base — "
             f"not drawn. Repair with 'specround doctor {target.key}'"
+        )
+    settled = [
+        r.id
+        for r in rounds
+        if r.open
+        and state.comments_in(r.id)
+        and not any(c.undisposed for c in state.comments_in(r.id))
+        and all(c.resolved for c in state.comments_in(r.id))
+    ]
+    for round_id in settled:
+        # The question this answers is the one a reader asks out loud — "is it
+        # finished?" — and it was answerable only by comparing two numbers to
+        # zero and knowing which verb moves which.
+        lines.append(
+            f"{round_id} has nothing outstanding: every comment disposed, every thread "
+            f"resolved. Record it with 'specround round close {target.key}'"
         )
     if rounds:
         lines.append("")

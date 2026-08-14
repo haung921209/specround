@@ -660,6 +660,73 @@ def test_the_diff_mode_says_why_it_is_not_on_offer(tmp_path):
     assert "not readable" in reasons[2]
 
 
+def test_the_page_says_which_text_it_is_reading_and_how_far_the_file_has_gone(tmp_path):
+    """The render is the base, and only the page's insides ever said so.
+
+    ``reading`` went into a ``data-space`` attribute and nowhere a person looks.
+    So a reviewer who had applied every comment reopened the URL, saw the text
+    they started with, and asked whether the round had failed to end — the page
+    had the answer in the payload and no line to put it on. The file being gone
+    was worse: the only trace was the title on a disabled diff button.
+    """
+    notes = in_node(
+        "input.map(readingNote)",
+        [
+            {"reading": None},
+            {"reading": "revision"},
+            {"reading": "base", "live": "x",
+             "diff": {"available": True, "identical": True, "added": 0, "removed": 0}},
+            {"reading": "base", "live": "x",
+             "diff": {"available": True, "identical": False, "added": 2, "removed": 2}},
+            {"reading": "base", "live": None,
+             "diff": {"available": False, "identical": False, "added": 0, "removed": 0}},
+        ],
+        tmp_path,
+    )
+    assert notes[0] == ""
+    assert "no round" in notes[1]
+    assert "matches" in notes[2]
+    assert "+2" in notes[3] and "2" in notes[3] and "base" in notes[3]
+    assert "no longer on disk" in notes[4]
+
+
+def test_a_round_with_nothing_outstanding_says_what_ends_it(tmp_path):
+    """"Is the round finished?" answered where it is asked.
+
+    Both counts at zero on an open round is a finished review waiting on the
+    record of it, and reading that off two numbers is work the page can do.
+    """
+    settled = {"round": {"id": "r-1", "status": "open"},
+               "counts": {"comments": 2, "undisposed": 0, "resolved": 2}}
+    notes = in_node(
+        "input.map(settledNote)",
+        [
+            settled,
+            {**settled, "counts": {"comments": 2, "undisposed": 1, "resolved": 2}},
+            {**settled, "counts": {"comments": 2, "undisposed": 0, "resolved": 1}},
+            {**settled, "counts": {"comments": 0, "undisposed": 0, "resolved": 0}},
+            {**settled, "round": {"id": "r-1", "status": "closed"}},
+            {"round": None, "counts": {"comments": 0, "undisposed": 0, "resolved": 0}},
+        ],
+        tmp_path,
+    )
+    assert "round close" in notes[0]
+    assert notes[1:] == ["", "", "", "", ""]
+
+
+def test_the_header_carries_the_standing_it_computed(tmp_path):
+    """The two notes reach the page, and not only the test above.
+
+    A pure function nobody calls is the same blank header with more code behind
+    it, so the wiring is asserted where the wiring lives.
+    """
+    html = page().decode("utf-8")
+    loading = html[html.index("async function load()") :]
+    loading = loading[: loading.index("\n}\n")]
+    assert "readingNote(data)" in loading
+    assert "settledNote(data)" in loading
+
+
 def test_a_mode_the_document_cannot_show_is_not_the_mode_it_opens_in(tmp_path):
     """Browsing a tree carries the mode from document to document (H15).
 

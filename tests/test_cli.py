@@ -160,6 +160,60 @@ def test_round_status_on_a_fresh_document_is_not_an_error(run, doc):
     assert "no rounds yet" in result.out
 
 
+def test_status_says_how_far_the_file_has_moved_past_the_base(run, doc, opened, doc_text):
+    """Where the review stands includes where the document stands.
+
+    The base is a snapshot, so the file drifts from it the moment the revision
+    starts — and that is normal, not an alarm. What was missing was saying it
+    at all: a reader who had applied every comment saw the same counts as one
+    who had applied none, and nothing anywhere named the gap.
+    """
+    doc.write_text(doc_text.replace("30 seconds", "60 seconds"), encoding="utf-8")
+
+    payload = run("round", "status", doc, "--json").json
+    assert payload["document"] == {"present": True, "matches": False, "added": 1, "removed": 1}
+    assert "+1 / -1 past this round's base" in run("round", "status", doc).out
+
+
+def test_status_says_when_the_file_still_matches_the_base(run, doc, opened):
+    payload = run("round", "status", doc, "--json").json
+    assert payload["document"] == {"present": True, "matches": True, "added": 0, "removed": 0}
+
+
+def test_status_says_the_document_is_no_longer_on_disk(run, doc, opened, tmp_path):
+    """The one state that used to reach the reader as a tooltip on a dead button.
+
+    The review is readable and the CLI says so; that the thing it reviews is
+    gone is a fact of the same weight, and it was nowhere in this report.
+    """
+    doc.rename(tmp_path / "renamed.md")
+
+    payload = run("round", "status", doc, "--json").json
+    assert payload["document"] == {"present": False, "matches": None, "added": 0, "removed": 0}
+    assert "no longer on disk" in run("round", "status", doc).out
+
+
+def test_status_names_the_next_step_for_a_round_with_nothing_outstanding(run, doc, opened):
+    """"Is the round finished?" is a question the counts already answer.
+
+    Nobody should have to work it out by comparing two numbers to zero and
+    remembering which verb moves which. An open round with every comment
+    disposed and every thread ended is finished but for the record of it.
+    """
+    comment = a_comment(run, doc)
+    run("dispose", doc, "--comment", comment, "--as", "applied", "--why", "raised to 60")
+    run("resolve", doc, "--comment", comment, "--author", "alice")
+
+    out = run("round", "status", doc).out
+    assert "nothing outstanding" in out
+    assert "specround round close" in out
+
+
+def test_a_round_with_work_left_does_not_claim_to_be_finished(run, doc, opened):
+    a_comment(run, doc)
+    assert "nothing outstanding" not in run("round", "status", doc).out
+
+
 def test_resolving_a_thread_clears_the_thread_axis_and_not_the_other(run, doc, opened):
     """The report that named this item: resolve the talk, and the count stays.
 
@@ -1046,9 +1100,10 @@ def test_the_round_object_field_set_is_closed(run, doc, opened):
 def test_the_status_payload_field_set_is_closed(run, doc, opened):
     payload = run("round", "status", doc, "--json").json
     assert set(payload) == {
-        "counts", "doc", "misplaced", "open", "orphans", "path", "rounds", "schema",
-        "store", "undisposed", "unresolved_threads", "verb",
+        "counts", "doc", "document", "misplaced", "open", "orphans", "path", "rounds",
+        "schema", "store", "undisposed", "unresolved_threads", "verb",
     }
+    assert set(payload["document"]) == {"added", "matches", "present", "removed"}
     assert set(payload["counts"]) == {
         "comments", "events", "misplaced", "orphans", "rounds", "undisposed",
         "unresolved_threads",

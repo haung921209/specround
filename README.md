@@ -280,6 +280,17 @@ to agree with. How wide a column is on your screen is not one of them, and a
 history whose every entry is a claim about the document is what makes it worth
 reading.
 
+**The header says which text you are reading.** With a round open the render and
+raw modes are the base that round froze, so the document on screen stops
+following the file — that is the point of a base, and it is also the thing that
+reads as a page failing to refresh once you have applied every comment. So the
+header names it and says how far the file has gone: `reading this round's base —
+the file is +12 / −4 past it`, clickable straight into the diff, or `— the
+document is no longer on disk` when it has been renamed or withdrawn. And when
+every comment on an open round is disposed and every thread resolved, the page
+says the review is finished but for the record of it, and names the verb that
+ends it. `specround round status` prints the same two facts.
+
 The anchor space is the round's base in every mode, because that snapshot is the
 text the round is a review of (I7). In the diff, a line only the revision has has
 no place in the base — selecting it carries the text back through the re-anchor
