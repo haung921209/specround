@@ -96,6 +96,16 @@ so an anchor cut from it would sit in a space no view shows. For a ledger that
 already holds such anchors, `specround doctor SPEC.md` re-reads their quotes in
 the right base and appends the corrections (a dry run until `--apply`).
 
+**A review outlives the document it is about.** Rename the file, move it into a
+wiki, delete it outright — the ledger is where the review lives, and every verb
+goes on working from it. The three exceptions are the ones that open the file:
+`round open` freezes it, `harvest` rewrites it, `reanchor` compares against it.
+So a round whose document has been withdrawn still closes, a comment still
+anchors (it is cut from the base, and the base is in the store), and a thread
+still resolves. A path the store has never heard of is a different thing and is
+still refused — that one is a typo, and answering "no comments" to a typo would
+be a wrong answer that reads like a fact.
+
 ## In your editor
 
 Nothing has to be running. Open the document in whatever editor you have, type

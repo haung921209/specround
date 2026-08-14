@@ -38,6 +38,8 @@ Two days of trading spec-document reviews with an agent produced this:
 | G10 | **Communicating does not force a commit** — no step of the review loop asks for a stage or a commit. A commit is where the result (the document) lands, never the ticket for exchanging feedback |
 | G11 | **A conversation that is over is closed with resolve** — when a comment thread wraps up (applied, rejected, or simply agreed), a person and an agent can both resolve it, and resolved threads are **hidden from the default view**. Hiding is the view's job, not a deletion — the ledger keeps all of it (no contradiction with G3's zero loss) |
 
+| G12 | **A review outlives the document it is about** — a document that is renamed, withdrawn, or deleted does not take its review with it. Every verb goes on working from the ledger except the three that open the file itself: `round open` freezes it, `harvest` rewrites it, `reanchor` compares against it. A path with no history behind it is still a typo and still refused |
+
 Non-goals: real-time co-editing · WYSIWYG · a hosted service · code review (the
 target is spec and prose documents — PR tools already do code well).
 
@@ -359,6 +361,24 @@ target is spec and prose documents — PR tools already do code well).
   the trigger for extraction is a second independent consumer, not a
   prediction. The generic piece worth sharing goes to `adapters/` as a
   reference, the shape `cmux-diff-comments.py` already set.
+- **Which verbs need the file is a list, not a habit (G12, settled by the
+  implementation 2026-08-14)**. `cli.READS_THE_DOCUMENT` names the three, and
+  `_target` reads the verb's own name against it — so a new verb is on the
+  permissive side by default, which is where all but three belong. It was the
+  other way round: requiring the file was the default and the read-only verbs
+  opted out one at a time. The hole that left is what settled this. `round
+  close` appends to the ledger and never opens the document, yet sat on the
+  demanding side, so a review with every comment disposed and every thread
+  resolved could not be recorded as finished once its document had been
+  withdrawn — and no surface could do it, because closing a round is not one of
+  the web view's routes. The check it was stuck behind was satisfied by
+  `touch`ing an empty file, which is the proof it guarded nothing about the
+  document. The same default had the shell refusing `dispose`, `resolve`,
+  `reply`, and `comment` where the view allowed them from the same store
+  against the same base — two oracles on one question, which §6 of the format
+  is explicit about. Anchoring settles the last of those: a comment is cut from
+  the round's base (I7) and the base is in the store, so "commenting on text
+  that is gone" was never what the refusal prevented.
 
 ## 4. Open (deepen when a decision is blocked — do not dig on prediction)
 

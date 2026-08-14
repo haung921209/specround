@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from specround.cli import CLI_SCHEMA, main
+from specround.cli import CLI_SCHEMA, READS_THE_DOCUMENT, main
 from specround.imports import IMPORT_SCHEMA
 from specround.store import ReviewStore
 from specround.viewtokens import token_for
@@ -1357,10 +1357,112 @@ def test_a_mistyped_path_is_still_refused(run, tmp_path):
     assert "no history" in result.err
 
 
-def test_a_writing_verb_still_needs_the_document(run, doc, opened, tmp_path):
-    """Reading history is one thing; commenting on text that is gone is not."""
+def test_the_verbs_that_read_the_document_are_named_in_one_place():
+    """The line is a list, not a habit spread over fourteen handlers.
+
+    It was a habit once, and the habit had a hole: every verb demanded the file
+    because ``_target`` defaulted that way, and the four read-only verbs opted
+    out one at a time. Closing a round — which appends to the ledger and never
+    opens the document — was left on the demanding side, so a review whose
+    document had moved on could not be recorded as finished. A ``touch`` of an
+    empty file satisfied the check, which is the proof it was guarding nothing.
+    """
+    assert READS_THE_DOCUMENT == frozenset({"round.open", "harvest", "reanchor"})
+
+
+@pytest.mark.parametrize(
+    "verb, argv",
+    [
+        ("round.open", ["round", "open"]),
+        ("harvest", ["harvest"]),
+        ("reanchor", ["reanchor"]),
+    ],
+)
+def test_the_document_readers_still_need_the_document(run, doc, opened, tmp_path, verb, argv):
+    """The three that open the file are still refused without it.
+
+    Each one has a reason of its own: opening a round freezes the text,
+    harvesting rewrites it, and re-anchoring compares against it. None of them
+    has anything to do once the file is gone, and inventing an answer would be
+    worse than the refusal.
+    """
     doc.rename(tmp_path / "renamed.md")
-    assert run("comment", doc, "--author", "bob", "--body", "on what?").code == 2
+    result = run(*argv, doc, "--author", "alice")
+    assert result.code == 2
+    assert "not a file" in result.err
+
+
+def test_a_settled_round_closes_after_the_document_is_gone(run, doc, opened, tmp_path):
+    """The wedge this whole line exists to stop.
+
+    Every comment disposed, every thread resolved, and the round stuck open
+    because the document had been withdrawn — a review finished by every count
+    that no surface could record as finished. Closing reads the ledger and
+    writes to the ledger; the file is not part of it.
+    """
+    comment_id = a_comment(run, doc, body="outlives the file")
+    assert run("dispose", doc, "--comment", comment_id, "--as", "applied", "--why", "done").code == 0
+    doc.rename(tmp_path / "renamed.md")
+
+    result = run("round", "close", doc, "--author", "alice", "--note", "moved to the wiki", "--json")
+    assert result.code == 0
+    assert result.json["round"]["status"] == "closed"
+    assert run("round", "status", doc, "--json").json["open"] == []
+
+
+def test_the_ledger_verbs_land_after_the_document_is_gone(run, doc, opened, tmp_path):
+    """A conversation about a frozen text outlives the file the text came from.
+
+    None of these four reads the document: a verdict, a reply, and the two ends
+    of a thread are all about a comment the ledger already holds. Refusing them
+    for a missing file made the browser and the shell answer the same question
+    two ways, and the format is explicit that two oracles drift (§6).
+    """
+    comment_id = a_comment(run, doc, body="outlives the file")
+    doc.rename(tmp_path / "renamed.md")
+
+    assert run("reply", doc, "--comment", comment_id, "--author", "alice", "--body", "so it does").code == 0
+    assert run("dispose", doc, "--comment", comment_id, "--as", "applied", "--why", "landed").code == 0
+    assert run("resolve", doc, "--comment", comment_id, "--author", "alice").code == 0
+    assert run("reopen", doc, "--comment", comment_id, "--author", "alice", "--why", "came back").code == 0
+
+
+def test_a_comment_lands_in_the_base_after_the_document_is_gone(run, doc, opened, tmp_path):
+    """Anchoring is in the round's base (I7), and the base is in the store.
+
+    "Commenting on text that is gone" was the reason this was refused, and the
+    text is not gone: freezing it is what opening a round did. The view has
+    always allowed this, from the same store, against the same base.
+    """
+    doc.rename(tmp_path / "renamed.md")
+
+    result = run("comment", doc, "--author", "bob", "--quote", "30 seconds", "--body", "still too short", "--json")
+    assert result.code == 0
+    assert result.json["comment"]["anchor"]["exact"] == "30 seconds"
+
+
+def test_an_import_lands_in_the_base_after_the_document_is_gone(run, doc, opened, tmp_path):
+    """Same anchor space, same answer — an import quotes the base too."""
+    incoming = an_import_file(
+        tmp_path, {"id": "ext-1", "body": "too short for the proxy", "quote": "30 seconds"}
+    )
+    doc.rename(tmp_path / "renamed.md")
+
+    result = run("import", doc, "--file", incoming, "--author", "agent:importer", "--apply", "--json")
+    assert result.code == 0
+    assert [entry["source_id"] for entry in result.json["imported"]] == ["ext-1"]
+
+
+def test_a_mistyped_path_is_still_refused_by_a_writing_verb(run, tmp_path):
+    """Dropping the file check does not drop the typo check.
+
+    The two were one test before, and they are different questions: whether the
+    file is there, and whether this path is a document this store has ever
+    heard of. Only the second one separates a moved document from a slip.
+    """
+    result = run("round", "close", tmp_path / "nope.md", "--author", "alice")
+    assert result.code == 2
+    assert "no history" in result.err
 
 
 # -- the invocation axis -------------------------------------------------

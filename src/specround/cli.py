@@ -166,6 +166,25 @@ class UsageError(SpecroundError):
 # -- shared plumbing -----------------------------------------------------
 
 
+#: The verbs that open the document itself, and the whole of that list (G12).
+#:
+#: Everything else here is a conversation about a text the store already froze,
+#: so it works whether or not the file is still on disk: a review outlives the
+#: document it is a review of. These three do not, and each for a reason of its
+#: own — ``round open`` freezes the text, ``harvest`` rewrites it, ``reanchor``
+#: compares against it.
+#:
+#: A list rather than a habit, because the habit had a hole. Requiring the file
+#: was :func:`_target`'s default and the read-only verbs opted out one at a
+#: time, which left ``round close`` — pure ledger, never reads a byte of the
+#: document — on the demanding side. A finished review whose document had been
+#: withdrawn could then not be recorded as finished on any surface, and the
+#: check it was stuck behind was satisfied by ``touch``ing an empty file. Naming
+#: the three puts a new verb on the permissive side by default, which is where
+#: all but three of them belong.
+READS_THE_DOCUMENT = frozenset({"round.open", "harvest", "reanchor"})
+
+
 @dataclass(frozen=True)
 class Target:
     """The document a verb was pointed at, and the store that holds it."""
@@ -182,28 +201,36 @@ class Target:
 def _document(value: str, *, must_exist: bool = True) -> Path:
     """Resolve the document argument, refusing a path that is not there.
 
-    Every verb names a document, including the read-only ones, and a mistyped
-    path that quietly reports "no comments" is worse than an error: the store is
-    keyed by path, so a typo addresses a different (empty) history and the answer
-    looks like a fact.
+    Every verb names a document, and a mistyped path that quietly reports "no
+    comments" is worse than an error: the store is keyed by path, so a typo
+    addresses a different (empty) history and the answer looks like a fact.
 
-    ``must_exist=False`` is for the read-only verbs, where the missing file is
-    not necessarily a typo — a document can be renamed or deleted while its
-    history stays exactly where it was. :func:`_target` finishes that check
-    against the store, because the thing that separates a rename from a typo is
-    whether there is any history behind the path.
+    ``must_exist`` is true only for :data:`READS_THE_DOCUMENT`, the three verbs
+    that open the file. For the rest the missing file is not a typo — a document
+    can be renamed or deleted while its history stays exactly where it was.
+    :func:`_target` finishes that check against the store, because the thing
+    that separates a rename from a typo is whether there is any history behind
+    the path.
     """
     path = Path(value).expanduser()
     if must_exist and not path.is_file():
-        raise UsageError(f"{path}: not a file — every verb names the document under review")
+        raise UsageError(f"{path}: not a file — this verb reads the document itself")
     return canonical_path(path)
 
 
-def _target(args: argparse.Namespace, *, missing_ok: bool = False) -> Target:
-    path = _document(args.doc, must_exist=not missing_ok)
+def _target(args: argparse.Namespace) -> Target:
+    """The document this invocation is about, and whether it has to be on disk.
+
+    The answer comes from :data:`READS_THE_DOCUMENT` and the verb's own name,
+    not from what each handler remembered to pass. Which verbs need the file is
+    one fact, and a fact each of fourteen call sites restates is a fact that
+    drifts — it did, and ``round close`` was the verb it drifted on.
+    """
+    reads = getattr(args, "verb_name", None) in READS_THE_DOCUMENT
+    path = _document(args.doc, must_exist=reads)
     store = ReviewStore.for_document(path, store=Path(args.store) if args.store else None)
     key = store.doc_key(path)
-    if missing_ok and not path.is_file() and not _has_history(store, key):
+    if not reads and not path.is_file() and not _has_history(store, key):
         # The file is gone. That is a rename when the store holds history for
         # this key and a typo otherwise — one answer comes from a record, the
         # other would come from a store that was never anything.
@@ -611,9 +638,9 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     command, when it was answering a different question. Both are reported,
     named for the verb that moves each.
     """
-    # Read-only: a document that was renamed or deleted still has history, and
-    # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
-    target = _target(args, missing_ok=True)
+    # A document that was renamed or deleted still has history, and the CLI is
+    # the way to it (G12). _target refuses a path with nothing behind it.
+    target = _target(args)
     state = target.store.fold()
     rounds = rounds_on(state, target.key)
     comments = comments_on(state, target.key)
@@ -772,9 +799,9 @@ def _reopen(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    # Read-only: a document that was renamed or deleted still has history, and
-    # the CLI is the way to it (B5). _target refuses a path with nothing behind it.
-    target = _target(args, missing_ok=True)
+    # A document that was renamed or deleted still has history, and the CLI is
+    # the way to it (G12). _target refuses a path with nothing behind it.
+    target = _target(args)
     state = target.store.fold()
     items = comments_on(state, target.key)
     if args.round:
@@ -876,8 +903,7 @@ def _doctor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     document — and it does not read it either, so a file that has moved on or
     been deleted is no obstacle to fixing the ledger about it.
     """
-    # missing_ok: the repair is about the ledger, and the document may well be gone.
-    target = _target(args, missing_ok=True)
+    target = _target(args)
     report = target.store.repair_document(
         target.path, author=_author(args), apply=args.apply
     )
@@ -1210,7 +1236,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     """
     if Path(args.doc).expanduser().is_dir():
         return _view_workspace(args)
-    target = _target(args, missing_ok=True)
+    target = _target(args)
     token, token_source = token_for(target.path, rotate=args.rotate_token)
     view = _bind(
         WebView(
