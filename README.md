@@ -280,6 +280,17 @@ to agree with. How wide a column is on your screen is not one of them, and a
 history whose every entry is a claim about the document is what makes it worth
 reading.
 
+**The round starts and ends here too.** Everything else about a review was a
+click on this page and ending one was a trip to a terminal — which is exactly
+the argument `--supersede` already won: a gate you can only pass somewhere else
+is a gate people route around. So the bar above the document carries the act the
+review is standing in front of. `end this round`, or `end this round — leaves 2
+undisposed` when comments have no verdict, because the shell makes you type
+`--allow-undisposed` and one button whose meaning depends on state you cannot see
+is that gate passed silently. Once it is closed, `start the next round on the
+revision` freezes what you have written since and carries the comments onto it.
+Both are the owner's: no share scope reaches them, whatever the link was for.
+
 **The header says which text you are reading.** With a round open the render and
 raw modes are the base that round froze, so the document on screen stops
 following the file — that is the point of a base, and it is also the thing that

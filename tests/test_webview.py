@@ -714,6 +714,45 @@ def test_a_round_with_nothing_outstanding_says_what_ends_it(tmp_path):
     assert notes[1:] == ["", "", "", "", ""]
 
 
+def test_the_control_that_ends_a_round_names_what_it_leaves_behind(tmp_path):
+    """One click, and the label carries the consequence.
+
+    The shell makes you type ``--allow-undisposed`` to walk away from comments
+    nobody decided; here you press a button that says so. What must not exist is
+    one button whose meaning depends on state the reader cannot see — that is
+    the same gate, passed silently.
+    """
+    actions = in_node(
+        "input.map(roundAction)",
+        [
+            # an open round, everything settled
+            {"reading": "base", "live": "x", "round": {"status": "open"},
+             "counts": {"undisposed": 0}},
+            # an open round with verdicts still missing
+            {"reading": "base", "live": "x", "round": {"status": "open"},
+             "counts": {"undisposed": 2}},
+            # closed, and a file to freeze as the next round
+            {"reading": "base", "live": "x", "round": {"status": "closed"}, "counts": {}},
+            # closed, and the document is gone — there is nothing to freeze
+            {"reading": "base", "live": None, "round": {"status": "closed"}, "counts": {}},
+            # no round at all, and a file: this is where a review starts
+            {"reading": "revision", "live": "x", "round": None, "counts": {}},
+            # nothing to read and nothing to act on
+            {"reading": None, "live": None, "round": None, "counts": {}},
+        ],
+        tmp_path,
+    )
+    assert actions[0]["body"] == {"open": False}
+    assert "end this round" in actions[0]["label"]
+    assert actions[1]["body"] == {"open": False, "allow_undisposed": True}
+    assert "2" in actions[1]["label"] and "undisposed" in actions[1]["label"]
+    assert actions[2]["body"] == {"open": True}
+    assert "revision" in actions[2]["label"]
+    assert actions[3] is None
+    assert actions[4]["body"] == {"open": True}
+    assert actions[5] is None
+
+
 def test_the_header_carries_the_standing_it_computed(tmp_path):
     """The two notes reach the page, and not only the test above.
 
@@ -1710,6 +1749,107 @@ def test_disposing_still_works_after_the_round_closes(opened, store, comment_id,
     assert status == 409
 
 
+# -- ending a round, and starting the next one ---------------------------
+
+
+def test_the_round_ends_from_the_page_that_named_the_verb(opened, store, round_id):
+    """A gate you can only pass somewhere else is a gate people route around.
+
+    The page tells a reviewer whose comments are all disposed that the round is
+    finished but for the record of it, and named a shell command to go and type.
+    Every other act of the review is a click here; ending it was the one that
+    sent you to a terminal, and the whole reason ``supersede`` is on this
+    surface is that a settled comment should not.
+    """
+    status, payload = call(opened, "/api/round", {"open": False, "note": "v2 lands"})
+    assert status == 200
+    assert payload["round"]["status"] == "closed"
+    assert store.fold().rounds[round_id].open is False
+
+
+def test_closing_over_undisposed_comments_needs_saying_so(opened, store, comment_id):
+    """The gate the store keeps, surfaced rather than re-implemented.
+
+    The refusal is the ledger's own words: walking away from comments nobody
+    decided stays a decision somebody typed, on this surface as on the other.
+    """
+    status, payload = call(opened, "/api/round", {"open": False})
+    assert status == 409
+    assert payload["error"]["kind"] == "state"
+    assert "undisposed" in payload["error"]["message"]
+
+    status, payload = call(opened, "/api/round", {"open": False, "allow_undisposed": True})
+    assert status == 200
+    assert payload["round"]["undisposed_at_close"] == [comment_id]
+
+
+def test_the_next_round_opens_on_the_revision_and_reports_the_carry(
+    opened, store, doc, doc_text, round_id
+):
+    """Closing is half a motion — the other half is the round on the revision.
+
+    Freezing the revision is what makes the space the comments move into, so
+    opening is also what carries them. Leaving that half in the shell would move
+    the gate rather than remove it: a reviewer who closed here would still be
+    reading a base nothing can be said about.
+    """
+    call(opened, "/api/round", {"open": False, "allow_undisposed": True})
+    doc.write_text(doc_text.replace("30 seconds", "60 seconds"), encoding="utf-8")
+
+    status, payload = call(opened, "/api/round", {"open": True, "title": "second pass"})
+    assert status == 200
+    assert payload["round"]["status"] == "open"
+    assert payload["round"]["id"] != round_id
+    assert payload["round"]["title"] == "second pass"
+    # The carry is reported for the reason the CLI reports it: opening is the one
+    # act that moves anchors, and silence here would make it the only one nobody sees.
+    assert set(payload["carried"]) == {
+        "ambiguous", "base", "changed", "orphaned", "reasons", "rebound",
+        "skipped", "strategies", "unchanged",
+    }
+    # And the page is now on the new base — the revision is what it reads.
+    assert "60 seconds" in state(opened)["base"]
+
+
+def test_a_second_round_cannot_be_opened_while_one_is(opened):
+    status, payload = call(opened, "/api/round", {"open": True})
+    assert status == 409
+    assert payload["error"]["kind"] == "state"
+    assert "already open" in payload["error"]["message"]
+
+
+def test_the_next_round_needs_the_document_it_would_freeze(opened, store, doc, round_id):
+    """G12's one exception, on this surface too.
+
+    Everything else about a review works once the document is gone, because the
+    ledger is the record. Opening a round is not one of those things: there is
+    nothing to freeze, and a base cut from nothing is a space no comment can
+    honestly land in.
+    """
+    store.close_round(round_id, author="alice", allow_undisposed=True)
+    doc.unlink()
+
+    status, payload = call(opened, "/api/round", {"open": True})
+    assert status == 409
+    assert payload["error"]["kind"] == "state"
+    assert "no longer on disk" in payload["error"]["message"]
+
+
+def test_closing_a_round_works_after_the_document_is_gone(opened, store, doc, round_id):
+    """The wedge, on the surface the reviewer is actually standing on."""
+    doc.unlink()
+    status, payload = call(opened, "/api/round", {"open": False, "allow_undisposed": True})
+    assert status == 200
+    assert payload["round"]["status"] == "closed"
+
+
+def test_closing_a_round_that_is_already_closed_is_the_ledgers_refusal(opened, store, round_id):
+    store.close_round(round_id, author="alice", allow_undisposed=True)
+    status, payload = call(opened, "/api/round", {"open": False, "allow_undisposed": True})
+    assert status == 409
+    assert payload["error"]["kind"] == "state"
+
+
 # -- request shapes ------------------------------------------------------
 
 
@@ -2362,7 +2502,7 @@ def test_no_share_scope_settles(shared, round_id):
     The gate sits before the body is read: a share probing the owner verbs
     learns the ceiling, not which arguments would have been valid.
     """
-    for path in ("/api/dispose", "/api/thread"):
+    for path in ("/api/dispose", "/api/thread", "/api/round"):
         status, payload = call(shared, path, {}, token=shared.share_token)
         assert status == 403, path
         assert payload["error"]["kind"] == "share", path

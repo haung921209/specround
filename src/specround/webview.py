@@ -106,7 +106,7 @@ from specround.fold import Round, State
 from specround.locations import path_key
 from specround.reanchor import POSITION
 from specround.store import ReviewStore
-from specround.wire import comment_json, comments_on, round_json, rounds_on
+from specround.wire import carry_json, comment_json, comments_on, round_json, rounds_on
 from specround.workspace import Workspace
 
 __all__ = [
@@ -867,6 +867,60 @@ class WebView:
         )
         return {"comment": comment_json(self.store.fold().comments[target])}
 
+    def round(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """End this round, or freeze the revision as the next one — one call with a sign.
+
+        The review's own lifecycle was the one act this surface did not have. A
+        reviewer commented, replied, disposed, and resolved here, and then the
+        page told them to go and type ``specround round close`` in a terminal —
+        naming a verb it could not run from where they were standing. That is
+        the argument ``dispose``'s ``supersede`` already won: a gate you can only
+        pass somewhere else is a gate people route around.
+
+        Closing and opening are one route with a sign because they are one
+        motion. Ending a round leaves the page reading a base the revision has
+        moved past, and nothing can be said about it until something freezes the
+        revision — putting only half of that here would move the trip to the
+        shell rather than remove it.
+
+        Opening needs the document and closing does not (G12), which is not an
+        asymmetry to smooth over: a base is cut from a text, and there is no
+        honest one to cut when the file is gone.
+        """
+        state = self.store.fold()
+        author = _author(body, self.author)
+        live = [r for r in rounds_on(state, self.key) if r.open]
+        if body.get("open"):
+            if live:
+                raise _state(
+                    f"round {live[0].id} is already open on {self.key}: close it first. "
+                    "One open round per document is what lets the other verbs say 'the "
+                    "round' without asking"
+                )
+            if not self.path.is_file():
+                raise _state(
+                    f"{self.key} is no longer on disk — a round freezes the document, and "
+                    "there is nothing here to freeze. The review of the rounds already "
+                    "opened stays readable"
+                )
+            round_id = self.store.open_round(
+                self.path, author=author, title=str(body.get("title", "")).strip() or None
+            )
+            state = self.store.fold()
+            return {
+                "round": round_json(state, state.rounds[round_id]),
+                "carried": carry_json(state, self.store.carry_of(round_id)),
+            }
+        round_ = self._writable(state)
+        self.store.close_round(
+            round_.id,
+            author=author,
+            allow_undisposed=bool(body.get("allow_undisposed", False)),
+            note=str(body.get("note", "")).strip() or None,
+        )
+        state = self.store.fold()
+        return {"round": round_json(state, state.rounds[round_.id]), "carried": None}
+
     def thread(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """Close or re-open a conversation (G11) — one call with a sign.
 
@@ -1145,9 +1199,12 @@ _POSTS: dict[str, Callable[[_Handler], None]] = {
     "/api/reply": lambda h: h._write(WebView.reply),
     "/api/dispose": lambda h: h._write(WebView.dispose),
     "/api/thread": lambda h: h._write(WebView.thread),
+    "/api/round": lambda h: h._write(WebView.round),
 }
 
 #: The writes no share scope reaches. Comment, suggestion, and reply *say*
-#: something and belong to the ``comment`` scope; these two *settle* something,
-#: and settling is the owner's whatever the share was for.
-_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread"})
+#: something and belong to the ``comment`` scope; these three *settle* something,
+#: and settling is the owner's whatever the share was for. A round is the review
+#: itself — ending one, or starting the next on a revision, is the furthest thing
+#: from an opinion a link was handed out to collect.
+_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread", "/api/round"})

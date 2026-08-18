@@ -506,6 +506,29 @@ function settledNote(data) {
     + "End the round with 'specround round close'";
 }
 
+function roundAction(data) {
+  // The one act of the review that used to send a reviewer to a terminal, and
+  // what pressing it costs. The shell makes you type --allow-undisposed to walk
+  // away from comments nobody decided; here the label says it, because one
+  // button whose meaning depends on state the reader cannot see is the same gate
+  // passed silently. `null` where there is nothing to act on — a closed round
+  // over a document that is gone has no next round to start (G12: the review
+  // stays readable, but a base is cut from a text and there is none).
+  if (!data || !data.reading) return null;
+  const counts = data.counts || {};
+  if (data.round && data.round.status === "open") {
+    return counts.undisposed
+      ? { label: "end this round — leaves " + counts.undisposed + " undisposed",
+          body: { open: false, allow_undisposed: true } }
+      : { label: "end this round", body: { open: false } };
+  }
+  if (data.live === null || data.live === undefined) return null;
+  return {
+    label: data.round ? "start the next round on the revision" : "start the first round",
+    body: { open: true },
+  };
+}
+
 function readable(data) {
   // Whether there is a text to draw. Deliberately not "is there a round": those
   // two came apart the moment a document with no round started reading the file
@@ -1628,6 +1651,11 @@ function renderControls() {
   if (state.data.commentable) {
     bar.appendChild(button("comment on the document", () => commentBox(null)));
   }
+  // The review's own lifecycle, on the surface the rest of it happens on. It
+  // sits beside the commenting controls rather than in the header, because it
+  // is an act and the header states facts.
+  const round_act = roundAction(state.data);
+  if (round_act) bar.appendChild(button(round_act.label, () => act(round_act.body, "/api/round")));
   if (state.data.blocked) {
     const note = document.createElement("span");
     note.className = "meta";

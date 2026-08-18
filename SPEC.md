@@ -361,6 +361,27 @@ target is spec and prose documents — PR tools already do code well).
   the trigger for extraction is a second independent consumer, not a
   prediction. The generic piece worth sharing goes to `adapters/` as a
   reference, the shape `cmux-diff-comments.py` already set.
+- **The round's lifecycle belongs on the view as well (settled by the
+  implementation 2026-08-18)**. `POST /api/round` with an `open` sign — the
+  shape `/api/thread` already set — closes the round or freezes the revision as
+  the next one, and both are in `_OWNER_POSTS`: a share collects opinions and a
+  round *is* the review, so no scope handed to a room reaches it. The argument
+  is the one `supersede` won on this surface — a reviewer who did every other
+  act of the review by clicking should not have to open a terminal for the act
+  that ends it, and a gate you can only pass somewhere else is a gate people
+  route around. It became sharper when the page started saying "nothing
+  outstanding — end the round with `specround round close`": naming a verb the
+  reader cannot run from where they are standing. Two things the implementation
+  settled: **the two directions are one route**, because ending a round leaves
+  the page reading a base the revision has moved past and nothing can be said
+  about it until something freezes that revision — putting only the close here
+  would move the trip to the shell rather than remove it; and **the
+  `allow_undisposed` gate is carried by the button's own label** (`end this
+  round — leaves 2 undisposed`), because a single control whose meaning depends
+  on state the reader cannot see is that gate passed silently. Opening needs the
+  document and closing does not, exactly as G12 has it. The carry report moved to
+  `wire.carry_json` on the way, since both surfaces now open rounds and a second
+  copy of that shape would drift from the first.
 - **Which verbs need the file is a list, not a habit (G12, settled by the
   implementation 2026-08-14)**. `cli.READS_THE_DOCUMENT` names the three, and
   `_target` reads the verb's own name against it — so a new verb is on the

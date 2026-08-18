@@ -69,6 +69,7 @@ from specround.webview import (
 )
 from specround.wire import (
     anchor_json,
+    carry_json,
     comment_json,
     comments_on,
     disposition_json,
@@ -624,7 +625,7 @@ def _round_open(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     # Opening a round is what carries the comments already on the document into
     # its base, so it is also what has to report the carry. Silence here would
     # make the one act that moves anchors the only one nobody sees.
-    carried = _carry_json(state, target.store.carry_of(round_id))
+    carried = carry_json(state, target.store.carry_of(round_id))
     payload = {
         **target.envelope(),
         "round": round_json(state, round_),
@@ -907,35 +908,6 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, _comment_rows(items, hidden=hidden)
 
 
-def _carry_json(state: State, report: ReanchorReport) -> dict[str, Any]:
-    """One shape for a carry, whichever verb ran it.
-
-    ``round open`` and ``reanchor`` are the same movement seen from two sides —
-    the first makes the space and fills it, the second re-drives that fill. A
-    consumer that had to parse two shapes for one event would be parsing the
-    verb, not the outcome.
-    """
-    return {
-        "base": report.base,
-        "changed": report.changed,
-        "rebound": list(report.rebound),
-        "orphaned": list(report.orphaned),
-        "unchanged": list(report.unchanged),
-        "skipped": list(report.skipped),
-        "ambiguous": list(report.ambiguous),
-        "strategies": {
-            cid: state.comments[cid].anchoring.strategy
-            for cid in report.rebound
-            if state.comments[cid].anchoring is not None
-        },
-        "reasons": {
-            cid: state.comments[cid].anchoring.reason
-            for cid in report.orphaned
-            if state.comments[cid].anchoring is not None
-        },
-    }
-
-
 def _carry_lines(carried: Mapping[str, Any], headline: str) -> list[str]:
     strategies = carried["strategies"]
     ambiguous = carried["ambiguous"]
@@ -963,7 +935,7 @@ def _carry_lines(carried: Mapping[str, Any], headline: str) -> list[str]:
 def _reanchor(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     report = target.store.reanchor_document(target.path, author=_author(args))
-    carried = _carry_json(target.store.fold(), report)
+    carried = carry_json(target.store.fold(), report)
     payload = {**target.envelope(), **carried}
     return payload, _carry_lines(carried, f"re-anchored {target.key} against {_short(report.base)}")
 

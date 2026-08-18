@@ -18,11 +18,13 @@ from typing import Any
 
 from specround.anchors import Anchor
 from specround.fold import Anchoring, Comment, Disposition, Reply, Resolution, Round, State
+from specround.store import ReanchorReport
 
 __all__ = [
     "EMPTY_SUMMARY",
     "anchor_json",
     "anchoring_json",
+    "carry_json",
     "comment_json",
     "comments_on",
     "disposition_json",
@@ -275,4 +277,35 @@ def round_json(state: State, round_: Round) -> dict[str, Any]:
         "comment_count": len(comments),
         "undisposed_count": sum(1 for c in comments if c.undisposed),
         "unresolved_thread_count": sum(1 for c in comments if not c.resolved),
+    }
+
+
+def carry_json(state: State, report: ReanchorReport) -> dict[str, Any]:
+    """One shape for a carry, whichever verb ran it and whichever surface asked.
+
+    ``round open`` and ``reanchor`` are the same movement seen from two sides —
+    the first makes the space and fills it, the second re-drives that fill. A
+    consumer that had to parse two shapes for one event would be parsing the
+    verb, not the outcome. It sits here rather than in the CLI for the reason
+    everything else here does: the browser opens rounds too, and a second copy
+    of this shape would drift from the first the moment one grew a field.
+    """
+    return {
+        "base": report.base,
+        "changed": report.changed,
+        "rebound": list(report.rebound),
+        "orphaned": list(report.orphaned),
+        "unchanged": list(report.unchanged),
+        "skipped": list(report.skipped),
+        "ambiguous": list(report.ambiguous),
+        "strategies": {
+            cid: state.comments[cid].anchoring.strategy
+            for cid in report.rebound
+            if state.comments[cid].anchoring is not None
+        },
+        "reasons": {
+            cid: state.comments[cid].anchoring.reason
+            for cid in report.orphaned
+            if state.comments[cid].anchoring is not None
+        },
     }
