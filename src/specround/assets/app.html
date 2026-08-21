@@ -1174,7 +1174,15 @@ function card(comment) {
   // `orphan` beside `bad` names what the badge is rather than how it looks, so
   // the one place that draws attention to it has something to aim at that will
   // not move when the colour does.
-  if (comment.orphaned) tags.push(tag("orphaned", "bad orphan"));
+  //
+  // A settled comment that lost its anchor is the expected end of an applied
+  // fix — the rewrite that honoured it is what removed its sentence (#15). The
+  // verdict tag above already says how it ended, so this stays quiet, and
+  // "orphaned" keeps meaning an *open* comment the document lost — the one
+  // case the red badge is for.
+  if (comment.orphaned) tags.push(comment.settled
+    ? tag("outlived its anchor", "")
+    : tag("orphaned", "bad orphan"));
   // Not drawn, and saying so. An undrawn mark with no badge is indistinguishable
   // from one that is simply scrolled out of view, which would leave the reviewer
   // to discover by absence that the tool is withholding a placement.
