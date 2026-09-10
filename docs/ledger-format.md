@@ -187,7 +187,15 @@ boundary itself is not this ledger but a separate format,
 `specround.import/v0` (`import-format.md`), and an imported comment is just a
 `comment.add` here — neither a kind nor a field was added.
 
-All three are promotion candidates, and candidates is all they are — promotion
+The fourth is **a review set** (SPEC H20). When several documents are opened
+in one review, each `round.open` carries
+`ext.set = {"id": "S…", "members": [absolute paths…], "title": …}`. It is an
+observation about how the rounds were opened, not a rule the fold acts on: a
+round in a set is an ordinary round to every invariant here, and the verbs that
+close or list a set read the membership off the record. The paths are absolute,
+so the note is machine-local — which is what `ext` may be and a field may not.
+
+All four are promotion candidates, and candidates is all they are — promotion
 bumps major.
 
 **Event kinds are closed in the same sense** — an unknown `type` is refused. So
@@ -235,7 +243,7 @@ Every event carries these. All required.
 | `schema` | string | `specround.ledger/v0` |
 | `seq` | integer ≥ 0 | **the 0-based position in the file.** It must equal the line number |
 | `ts` | string | UTC ISO8601 to the second (`2026-02-01T09:00:00Z`). **Not used for ordering** |
-| `type` | string | one of the ten kinds below |
+| `type` | string | one of the eleven kinds below |
 | `id` | string | this event's identifier. A kind prefix + 12 digest characters |
 | `author` | string | who is speaking. A person and an agent share the field (`alice`, `agent:reviewer`) — G4 |
 
@@ -249,11 +257,11 @@ and lifting it into the envelope is a candidate for when major goes up (§10).
 `id` is derived by the tool when the caller does not supply one: the prefix
 (`r` round · `c` comment · `s` suggestion · `p` reply · `d` disposition ·
 `x` round close · `a` re-anchor · `o` orphan · `v` resol**v**e ·
-`n` reope**n**) plus the first 12 characters of `sha256(everything but the id)`.
+`n` reope**n** · `e` **e**dit) plus the first 12 characters of `sha256(everything but the id)`.
 Because the digest covers `seq`, **two comments with the same content still get
 different ids**, and replaying in the same order produces the same ids.
 
-## 4. The ten event kinds
+## 4. The eleven event kinds
 
 ### `round.open` — open a round
 
@@ -306,6 +314,32 @@ A comment in a closed round can still be replied to (answering late is normal).
 (§7.1), so a reply underneath lands where nobody looks. An answer that got
 recorded and does not get read is exactly the loss G3 prevents, so the reader
 refuses it and asks for `thread.reopen` first (I11).
+
+### `comment.edit` — a correction (SPEC H18)
+
+| field | required | meaning |
+|---|---|---|
+| `target` | ✓ | a comment or suggestion id |
+| `body` | ✓ | the new text (an empty string is not allowed) |
+
+Append-only means a comment is never rewritten; this records that its body is
+now something else. The original stays in the `comment.add` line, every
+correction is its own line, and **the latest is the text in force** — the same
+arrangement `disposition` has for verdicts. A suggestion's `body` is its reason
+and edits the same way; its `patch` is the proposal itself and does not — a
+different patch is a different suggestion.
+
+**It is refused once anybody has reacted** (I13): the target's round must be
+open, and the target must carry no reply, no disposition (`deferred` included),
+and no resolve or reopen. Each of those was written against the body as it
+stood, and moving the body underneath it turns the reaction into an answer to
+something else — the loss I11 refuses when a reply lands under a hidden thread.
+The way out is the one every other refusal here names: say it in a reply.
+Re-anchoring events do not count; the tool moved those, not a reader.
+
+`author` must equal the target's `author`. The field is self-declared (§3), so
+this is the weak check every other verb lives with — it exists so that a
+correction is on its face the author's own, not so that it cannot be forged.
 
 ### `disposition` — a disposition (G3)
 
@@ -575,6 +609,7 @@ such as "skip just that line".
 | I10 | a resolve or reopen on a thread already in that state **does not change the state** | not refused — idempotent |
 | I11 | `reply`'s `target` is an **open** thread | refused (`thread.reopen` first) |
 | I12 | a comment's `current_anchor` is consistent with the base it is **painted on** — the latest round's, not merely the one the anchor names (§5.2) | **reported, not refused**: the comment is marked and no surface draws it, and `specround doctor` appends the correction |
+| I13 | `comment.edit` targets a comment in an **open** round that carries **no reply, no disposition, and no resolution**, and its `author` is the target's | refused (say it in a reply) |
 
 **The reading code is the writing gate.** A write folds `prior + the new record`
 and appends to the file only if that passes. So what arrives through the API and
