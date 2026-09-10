@@ -181,6 +181,13 @@ POLL_INTERVAL = 0.05
 MAX_BODY = 8 * 1024 * 1024
 _ASSETS = "assets"
 _PAGE = "app.html"
+#: The diagram renderer, vendored beside the page (mermaid 11.17.2, MIT). A
+#: ```mermaid fence is a picture the author drew in text, and a review that
+#: shows the text instead of the picture is a review of the wrong thing. It is
+#: 3.5MB, which buys the promise the page's own header makes: no network beyond
+#: this process, so a document opens the same on a laptop with no route out.
+#: Fetched only by a page that actually met a diagram (see `diagrams` there).
+_MERMAID = "mermaid.min.js"
 
 
 def derived_port(path: Path) -> int:
@@ -266,6 +273,14 @@ def page() -> bytes:
     from importlib.resources import files
 
     return (files("specround") / _ASSETS / _PAGE).read_bytes()
+
+
+@lru_cache(maxsize=1)
+def mermaid() -> bytes:
+    """The vendored diagram renderer, read once and held."""
+    from importlib.resources import files
+
+    return (files("specround") / _ASSETS / _MERMAID).read_bytes()
 
 
 @dataclass
@@ -1148,6 +1163,19 @@ class _Handler(BaseHTTPRequestHandler):
     def _state(self) -> None:
         self._json(self.view.select(self.named_doc).state_payload())
 
+    def _mermaid(self) -> None:
+        """The diagram renderer. Static package data — no document is involved.
+
+        ``nosniff`` for the same reason the asset route sends it: what the
+        server says a byte stream is, is what a browser must read it as.
+        """
+        self._send(
+            HTTPStatus.OK,
+            mermaid(),
+            "text/javascript; charset=utf-8",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+
     def _asset(self) -> None:
         """A file the rendered document points at, served beside it.
 
@@ -1191,6 +1219,7 @@ _GETS: dict[str, Callable[[_Handler], None]] = {
     "/": _Handler._page,
     "/api/state": _Handler._state,
     "/api/asset": _Handler._asset,
+    "/api/mermaid": _Handler._mermaid,
 }
 
 _POSTS: dict[str, Callable[[_Handler], None]] = {

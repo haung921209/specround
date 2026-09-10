@@ -2388,6 +2388,45 @@ def test_shutting_down_twice_is_harmless(view):
 # -- the page and the routes stay one thing ------------------------------
 
 
+def test_the_diagram_renderer_is_served_off_the_package(view):
+    """A ```mermaid fence draws nothing without this, and it is package data.
+
+    The failure this catches is silent in the worst way: the page loads, the
+    document reads, and only a diagram is quietly a code block — which is the
+    state the feature was added to fix. A wheel that dropped the asset, or a
+    route that drifted from the name the page fetches, both land here.
+    """
+    url = f"http://{view.host}:{view.port}/api/mermaid?t={view.token}"
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as response:
+        assert response.status == 200
+        assert response.headers["Content-Type"].startswith("text/javascript")
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        body = response.read()
+    # The bundle's own last line, which is what makes `window.mermaid` exist.
+    assert b'globalThis["mermaid"]' in body
+    assert MERMAID_ROUTE_IN_PAGE in page().decode("utf-8")
+
+
+#: The route as the page spells it. Named here so a rename that updates only one
+#: side is a failed test rather than a diagram that stops being drawn.
+MERMAID_ROUTE_IN_PAGE = '"/api/mermaid"'
+
+
+def test_a_diagram_fence_reaches_the_page_as_one(view, store, doc):
+    """The fence survives the renderer with its language on it.
+
+    The picture is drawn in the browser and no test here has one; what this
+    holds is the half that is in Python — the info string arrives as
+    ``data-lang`` so the page can find the block, and the source is still text
+    runs carrying offsets so a comment can anchor inside it.
+    """
+    doc.write_text("# t\n\n```mermaid\nflowchart LR\n  A --> B\n```\n", encoding="utf-8")
+    rendered = state(view)["render"]
+    assert '<pre data-lang="mermaid">' in rendered
+    assert 'flowchart LR' in rendered
+    assert 'data-s="' in rendered.split('<pre data-lang="mermaid">')[1].split("</pre>")[0]
+
+
 def test_the_page_calls_exactly_the_routes_the_server_serves():
     """Neither half may drift: a dead button and a dead route look the same.
 

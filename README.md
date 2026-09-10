@@ -176,6 +176,13 @@ specround view docs/            # the whole tree, from one server
 specround view SPEC.md --rotate-token   # new token; the old URL now gets a 403
 ```
 
+A ```mermaid fence is drawn as a diagram, with its source one click away —
+that is what a comment anchors to, so the text is still there to select. The
+renderer ([mermaid](https://mermaid.js.org), MIT) ships vendored inside the
+package and is served by this process: a review opens the same on a laptop with
+no route out, and no page of yours reaches a CDN. It is 3.5MB of the install,
+fetched by the browser only once a document actually has a diagram in it.
+
 The URL is the first line of stdout and no browser is opened, because the
 first-class consumer is an embedder — a terminal multiplexer's browser pane takes
 that line and places the view where you already are. `--open` is for when you are

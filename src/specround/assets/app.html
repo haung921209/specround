@@ -161,6 +161,15 @@
   #doc blockquote { margin: 1em 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--dim); }
   #doc code { font-family: var(--mono); font-size: .9em; background: var(--panel); padding: 1px 4px; border-radius: 3px; }
   #doc pre code { background: none; padding: 0; }
+  /* A ```mermaid fence is a picture its author drew in text. The picture is what
+     a reviewer came to read; the text stays one click away, because the text is
+     what a comment anchors to (see `mountDiagram`). */
+  #doc figure.diagram { margin: 1em 0; text-align: center; overflow-x: auto; }
+  #doc figure.diagram svg { max-width: 100%; height: auto; }
+  #doc details.diagramsource { margin: -.4em 0 1.2em; }
+  #doc details.diagramsource > summary { color: var(--dim); font-size: .85em; cursor: pointer; }
+  #doc details.diagramsource > pre { margin-top: .4em; }
+  #doc p.diagramerror { color: var(--warn); font-size: .85em; margin: 1em 0 -.4em; }
   #doc hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
   #doc.raw, #doc.diff { font-family: var(--mono); font-size: calc(var(--read) * .87); line-height: 1.55; }
   .line { display: flex; }
@@ -903,6 +912,99 @@ function drawRender(host, data) {
   host.className = "";
   host.innerHTML = data.render;
   linkAssets(host, data);
+  drawDiagrams(host);
+}
+
+// -- diagrams --------------------------------------------------------------
+//
+// The renderer is 3.5MB of vendored JavaScript served by this process, and a
+// document that draws nothing should not pay for it — so it is fetched on the
+// first fence that needs it and held for the rest of the session. Nothing about
+// the offsets changes here: the `<pre>` the renderer produced keeps its runs and
+// stays in the page, one `<details>` away, which is why a comment can still be
+// made on the source of a diagram that is being shown as a picture.
+
+const MERMAID_ROUTE = "/api/mermaid";
+let mermaidLoad = null;
+let diagramCount = 0;
+
+function mermaidReady() {
+  if (mermaidLoad) return mermaidLoad;
+  mermaidLoad = new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = MERMAID_ROUTE + "?t=" + encodeURIComponent(TOKEN);
+    tag.onload = () => resolve(window.mermaid);
+    tag.onerror = () => reject(new Error("the diagram renderer did not load"));
+    document.head.appendChild(tag);
+  }).then((engine) => {
+    engine.initialize({
+      startOnLoad: false,
+      // The page follows the reader's system theme and a diagram that does not
+      // is a white slab in a dark document. `neutral` over the default light
+      // theme for the same reason the rest of this page is grey and one accent:
+      // a document is being read here, and a yellow subgraph on a primary-colour
+      // node is the diagram shouting over the prose around it.
+      theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "neutral",
+    });
+    return engine;
+  });
+  return mermaidLoad;
+}
+
+async function drawDiagrams(host) {
+  const blocks = [...host.querySelectorAll('pre[data-lang="mermaid"]')];
+  if (!blocks.length) return;
+  let engine;
+  try {
+    engine = await mermaidReady();
+  } catch (error) {
+    blocks.forEach((pre) => diagramFailed(pre, error));
+    return;
+  }
+  for (const pre of blocks) {
+    // A redraw while this was awaiting owns the page now, and these nodes are
+    // off it. Drawing into them would be work nobody sees.
+    if (!pre.isConnected) return;
+    const id = "mmd" + (diagramCount += 1);
+    try {
+      const drawn = await engine.render(id, pre.textContent);
+      if (pre.isConnected) mountDiagram(pre, drawn.svg);
+    } catch (error) {
+      // A failed render leaves its measuring div behind; the picture is gone
+      // either way, so the source stays on screen with the reason above it.
+      const orphan = document.getElementById("d" + id);
+      if (orphan) orphan.remove();
+      diagramFailed(pre, error);
+    }
+  }
+}
+
+function mountDiagram(pre, svg) {
+  const figure = document.createElement("figure");
+  figure.className = "diagram";
+  figure.innerHTML = svg;
+  const source = document.createElement("details");
+  source.className = "diagramsource";
+  const summary = document.createElement("summary");
+  summary.textContent = "mermaid source";
+  source.appendChild(summary);
+  pre.before(figure);
+  figure.after(source);
+  // Moving the block rather than replacing it: `paint` has already run, so the
+  // marks and carets inside are the anchors a reviewer left, and a comment
+  // pointing into text nobody can see is a comment that reads as lost. A source
+  // someone is talking about opens itself.
+  source.open = pre.querySelector("mark.anch, .caret") !== null;
+  source.appendChild(pre);
+}
+
+function diagramFailed(pre, error) {
+  const before = pre.previousElementSibling;
+  if (before && before.classList.contains("diagramerror")) return;
+  const note = document.createElement("p");
+  note.className = "diagramerror";
+  note.textContent = "diagram not drawn — " + ((error && error.message) || error);
+  pre.before(note);
 }
 
 // Every `<img>` the render produced, pointed at the asset route. The decision
