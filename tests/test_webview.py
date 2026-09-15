@@ -2080,6 +2080,13 @@ def test_the_page_names_the_document_a_workspace_image_counts_from(tmp_path):
     assert "doc=sub%2Fspec.md" in url
 
 
+def test_the_page_points_a_dooray_attachment_at_its_web_origin(tmp_path):
+    assert (
+        in_node('assetUrl("/files/4370518631314518022", null, "tok")', None, tmp_path)
+        == "https://nhnent.dooray.com/files/4370518631314518022"
+    )
+
+
 def test_the_page_leaves_an_address_it_does_not_serve_alone(tmp_path):
     """A remote image, a data URI, a protocol-relative host — none are ours."""
     left = in_node(
