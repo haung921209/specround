@@ -760,7 +760,7 @@ def test_the_header_carries_the_standing_it_computed(tmp_path):
     it, so the wiring is asserted where the wiring lives.
     """
     html = page().decode("utf-8")
-    loading = html[html.index("async function load()") :]
+    loading = html[html.index("async function load(") :]
     loading = loading[: loading.index("\n}\n")]
     assert "readingNote(data)" in loading
     assert "settledNote(data)" in loading
@@ -823,6 +823,36 @@ def test_focusing_moves_the_side_the_click_did_not_come_from(tmp_path):
     """
     assert in_node('focusScroll("mark", {mark: true, card: true})', None, tmp_path) == "card"
     assert in_node('focusScroll("card", {mark: true, card: true})', None, tmp_path) == "anchor"
+
+
+def test_a_new_comment_refocuses_the_anchor_it_created(tmp_path):
+    """A redraw after posting must return to the new comment, not a browser guess."""
+    assert (
+        in_node(
+            'actionFocus("/api/comment", {comment: {id: "c-new"}})',
+            None,
+            tmp_path,
+        )
+        == "c-new"
+    )
+    assert (
+        in_node(
+            'actionFocus("/api/reply", {comment: {id: "c-old"}})',
+            None,
+            tmp_path,
+        )
+        == ""
+    )
+    html = page().decode("utf-8")
+    assert 'if (refocus) focus(refocus, "card");' in html
+
+
+def test_a_new_comment_reuses_the_rendered_document(tmp_path):
+    assert in_node('actionRedraw("/api/comment")', None, tmp_path) is False
+    assert in_node('actionRedraw("/api/reply")', None, tmp_path) is True
+    html = page().decode("utf-8")
+    assert "await load({ redrawDocument: actionRedraw(path) });" in html
+    assert "if (redrawDocument) draw(); else paint(host, shownComments());" in html
 
 
 def test_a_focus_that_does_not_say_where_it_came_from_keeps_the_old_behaviour(tmp_path):
@@ -957,7 +987,7 @@ def test_the_document_is_drawn_before_the_threads_that_point_into_it():
     files would quietly find nothing and look like a dead card.
     """
     html = page().decode("utf-8")
-    body = html[html.index("async function load()") :]
+    body = html[html.index("async function load(") :]
     document_half = re.search(r"\bdraw\(\);", body)
     thread_half = re.search(r"\bdrawThreads\(\);", body)
     assert document_half is not None and thread_half is not None
@@ -2066,6 +2096,10 @@ def test_a_capture_in_a_document_reaches_the_page_as_a_picture(view, doc):
     assert status == 200
     assert body == PIXEL
     assert headers["Content-Type"] == "image/png"
+
+
+def test_a_rendered_image_never_outgrows_the_document_column():
+    assert "#doc img { max-width: 100%; height: auto; }" in page().decode("utf-8")
 
 
 def test_the_page_points_a_relative_image_at_the_route_with_the_token(tmp_path):

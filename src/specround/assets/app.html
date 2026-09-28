@@ -159,6 +159,7 @@
   #doc table { border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; }
   #doc th, #doc td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
   #doc blockquote { margin: 1em 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--dim); }
+  #doc img { max-width: 100%; height: auto; }
   #doc code { font-family: var(--mono); font-size: .9em; background: var(--panel); padding: 1px 4px; border-radius: 3px; }
   #doc pre code { background: none; padding: 0; }
   /* A ```mermaid fence is a picture its author drew in text. The picture is what
@@ -365,9 +366,11 @@ function notice(message, kind) {
 
 async function act(body, path) {
   try {
-    await api(path, body);
+    const result = await api(path, body);
+    const refocus = actionFocus(path, result);
     notice("");
-    await load();
+    await load({ redrawDocument: actionRedraw(path) });
+    if (refocus) focus(refocus, "card");
     return true;
   } catch (error) {
     notice(String(error.message || error), "bad");
@@ -835,6 +838,14 @@ function assetUrl(ref, doc, token) {
   const query = new URLSearchParams({ t: token, path: ref });
   if (doc) query.set("doc", doc);
   return ASSET_ROUTE + "?" + query.toString();
+}
+
+function actionFocus(path, result) {
+  return path === "/api/comment" && result && result.comment ? result.comment.id : "";
+}
+
+function actionRedraw(path) {
+  return path !== "/api/comment";
 }
 
 // -- end of the pure part -------------------------------------------------
@@ -1785,7 +1796,7 @@ function placeFloat() {
   floater.classList.add("show");
 }
 
-async function load() {
+async function load({ redrawDocument = true } = {}) {
   const data = await api("/api/state");
   state.data = data;
   // From here on the page names the document explicitly, including the first
@@ -1817,7 +1828,8 @@ async function load() {
   // survive the move (H15), so it is settled before anything draws.
   applyMode(modeFor(state.mode, data));
   renderControls();
-  draw();
+  const host = $("doc");
+  if (redrawDocument) draw(); else paint(host, shownComments());
   drawThreads();
 }
 
