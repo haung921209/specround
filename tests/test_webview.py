@@ -71,7 +71,7 @@ def opened(view, round_id):
     return view
 
 
-def call(view, path, body=None, *, token=None, origin=None, method=None, params=None):
+def call(view, path, body=None, *, token=None, origin=None, method=None, params=None, with_basis=True):
     """One request. Returns ``(status, payload)`` — an error is a payload too.
 
     ``params`` goes into the query beside the token, which is the only way to
@@ -79,6 +79,13 @@ def call(view, path, body=None, *, token=None, origin=None, method=None, params=
     own ``?doc=…`` into ``path`` would push the token out of the query and get a
     403 for what it meant as a 400.
     """
+    if with_basis and isinstance(body, dict) and path in {"/api/comment", "/api/suggestion", "/api/round"}:
+        document = body.get("doc") or (params or {}).get("doc")
+        status, shown = call(view, "/api/state", token=token, params={"doc": document} if document else None)
+        if status == 200:
+            round_ = shown["round"] or {}
+            body = {"expected_round": round_.get("id"), "expected_base": round_.get("base"),
+                    "expected_revision": shown.get("live_digest"), **body}
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"}
     if origin is not None:
@@ -197,7 +204,7 @@ def test_state_reports_the_round_the_three_modes_and_the_counts(opened, doc_text
     assert payload["blocked"] is None
     assert payload["base"] == doc_text
     assert payload["live"] == doc_text
-    assert payload["render"].startswith("<h1>")
+    assert payload["render"].startswith('<h1 id="md-widget-protocol">')
     assert payload["diff"]["identical"] is True
     assert payload["counts"] == {
         "comments": 0, "undisposed": 0, "orphans": 0, "misplaced": 0,
@@ -229,7 +236,7 @@ def test_a_document_with_no_round_reads_the_live_file(view, doc_text):
     # No round means no base, and the payload still says so rather than passing
     # the live text off as one (I7).
     assert payload["base"] is None
-    assert payload["render"].startswith("<h1>")
+    assert payload["render"].startswith('<h1 id="md-widget-protocol">')
     assert "Timeouts are 30 seconds." in payload["render"]
 
 
@@ -744,7 +751,7 @@ def test_the_control_that_ends_a_round_names_what_it_leaves_behind(tmp_path):
     )
     assert actions[0]["body"] == {"open": False}
     assert "end this round" in actions[0]["label"]
-    assert actions[1]["body"] == {"open": False, "allow_undisposed": True}
+    assert actions[1]["body"] == {"open": False}
     assert "2" in actions[1]["label"] and "undisposed" in actions[1]["label"]
     assert actions[2]["body"] == {"open": True}
     assert "revision" in actions[2]["label"]
@@ -845,14 +852,6 @@ def test_a_new_comment_refocuses_the_anchor_it_created(tmp_path):
     )
     html = page().decode("utf-8")
     assert 'if (refocus) focus(refocus, "card");' in html
-
-
-def test_a_new_comment_reuses_the_rendered_document(tmp_path):
-    assert in_node('actionRedraw("/api/comment")', None, tmp_path) is False
-    assert in_node('actionRedraw("/api/reply")', None, tmp_path) is True
-    html = page().decode("utf-8")
-    assert "await load({ redrawDocument: actionRedraw(path) });" in html
-    assert "if (redrawDocument) draw(); else paint(host, shownComments());" in html
 
 
 def test_a_focus_that_does_not_say_where_it_came_from_keeps_the_old_behaviour(tmp_path):
@@ -1613,7 +1612,8 @@ def test_a_reply_to_an_unknown_comment_is_the_ledgers_refusal(opened):
     assert "unknown comment" in payload["error"]["message"]
 
 
-def test_resolving_hides_nothing_from_the_ledger(opened, comment_id):
+def test_resolving_hides_nothing_from_the_ledger(opened, comment_id, store):
+    store.dispose(comment_id, author="alice", verdict="answered", reason="test answer")
     status, payload = call(
         opened, "/api/thread", {"target": comment_id, "resolved": True, "note": "settled"}
     )
@@ -1626,8 +1626,9 @@ def test_resolving_hides_nothing_from_the_ledger(opened, comment_id):
     assert listed["counts"]["resolved"] == 1
 
 
-def test_resolving_twice_records_nothing_and_is_not_an_error(opened, comment_id):
+def test_resolving_twice_records_nothing_and_is_not_an_error(opened, comment_id, store):
     """I10 reaching the browser: a button clicked twice is a retry."""
+    store.dispose(comment_id, author="alice", verdict="answered", reason="test answer")
     call(opened, "/api/thread", {"target": comment_id, "resolved": True})
     status, payload = call(opened, "/api/thread", {"target": comment_id, "resolved": True})
     assert status == 200
@@ -1635,22 +1636,25 @@ def test_resolving_twice_records_nothing_and_is_not_an_error(opened, comment_id)
     assert payload["event"] is None
 
 
-def test_a_reply_to_a_resolved_thread_is_refused_by_the_ledger(opened, comment_id):
+def test_a_reply_to_a_resolved_thread_is_refused_by_the_ledger(opened, comment_id, store):
     """I11, unchanged and unparaphrased — the message names the way out."""
+    store.dispose(comment_id, author="alice", verdict="answered", reason="test answer")
     call(opened, "/api/thread", {"target": comment_id, "resolved": True})
     status, payload = call(opened, "/api/reply", {"target": comment_id, "body": "one more thing"})
     assert status == 409
     assert "reopen" in payload["error"]["message"]
 
 
-def test_reopening_needs_a_reason(opened, comment_id):
+def test_reopening_needs_a_reason(opened, comment_id, store):
+    store.dispose(comment_id, author="alice", verdict="answered", reason="test answer")
     call(opened, "/api/thread", {"target": comment_id, "resolved": True})
     status, payload = call(opened, "/api/thread", {"target": comment_id, "resolved": False})
     assert status == 400
     assert "reason" in payload["error"]["message"]
 
 
-def test_reopening_puts_the_conversation_back(opened, comment_id):
+def test_reopening_puts_the_conversation_back(opened, comment_id, store):
+    store.dispose(comment_id, author="alice", verdict="answered", reason="test answer")
     call(opened, "/api/thread", {"target": comment_id, "resolved": True})
     status, payload = call(
         opened, "/api/thread", {"target": comment_id, "resolved": False, "reason": "it came back"}
@@ -1670,8 +1674,29 @@ def test_an_unknown_actor_is_refused(opened, comment_id):
 
 
 def test_the_actor_is_recorded_as_sent(opened, comment_id, store):
+    store.dispose(comment_id, author="alice", verdict="answered", reason="test answer")
     call(opened, "/api/thread", {"target": comment_id, "resolved": True, "actor": "agent"})
     assert store.fold().comments[comment_id].resolution.actor == "agent"
+
+
+def test_web_resolve_requires_a_final_verdict(opened, comment_id, store):
+    status, result = call(opened, "/api/thread", {"target": comment_id, "resolved": True})
+    assert status == 409 and "final verdict" in result["error"]["message"]
+    assert not store.fold().comments[comment_id].resolved
+    status, result = call(opened, "/api/dispose", {
+        "target": comment_id, "verdict": "answered", "reason": "explained", "resolve": True, "actor": "agent",
+    })
+    assert status == 200
+    assert result["comment"]["resolved"] and result["comment"]["settled"]
+
+
+@pytest.mark.parametrize("verdict,actor", [("deferred", "agent"), ("applied", "robot")])
+def test_invalid_combined_web_completion_writes_nothing(opened, comment_id, store, verdict, actor):
+    before = store.ledger.count()
+    status, _ = call(opened, "/api/dispose", {
+        "target": comment_id, "verdict": verdict, "reason": "test", "resolve": True, "actor": actor,
+    })
+    assert status == 400 and store.ledger.count() == before
 
 
 # -- dispositions (G3) ---------------------------------------------------
@@ -1770,7 +1795,7 @@ def test_commenting_with_no_open_round_is_the_state_error_the_cli_gives(view):
 
 def test_disposing_still_works_after_the_round_closes(opened, store, comment_id, round_id):
     """A comment outlives its round, and so does everything decided about it."""
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     status, _ = call(
         opened, "/api/dispose", {"target": comment_id, "verdict": "answered", "reason": "explained"}
     )
@@ -1809,6 +1834,10 @@ def test_closing_over_undisposed_comments_needs_saying_so(opened, store, comment
     assert "undisposed" in payload["error"]["message"]
 
     status, payload = call(opened, "/api/round", {"open": False, "allow_undisposed": True})
+    assert status == 409 and "unresolved thread" in payload["error"]["message"]
+    status, payload = call(opened, "/api/round", {
+        "open": False, "allow_undisposed": True, "allow_unresolved": True,
+    })
     assert status == 200
     assert payload["round"]["undisposed_at_close"] == [comment_id]
 
@@ -1856,7 +1885,7 @@ def test_the_next_round_needs_the_document_it_would_freeze(opened, store, doc, r
     nothing to freeze, and a base cut from nothing is a space no comment can
     honestly land in.
     """
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     doc.unlink()
 
     status, payload = call(opened, "/api/round", {"open": True})
@@ -1874,7 +1903,7 @@ def test_closing_a_round_works_after_the_document_is_gone(opened, store, doc, ro
 
 
 def test_closing_a_round_that_is_already_closed_is_the_ledgers_refusal(opened, store, round_id):
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     status, payload = call(opened, "/api/round", {"open": False, "allow_undisposed": True})
     assert status == 409
     assert payload["error"]["kind"] == "state"
@@ -2107,6 +2136,96 @@ def test_the_page_points_a_relative_image_at_the_route_with_the_token(tmp_path):
         in_node('assetUrl("img/shot.png", null, "tok")', None, tmp_path)
         == "/api/asset?t=tok&path=img%2Fshot.png"
     )
+
+
+def test_local_html_preview_is_data_not_an_executable_response(view, doc):
+    html = '<!doctype html><script>parent.document.body.remove()</script><svg></svg>'
+    (doc.parent / "diagram.html").write_text(html, encoding="utf-8")
+    status, payload = call(view, "/api/preview", params={"path": "diagram.html"})
+    assert status == 200
+    assert payload == {"html": html}
+    assert call(view, "/api/preview", token="", params={"path": "diagram.html"})[0] == 403
+    # The existing asset route never serves an executable document.
+    assert asset(view, "diagram.html")[0] == 404
+
+
+@pytest.mark.parametrize("ref,reason", [
+    ("../outside.html", "outside"), ("/tmp/diagram.html", "outside"),
+    ("missing.html", "missing"), ("spec.md", "unsupported"),
+])
+def test_html_preview_keeps_the_asset_boundary(view, ref, reason):
+    status, payload = call(view, "/api/preview", params={"path": ref})
+    assert status == 404
+    assert payload["error"]["reason"] == reason
+
+
+def test_html_preview_refuses_symlink_escape_and_oversize(view, doc, tmp_path, monkeypatch):
+    outside = tmp_path.parent / (tmp_path.name + "-outside.html")
+    outside.write_text("outside", encoding="utf-8")
+    (doc.parent / "linked.html").symlink_to(outside)
+    assert call(view, "/api/preview", params={"path": "linked.html"})[1]["error"]["reason"] == "outside"
+    (doc.parent / "big.html").write_text("x" * 17, encoding="utf-8")
+    monkeypatch.setattr(assetfiles, "MAX_BYTES", 16)
+    assert call(view, "/api/preview", params={"path": "big.html"})[1]["error"]["reason"] == "too-large"
+
+
+def test_only_local_html_links_are_previewed(tmp_path):
+    refs = ["assets/diagram.html", "a%20b.htm#view", "../shared/a.HTML", "https://x/a.html",
+            "//x/a.html", "/a.html", "data:text/html,test", "a.png", "bad%xx.html", "\\\\x\\a.html"]
+    assert in_node("input.map(previewRef)", refs, tmp_path) == [
+        "assets/diagram.html", "a b.htm", "../shared/a.HTML", None, None, None, None, None, None, None,
+    ]
+
+
+def test_browser_offsets_count_unicode_codepoints(tmp_path):
+    text = "😀 before\nTARGET\n"
+    rows = in_node("rawLines(input)", text, tmp_path)
+    assert rows[1] == {"start": 9, "text": "TARGET"}
+    span = in_node('spanOfRun("base", 9, "TARGET", input)', text, tmp_path)
+    assert span == {"space": "base", "start": 9, "end": 15, "quote": "TARGET"}
+    assert in_node('spanOfRun("base", 0, "👩‍💻", input)', "👩‍💻 next", tmp_path)["end"] == 3
+
+
+def test_stale_page_cannot_attach_a_comment_to_a_new_round(opened, store, doc, round_id):
+    before = state(opened)
+    store.close_round(round_id, author="alice")
+    doc.write_text("A different document.\n", encoding="utf-8")
+    store.open_round(doc, author="alice")
+    status, result = call(opened, "/api/comment", {
+        "start": 0, "end": 5, "body": "old selection", "space": "base",
+        "expected_round": before["round"]["id"], "expected_base": before["round"]["base"],
+    })
+    assert status == 409 and "reload" in result["error"]["message"]
+    assert not store.fold().comments
+
+
+def test_comment_from_a_page_without_version_context_is_refused(opened, store):
+    status, result = call(opened, "/api/comment", {"whole": True, "body": "old page"}, with_basis=False)
+    assert status == 409 and "reload" in result["error"]["message"]
+    assert not store.fold().comments
+
+
+def test_stale_revision_selection_is_not_carried_from_new_file_bytes(opened, store, doc):
+    before = state(opened)
+    doc.write_text("An entirely different file.\n", encoding="utf-8")
+    status, result = call(opened, "/api/comment", {
+        "start": 0, "end": 5, "body": "old diff", "space": "revision",
+        "expected_revision": before.get("live_digest"),
+    })
+    assert status == 409 and "reload" in result["error"]["message"]
+    assert not store.fold().comments
+
+
+def test_preview_in_a_workspace_resolves_beside_the_selected_document(tree):
+    (tree.path.parent / "diagram.html").write_text("<p>subdocument</p>", encoding="utf-8")
+    status, payload = call(tree, "/api/preview", params={"doc": "sub/spec.md", "path": "diagram.html"})
+    assert status == 200 and payload["html"] == "<p>subdocument</p>"
+
+
+def test_preview_requires_utf8(view, doc):
+    (doc.parent / "broken.html").write_bytes(b"\xff")
+    status, payload = call(view, "/api/preview", params={"path": "broken.html"})
+    assert status == 404 and payload["error"]["reason"] == "unsupported"
 
 
 def test_the_page_names_the_document_a_workspace_image_counts_from(tmp_path):

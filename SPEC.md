@@ -264,6 +264,21 @@ target is spec and prose documents — PR tools already do code well).
   the words still disagree is the `round.close` record's own `unresolved` field,
   which is frozen bytes at ledger/v0 and a v1 rename candidate.
   Vocabulary table in `docs/ledger-format.md` §7.2.
+- **Round completion checks both axes** (2026-09-29): new `round close`
+  writes require every comment on that round to have a final verdict and every
+  thread to be resolved. `--allow-undisposed` and `--allow-unresolved` are
+  separate explicit carry-over decisions. `dispose --resolve` records a final
+  verdict and a thread resolution as two ordinary events; deferred work cannot
+  use this shortcut. Old ledgers stay readable, including rounds closed with
+  open threads. The ledger's v0 `unresolved` field still means undisposed IDs;
+  `ext.thread_close.unresolved` records threads explicitly retained at closure.
+  CLI status/dispose/close also report `next_actions` for agent follow-through.
+  New `resolve` writes require a final verdict first; `resolved` is completion,
+  not an item to move into a new pending state. Deferring a completed item requires
+  reopening it. Existing incomplete resolutions are reported by `round status`
+  separately without rewriting history. `next_actions.when` states the judgment
+  required before executing the suggested operation; `comments --context`
+  provides snapshot line numbers and surrounding text with a live-file match flag.
 - **Overturning a settled verdict = `supersede`, and deferring never needed it**
   (settled by the implementation 2026-08-08, from a user report). The report was
   that parking a point as `deferred` and completing it later got refused as a
@@ -429,6 +444,13 @@ target is spec and prose documents — PR tools already do code well).
   is "any artifact, same loop". Until rung 2 exists, documents reviewed here
   should read without folding — a `<details>` that hides a contract hides it
   from the review. Trigger per rung = real demand, not prediction
+  - Local HTML previews (2026-09-29): render relative `.html`/`.htm` Markdown
+    links in a sandboxed iframe with inline scripts and styles, opaque origin,
+    no network resources, and no review token in the frame. Self-contained
+    archify exports are the target. Link labels retain Markdown offsets for
+    comments; the HTML document's interior is not a new anchor space. These
+    assets remain live files beside the reviewed Markdown, with the existing
+    root/symlink/size boundary. Raw HTML Markdown support remains separate.
 - H10 a central store's path key orphans the history when a document is moved or
   renamed — **direction settled (first real round c-b5c77df9, 2026-08-07)**:
   re-binding in two layers. The authoritative oracle = **content-hash

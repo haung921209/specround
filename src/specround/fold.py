@@ -222,9 +222,9 @@ class Comment:
         A third axis, independent of the other two. :attr:`undisposed` asks
         whether anyone decided what to do about the comment; :attr:`orphaned`
         asks whether the tool can still place it on the document; this asks
-        whether the discussion is over. A thread can be resolved with no
-        disposition (people simply agreed) and settled with the thread still
-        open (the fix landed, the argument continues).
+        whether the discussion is over. Legacy records can be resolved without
+        a disposition; current writers require a final verdict before resolve.
+        A settled thread can still be open while its discussion continues.
 
         This is the only axis the word *resolved* names. There is deliberately
         no ``unresolved`` property beside it: ``not comment.resolved`` is one

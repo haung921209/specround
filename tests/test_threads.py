@@ -293,10 +293,68 @@ def test_resolving_does_not_change_what_a_round_close_must_declare(store, round_
 def test_a_thread_outlives_its_round(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="retries?")
     store.dispose(cid, author="alice", verdict="answered", reason="see the reply")
-    store.close_round(round_id, author="alice")
-    # Conversations usually finish after the round does; no live-round check.
+    store.close_round(round_id, author="alice", allow_unresolved=True)
+    # Explicitly retained conversations can finish after the round does.
     resolve(store, cid, note="nothing left to say")
     assert store.fold().comments[cid].resolved is True
+
+
+def test_closing_refuses_a_thread_reopened_during_the_write(store, round_id, monkeypatch):
+    cid = store.add_comment(round_id, author="bob", body="check")
+    store.dispose(cid, author="alice", verdict="answered", reason="done")
+    resolve(store, cid)
+    append = store.ledger.append
+
+    def racing_append(record, **kwargs):
+        if record["type"] == "round.close":
+            append({"type": "thread.reopen", "author": "bob", "actor": "human",
+                    "target": cid, "reason": "one more question"})
+        return append(record, **kwargs)
+
+    monkeypatch.setattr(store.ledger, "append", racing_append)
+    with pytest.raises(InvariantError, match="review changed"):
+        store.close_round(round_id, author="alice")
+    assert store.fold().rounds[round_id].open
+    assert not store.fold().comments[cid].resolved
+
+
+def test_legacy_closed_round_with_open_thread_remains_readable(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="question")
+    store.dispose(cid, author="alice", verdict="answered", reason="reply")
+    store.ledger.append({"type": "round.close", "round": round_id, "author": "alice"})
+    assert not store.fold().rounds[round_id].open
+    assert not store.fold().comments[cid].resolved
+
+
+def test_close_records_explicitly_retained_threads(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="question")
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
+    record = store.ledger.read()[-1]
+    assert record["unresolved"] == [cid]
+    assert record["ext"]["thread_close"]["unresolved"] == [cid]
+
+
+@pytest.mark.parametrize("verdict", [None, "deferred"])
+def test_resolve_requires_a_final_verdict(store, round_id, verdict):
+    cid = store.add_comment(round_id, author="bob", body="question")
+    if verdict:
+        store.dispose(cid, author="alice", verdict=verdict, reason="waiting")
+    before = store.ledger.count()
+    with pytest.raises(InvariantError, match="final verdict"):
+        store.resolve(cid, author="alice", actor="agent")
+    assert store.ledger.count() == before
+    store.dispose(cid, author="alice", verdict="answered", reason="explained")
+    store.resolve(cid, author="alice", actor="agent")
+    assert store.fold().comments[cid].resolved
+
+
+def test_a_completed_thread_must_be_reopened_before_deferring(store, round_id):
+    cid = store.add_comment(round_id, author="bob", body="question")
+    store.dispose(cid, author="alice", verdict="answered", reason="explained")
+    store.resolve(cid, author="alice", actor="agent")
+    with pytest.raises(InvariantError, match="reopen"):
+        store.dispose(cid, author="alice", verdict="deferred", reason="wait", supersede=True)
+    assert store.fold().comments[cid].settled
 
 
 def test_an_orphan_can_be_resolved(store, doc, round_id):
@@ -342,6 +400,7 @@ def test_thread_state_does_not_depend_on_timestamps(store, round_id):
 
 def test_the_store_closes_and_reopens_a_thread(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="test answer")
     closed = store.resolve(cid, author="alice", actor="human", note="answered above")
     assert closed.startswith("v-")
     assert [c.id for c in store.fold().resolved_threads] == [cid]
@@ -353,6 +412,7 @@ def test_the_store_closes_and_reopens_a_thread(store, round_id):
 
 def test_the_store_records_who_closed_it(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="test answer")
     store.resolve(cid, author="agent:reviewer", actor="agent")
     resolution = store.fold().comments[cid].resolution
     assert (resolution.author, resolution.actor) == ("agent:reviewer", "agent")
@@ -360,6 +420,7 @@ def test_the_store_records_who_closed_it(store, round_id):
 
 def test_the_store_writes_nothing_for_a_redundant_resolve(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="test answer")
     store.resolve(cid, author="alice", actor="human")
     before = store.ledger.read()
 
@@ -382,6 +443,7 @@ def test_the_store_writes_nothing_for_a_redundant_reopen(store, round_id):
 def test_closing_a_closed_thread_is_harmless_not_an_error(store, round_id):
     """The point of idempotence: a misjudgement stays a misjudgement."""
     cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="test answer")
     store.resolve(cid, author="alice", actor="human")
     for _ in range(3):
         store.resolve(cid, author="agent:reviewer", actor="agent")
@@ -399,6 +461,7 @@ def test_the_store_refuses_a_reopen_with_no_reason(store, round_id):
     from specround.errors import SchemaError
 
     cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="test answer")
     store.resolve(cid, author="alice", actor="human")
     with pytest.raises(SchemaError, match="'reason' must not be empty"):
         store.reopen(cid, author="alice", actor="human", reason="")
@@ -409,13 +472,14 @@ def test_the_store_refuses_an_actor_outside_the_vocabulary(store, round_id):
     from specround.errors import SchemaError
 
     cid = store.add_comment(round_id, author="bob", body="why?")
+    store.dispose(cid, author="alice", verdict="answered", reason="test answer")
     with pytest.raises(SchemaError, match="unknown actor"):
         store.resolve(cid, author="alice", actor="robot")
 
 
-def test_the_store_keeps_resolving_and_disposing_apart(store, round_id):
+def test_the_store_can_finish_a_legacy_incomplete_resolution(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="why?")
-    store.resolve(cid, author="alice", actor="human")
+    resolve(store, cid)
     comment = store.fold().comments[cid]
     assert comment.resolved is True and comment.verdict is None
     # Still disposable afterwards — closing the talk did not decide the comment.

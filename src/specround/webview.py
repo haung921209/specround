@@ -106,6 +106,7 @@ from specround.fold import Round, State
 from specround.locations import path_key
 from specround.reanchor import POSITION
 from specround.store import ReviewStore
+from specround.snapshots import digest_text
 from specround.wire import carry_json, comment_json, comments_on, round_json, rounds_on
 from specround.workspace import Workspace
 
@@ -622,6 +623,16 @@ class WebView:
 
     # -- reading ---------------------------------------------------------
 
+    def preview(self, ref: str) -> dict[str, str]:
+        """Read self-contained HTML as data; only the sandboxed frame executes it."""
+        try:
+            target = assetfiles.resolve(self.asset_root, self.asset_base, ref, suffixes={".html", ".htm"})
+            return {"html": assetfiles.read(target, ref).decode("utf-8-sig")}
+        except UnicodeDecodeError as exc:
+            raise Refusal(HTTPStatus.NOT_FOUND, "usage", "HTML preview must be UTF-8", "unsupported") from exc
+        except AssetRefused as exc:
+            raise Refusal(HTTPStatus.NOT_FOUND, "usage", str(exc), exc.reason) from exc
+
     def live_text(self) -> str | None:
         """The document as it is on disk, or ``None`` if it is not there.
 
@@ -721,6 +732,7 @@ class WebView:
             "reading": reading,
             "base": base,
             "live": live,
+            "live_digest": digest_text(live) if live is not None else None,
             "render": markdown.render(shown) if shown is not None else "",
             "diff": self._diff_payload(base, live),
             "counts": {
@@ -792,10 +804,17 @@ class WebView:
 
     # -- writing ---------------------------------------------------------
 
+    def _check_basis(self, body: Mapping[str, Any], round_: Round | None) -> None:
+        expected = {"expected_round": round_.id if round_ else None,
+                    "expected_base": round_.base if round_ else None}
+        if any(key not in body or body[key] != value for key, value in expected.items()):
+            raise _state("the displayed round changed or this page is outdated — reload and reselect; your draft has not been submitted")
+
     def add_comment(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """Record a comment made in any of the three modes (G6)."""
         state = self.store.fold()
         round_ = self._writable(state)
+        self._check_basis(body, round_)
         text = _text(body, "body")
         anchor = None
         carried: dict[str, Any] | None = None
@@ -808,7 +827,7 @@ class WebView:
             if space == BASE:
                 anchor = self._cut(round_, start, end)
             else:
-                anchor, carried = self._carry(round_, start, end)
+                anchor, carried = self._carry(round_, start, end, body.get("expected_revision"))
                 if carried["strategy"] != POSITION:
                     # Where a comment came from is provenance the closed field
                     # set has no room for, and it is exactly the kind of thing
@@ -817,6 +836,8 @@ class WebView:
                     # indistinguishable from one selected on the base itself —
                     # and §4 is explicit that the first is worth a look.
                     ext = {"view": {"space": space, **carried}}
+            if space == BASE and "quote" in body and body["quote"] != anchor.exact:
+                raise _state("selection text does not match this base — reload and reselect")
         comment_id = self.store.add_comment(
             round_.id, author=_author(body, self.author), body=text, anchor=anchor, ext=ext
         )
@@ -836,6 +857,7 @@ class WebView:
         """
         state = self.store.fold()
         round_ = self._writable(state)
+        self._check_basis(body, round_)
         proposed = body.get("text")
         if not isinstance(proposed, str):
             raise _usage("a suggestion needs the edited text in 'text'")
@@ -873,6 +895,12 @@ class WebView:
         verdict = _text(body, "verdict")
         if verdict not in VERDICTS:
             raise _usage(f"unknown verdict {verdict!r}: use {', '.join(VERDICTS)}")
+        finish = bool(body.get("resolve"))
+        actor = str(body.get("actor") or self.actor)
+        if finish and verdict == "deferred":
+            raise _usage("a deferred comment cannot be resolved; record a final verdict first")
+        if finish and actor not in ACTORS:
+            raise _usage(f"unknown actor {actor!r}: use {' or '.join(ACTORS)}")
         self.store.dispose(
             target,
             author=_author(body, self.author),
@@ -880,6 +908,8 @@ class WebView:
             reason=_text(body, "reason"),
             supersede=bool(body.get(SUPERSEDE, False)),
         )
+        if finish:
+            self.store.resolve(target, author=_author(body, self.author), actor=actor, note=_text(body, "reason"))
         return {"comment": comment_json(self.store.fold().comments[target])}
 
     def round(self, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -904,6 +934,7 @@ class WebView:
         """
         state = self.store.fold()
         author = _author(body, self.author)
+        self._check_basis(body, self.resolve_round(state)[0])
         live = [r for r in rounds_on(state, self.key) if r.open]
         if body.get("open"):
             if live:
@@ -931,6 +962,7 @@ class WebView:
             round_.id,
             author=author,
             allow_undisposed=bool(body.get("allow_undisposed", False)),
+            allow_unresolved=bool(body.get("allow_unresolved", False)),
             note=str(body.get("note", "")).strip() or None,
         )
         state = self.store.fold()
@@ -970,11 +1002,13 @@ class WebView:
         except AnchorError as exc:
             raise _usage(f"that span is not in the base round {round_.id} froze: {exc}") from exc
 
-    def _carry(self, round_: Round, start: int, end: int) -> tuple[Any, dict[str, Any]]:
+    def _carry(self, round_: Round, start: int, end: int, expected_revision: Any) -> tuple[Any, dict[str, Any]]:
         """Carry a selection made on the revision into the round's base."""
         live = self.live_text()
         if live is None:
             raise _usage(f"{self.path} is not readable — nothing to select in the revision")
+        if expected_revision != digest_text(live):
+            raise _state("the displayed revision changed — reload and reselect; your draft has not been submitted")
         try:
             rebind = self.store.carry_span_into_round(round_.id, live, start, end)
         except AnchorError as exc:
@@ -1140,6 +1174,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         # A temporary view of a file that changes under it caches nothing.
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -1147,7 +1182,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _json(self, payload: Mapping[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        self._send(status, body, "application/json; charset=utf-8")
+        self._send(status, body, "application/json; charset=utf-8",
+                   headers={"X-Content-Type-Options": "nosniff"})
 
     def _error(self, status: HTTPStatus, kind: str, message: str, reason: str = "") -> None:
         error: dict[str, Any] = {"kind": kind, "status": int(status), "message": message}
@@ -1162,6 +1198,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _state(self) -> None:
         self._json(self.view.select(self.named_doc).state_payload())
+
+    def _preview(self) -> None:
+        ref = (self.query.get("path") or [""])[0]
+        self._json(self.view.select(self.named_doc).preview(ref))
 
     def _mermaid(self) -> None:
         """The diagram renderer. Static package data — no document is involved.
@@ -1220,6 +1260,7 @@ _GETS: dict[str, Callable[[_Handler], None]] = {
     "/api/state": _Handler._state,
     "/api/asset": _Handler._asset,
     "/api/mermaid": _Handler._mermaid,
+    "/api/preview": _Handler._preview,
 }
 
 _POSTS: dict[str, Callable[[_Handler], None]] = {

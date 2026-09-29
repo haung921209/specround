@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from specround.errors import LedgerError, SchemaError
+from specround.errors import InvariantError, LedgerError, SchemaError
 from specround.events import (
     SCHEMA,
     canonical_json,
@@ -125,7 +125,7 @@ class Ledger:
             finally:
                 handle.close()
 
-    def append(self, event: Mapping[str, Any]) -> dict[str, Any]:
+    def append(self, event: Mapping[str, Any], *, expected_seq: int | None = None) -> dict[str, Any]:
         """Validate ``event`` against the whole history, then write one line.
 
         The prospective history is folded before anything is written, so a
@@ -143,6 +143,8 @@ class Ledger:
             handle.seek(0)
             text = handle.read()
             prior = self._parse(text.splitlines())
+            if expected_seq is not None and len(prior) != expected_seq:
+                raise InvariantError("review changed before writing — re-read its status and retry")
             record["seq"] = len(prior)
             record.setdefault("ts", self._clock())
             if not record.get("id"):

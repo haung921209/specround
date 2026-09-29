@@ -58,8 +58,10 @@ specround round status SPEC.md        # rounds, counts, what is still outstandin
 specround reply SPEC.md --comment c-d35c --body "the proxy caps it at 60"
 specround reply SPEC.md --comment c-d35c --body-file - --author agent:reviewer
 
-# Close the conversation once it is over. Resolved threads drop out of the
+# Record the final outcome, then close the conversation once it is over.
+# Resolved threads drop out of the
 # default listing; --all brings them back, and nothing is ever deleted.
+specround dispose SPEC.md --comment c-d35c --as applied --why "raised to 60"
 specround resolve SPEC.md --comment c-d35c --note "settled above"
 specround comments SPEC.md --all
 specround reopen SPEC.md --comment c-d35c --why "it came back in revision 3"
@@ -67,9 +69,14 @@ specround reopen SPEC.md --comment c-d35c --why "it came back in revision 3"
 # Every comment gets a verdict and a reason: applied · rejected · answered · deferred.
 # Deciding and ending the conversation are different things, so they are counted
 # apart: `undisposed` is comments with no verdict, `unresolved` is threads still
-# going. Closing a round accounts for the first, and resolving does not touch it.
-specround dispose SPEC.md --comment c-d35c --as applied --why "raised to 60"
-specround round close SPEC.md --allow-undisposed --note "retries move to round 2"
+# going. Closing a round checks both independently.
+# To do both in one call, add --resolve to the original dispose command.
+specround resolve SPEC.md --comment c-d35c --note "follow-up conversation complete"
+specround round status SPEC.md --json
+specround round close SPEC.md
+
+# Intentionally carrying work forward requires both exceptions when both remain.
+specround round close SPEC.md --allow-undisposed --allow-unresolved --note "retries move to round 2"
 
 # `deferred` parks a point without settling it, so a round can close over it and
 # the verdict that finishes it later is an ordinary dispose — no flag involved.
@@ -167,6 +174,43 @@ the same file twice imports it once and re-running after fixing one item is
 safe.
 
 ## In a browser
+
+Headings have stable, unique `md-` IDs and a collapsible table of contents.
+Write `[Introduction](#introduction)` to jump to `## Introduction`; the render
+rewrites the fragment into its own namespace. Reference links such as
+`[design][ref]`, collapsed/shortcut references, and reference images are supported
+with single-line definitions outside code fences. Duplicate headings receive
+numeric suffixes. Titles containing `C#` keep the hash as text.
+
+Comments, replies, verdicts and thread updates preserve the rendered document
+when its text is unchanged, including image/HTML nodes and expanded sections.
+Selections use Unicode codepoint offsets in every mode, so emoji do not shift
+anchors. Submissions carry the displayed round/base and, for revision selections,
+the revision digest; stale selections are refused and their draft is kept.
+
+Local HTML links are shown inline in render mode:
+
+```markdown
+[Architecture diagram](assets/diagram.html)
+```
+
+Self-contained UTF-8 HTML (including archify exports with inline SVG, CSS, and
+JavaScript) runs in a sandboxed frame. Its controls work inside the preview;
+comment on the link label above it to keep the anchor in the Markdown source.
+The frame reserves its height and survives comment submissions, so loading it
+does not push the selected paragraph down. Use **expand preview** for more room.
+
+Only `.html`/`.htm` files inside the served document directory (or workspace tree)
+are read, with the same 8 MiB cap as images. External scripts, styles, fonts and
+network requests are blocked; bundle resources in the HTML. The frame cannot
+read the review page, its token, or browser storage. Downloads and popups are
+not enabled. HTML files are read from disk, not frozen into a round's base;
+version the filename if a review needs a fixed diagram. Raw HTML in Markdown
+and HTML code fences remain source text.
+
+The optional real-browser regression check runs with
+`SPECROUND_TEST_BROWSER=/path/to/chromium pytest tests/test_browser.py`.
+Set `SPECROUND_TEST_HTML=/path/to/diagram.html` to exercise a local export too.
 
 ```bash
 specround view SPEC.md          # prints a URL; nothing opens
@@ -291,10 +335,9 @@ reading.
 click on this page and ending one was a trip to a terminal — which is exactly
 the argument `--supersede` already won: a gate you can only pass somewhere else
 is a gate people route around. So the bar above the document carries the act the
-review is standing in front of. `end this round`, or `end this round — leaves 2
-undisposed` when comments have no verdict, because the shell makes you type
-`--allow-undisposed` and one button whose meaning depends on state you cannot see
-is that gate passed silently. Once it is closed, `start the next round on the
+review is standing in front of. `end this round` names any undisposed comments
+and unresolved threads. Finish those first, or use the unchecked options in
+the closing panel to explicitly leave them for later. Once it is closed, `start the next round on the
 revision` freezes what you have written since and carries the comments onto it.
 Both are the owner's: no share scope reaches them, whatever the link was for.
 

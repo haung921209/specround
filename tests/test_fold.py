@@ -171,7 +171,7 @@ def test_the_reported_queue_workflow_needs_no_flag_at_all(store, round_id):
     """
     cid = store.add_comment(round_id, author="bob", body="retry policy is missing")
     store.dispose(cid, author="alice", verdict="deferred", reason="queued for later")
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     assert store.fold().rounds[round_id].undisposed_at_close == [cid]
 
     store.dispose(cid, author="alice", verdict="applied", reason="handled off the queue")
@@ -284,7 +284,7 @@ def test_closing_over_undisposed_comments_needs_an_explicit_decision(store, roun
         store.close_round(round_id, author="alice")
     assert store.fold().rounds[round_id].open is True
 
-    store.close_round(round_id, author="alice", allow_undisposed=True, note="next round")
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True, note="next round")
     round_ = store.fold().rounds[round_id]
     assert round_.open is False
     assert round_.undisposed_at_close == [cid]
@@ -294,6 +294,7 @@ def test_closing_over_undisposed_comments_needs_an_explicit_decision(store, roun
 def test_a_clean_close_records_nothing_left_open(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="why?")
     store.dispose(cid, author="alice", verdict="applied", reason="fixed")
+    store.resolve(cid, author="alice", actor="human")
     close_id = store.close_round(round_id, author="alice")
     round_ = store.fold().rounds[round_id]
     assert round_.undisposed_at_close == []
@@ -327,7 +328,7 @@ def test_a_round_cannot_be_closed_twice(store, round_id):
 
 def test_a_comment_in_a_closed_round_can_still_be_disposed(store, round_id):
     cid = store.add_comment(round_id, author="bob", body="retries?")
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     # Deferred work outlives the round it was raised in.
     store.dispose(cid, author="alice", verdict="applied", reason="landed later")
     assert store.fold().comments[cid].verdict == "applied"

@@ -125,13 +125,48 @@ def test_heading_text_is_offset_past_the_hashes():
     text = "## Section two\n"
     found = exactness(text)
     assert [(r.start, r.text) for r in found] == [(3, "Section two")]
-    assert "<h2>" in render(text)
+    assert '<h2 id="md-section-two">' in render(text)
 
 
 def test_a_closing_run_of_hashes_is_decoration():
     text = "## Section ##\n"
     found = exactness(text)
     assert [(r.start, r.text) for r in found] == [(3, "Section")]
+
+
+def test_heading_hashes_in_words_survive_and_ids_are_unique():
+    html = render("## C#\n\n## 반복 제목\n\n## 반복 제목\n\n## 반복 제목-1\n")
+    assert '>C#</span>' in html
+    assert 'id="md-c"' in html
+    assert 'id="md-반복-제목"' in html
+    assert 'id="md-반복-제목-1"' in html
+    assert 'id="md-반복-제목-1-1"' in html
+
+
+def test_heading_links_match_namespaced_ids():
+    html = render("[jump](#intro)\n\n## Intro\n\n## threads\n")
+    assert 'href="#md-intro"' in html and 'id="md-intro"' in html
+    assert 'id="md-threads"' in html and 'id="threads"' not in html
+
+
+def test_reference_links_and_images_keep_label_offsets():
+    text = '[설명][REF]\n\n[ref][] and [ref]\n\n![그림][img]\n\n[ref]: <https://example.com/a_(b)> "title"\n[img]: diagram.png\n'
+    html = render(text)
+    assert html.count('href="https://example.com/a_(b)"') == 3
+    assert '<img src="diagram.png"' in html
+    assert '[ref]:' not in html
+    assert exactness(text)
+
+
+def test_reference_definitions_in_code_do_not_become_links():
+    text = '```md\n[ref]: https://example.com\n```\n\n[label][ref]\n'
+    assert '<a ' not in render(text)
+    assert exactness(text)
+
+
+def test_reference_links_reject_unsafe_targets():
+    html = render('[label][ref]\n\n[ref]: javascript:alert(1)\n')
+    assert 'href=""' in html and 'href="javascript:' not in html
 
 
 def test_blockquote_content_is_offset_past_the_marker():
@@ -361,7 +396,7 @@ def test_a_data_url_is_refused_too():
 
 def test_relative_and_http_links_are_kept():
     assert 'href="SPEC.md"' in render("[spec](SPEC.md)\n")
-    assert 'href="#section"' in render("[here](#section)\n")
+    assert 'href="#md-section"' in render("[here](#section)\n")
     assert 'href="https://example.com"' in render("[site](https://example.com)\n")
     assert 'href="mailto:a@b.c"' in render("<mailto:a@b.c>\n")
 

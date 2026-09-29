@@ -152,6 +152,9 @@
   #doc { padding: 18px 22px 60vh; min-width: 0; font-size: var(--read); }
   #doc h1, #doc h2, #doc h3, #doc h4 { line-height: 1.3; margin: 1.4em 0 .5em; }
   #doc h1 { font-size: 1.6em; } #doc h2 { font-size: 1.3em; } #doc h3 { font-size: 1.1em; }
+  #doc :is(h1, h2, h3, h4, h5, h6) { scroll-margin-top: 6rem; }
+  #doc .outline { margin-bottom: 1em; font-size: .9em; }
+  #doc .outline a { display: block; }
   #doc pre {
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
     padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: .87em;
@@ -160,6 +163,13 @@
   #doc th, #doc td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
   #doc blockquote { margin: 1em 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--dim); }
   #doc img { max-width: 100%; height: auto; }
+  .htmlpreview { display: block; margin: .7em 0 1.2em; }
+  .htmlpreview iframe {
+    display: block; width: 100%; height: 65vh; min-height: 320px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  }
+  .htmlpreview.expanded iframe { height: 90vh; }
+  .htmlpreview .previewnote { display: block; color: var(--dim); font-size: .85em; }
   #doc code { font-family: var(--mono); font-size: .9em; background: var(--panel); padding: 1px 4px; border-radius: 3px; }
   #doc pre code { background: none; padding: 0; }
   /* A ```mermaid fence is a picture its author drew in text. The picture is what
@@ -333,18 +343,21 @@ const $ = (id) => document.getElementById(id);
 // `loadView`).
 const state = {
   data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false,
-  reply: { open: null, drafts: {} }, view: null,
+  reply: { open: null, drafts: {} }, view: null, editBasis: null,
 };
 
 // -- transport ------------------------------------------------------------
 
-async function api(path, body) {
+async function api(path, body, params = {}) {
+  if (body !== undefined && ["/api/comment", "/api/suggestion", "/api/round"].includes(path)) {
+    body = { ...viewBasis(), ...body };
+  }
   const options = {
     headers: { "X-Specround-Token": TOKEN, "Content-Type": "application/json" },
     method: body === undefined ? "GET" : "POST",
   };
   if (body !== undefined) options.body = JSON.stringify(body);
-  const query = new URLSearchParams({ t: TOKEN });
+  const query = new URLSearchParams({ ...params, t: TOKEN });
   if (state.doc) query.set("doc", state.doc);
   const response = await fetch(path + "?" + query.toString(), options);
   const text = await response.text();
@@ -387,28 +400,31 @@ async function act(body, path) {
 
 function holderOf(node) {
   const element = node && node.nodeType === 3 ? node.parentElement : node;
+  if (element && element.closest && element.closest(".caret")) return null;
   return element && element.closest ? element.closest("[data-s]") : null;
 }
 
 function offsetIn(holder, node, offset) {
-  if (node === holder || node.nodeType !== 3) {
-    // A boundary landed on the element itself; the honest reading is its edge.
-    return offset === 0 ? 0 : holder.textContent.length;
-  }
-  let seen = 0;
-  const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
-  let current;
-  while ((current = walker.nextNode())) {
-    if (current === node) return seen + offset;
-    seen += current.nodeValue.length;
-  }
-  return seen;
+  const range = document.createRange();
+  range.setStart(holder, 0);
+  range.setEnd(node, offset);
+  const prefix = range.cloneContents();
+  prefix.querySelectorAll(".caret").forEach((caret) => caret.remove());
+  return codepointLength(prefix.textContent);
 }
 
 function textIn(space) {
   // The text a span's offsets count in. One lookup for every converter below, so
   // that two of them cannot disagree about which document they are measuring.
   return (space === "base" ? state.data.base : state.data.live) || "";
+}
+
+function viewBasis() {
+  return {
+    expected_round: state.data?.round?.id ?? null,
+    expected_base: state.data?.round?.base ?? null,
+    expected_revision: state.data?.live_digest ?? null,
+  };
 }
 
 function selectedSpan() {
@@ -424,7 +440,7 @@ function selectedSpan() {
   const start = Number(head.dataset.s) + offsetIn(head, range.startContainer, range.startOffset);
   const end = Number(tail.dataset.s) + offsetIn(tail, range.endContainer, range.endOffset);
   if (end <= start) return null;
-  return { space, start, end, quote: textIn(space).slice(start, end) };
+  return { space, start, end, quote: sliceText(textIn(space), start, end) };
 }
 
 function commentOnLine(space, start, text) {
@@ -449,14 +465,16 @@ function rawLines(text) {
   // is real: its gutter is where a reviewer says something belongs at the end.
   const out = [];
   let at = 0;
-  for (;;) {
-    const stop = text.indexOf("\n", at);
-    const cut = stop === -1 ? text.length : stop;
-    out.push({ start: at, text: text.slice(at, cut) });
-    if (stop === -1) return out;
-    at = stop + 1;
+  for (const line of text.split("\n")) {
+    out.push({ start: at, text: line });
+    at += codepointLength(line) + 1;
   }
+  return out;
 }
+
+// The ledger counts Unicode codepoints, while DOM Range offsets count UTF-16.
+function codepointLength(text) { return Array.from(text).length; }
+function sliceText(text, start, end) { return Array.from(text).slice(start, end).join(""); }
 
 function spanOfRun(space, start, text, source) {
   // A line is a whole run: `lineRow` gives every line exactly one `data-s`
@@ -465,8 +483,8 @@ function spanOfRun(space, start, text, source) {
   // `selectedSpan` does the same — the offsets are the claim, and the text on
   // screen is only ever a copy of what they name. An empty line therefore yields
   // a zero-width span, which is an insertion point (§5) and not a mistake.
-  const end = start + text.length;
-  return { space, start, end, quote: source.slice(start, end) };
+  const end = start + codepointLength(text);
+  return { space, start, end, quote: sliceText(source, start, end) };
 }
 
 function modeClass(mode, commentable) {
@@ -529,10 +547,13 @@ function roundAction(data) {
   if (!data || !data.reading) return null;
   const counts = data.counts || {};
   if (data.round && data.round.status === "open") {
-    return counts.undisposed
-      ? { label: "end this round — leaves " + counts.undisposed + " undisposed",
-          body: { open: false, allow_undisposed: true } }
-      : { label: "end this round", body: { open: false } };
+    const undecided = data.round.undisposed_count ?? counts.undisposed ?? 0;
+    const unresolved = data.round.unresolved_thread_count ?? 0;
+    const pending = [];
+    if (undecided) pending.push(undecided + " undisposed");
+    if (unresolved) pending.push(unresolved + " unresolved threads");
+    return { label: "end this round" + (pending.length ? " — " + pending.join(", ") : ""),
+             body: { open: false } };
   }
   if (data.live === null || data.live === undefined) return null;
   return {
@@ -845,7 +866,24 @@ function actionFocus(path, result) {
 }
 
 function actionRedraw(path) {
-  return path !== "/api/comment";
+  return path === "/api/round";
+}
+
+function previewRef(ref) {
+  if (!ref || ref !== ref.trim() || /^[\\/]|^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(ref)) return null;
+  try {
+    const path = decodeURIComponent(ref.split(/[?#]/)[0]);
+    return /\.html?$/i.test(path) && !/^[\\/]/.test(path) ? path : null;
+  } catch (_) { return null; }
+}
+
+function previewDocument(html) {
+  // No server token is included in the frame URL or content. The frame has an
+  // opaque origin, and this policy precedes all author-provided resource tags.
+  const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    + "img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+  return '<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="'
+    + policy + '"><meta name="referrer" content="no-referrer">' + html;
 }
 
 // -- end of the pure part -------------------------------------------------
@@ -862,18 +900,20 @@ function shownComments() {
 // -- painting anchors ------------------------------------------------------
 
 function paint(container, comments) {
+  // Repainting reuses text runs: generated insertion carets are not source text.
+  container.querySelectorAll(".caret").forEach((element) => element.remove());
   const anchored = paintable(comments);
   container.querySelectorAll("[data-s]").forEach((element) => {
     if ((element.dataset.space || "base") !== "base") return;
     const start = Number(element.dataset.s);
-    const text = element.textContent;
+    const text = Array.from(element.textContent);
     const end = start + text.length;
     const spans = anchored.filter((c) => c.current_anchor.start < end && c.current_anchor.end > start);
     const points = anchored.filter(
       (c) => c.current_anchor.start === c.current_anchor.end
           && c.current_anchor.start >= start && c.current_anchor.start <= end
     );
-    if (!spans.length && !points.length) return;
+    if (!spans.length && !points.length) { element.textContent = text.join(""); return; }
     const clamp = (at) => Math.max(0, Math.min(text.length, at - start));
     const cuts = new Set([0, text.length]);
     spans.forEach((c) => { cuts.add(clamp(c.current_anchor.start)); cuts.add(clamp(c.current_anchor.end)); });
@@ -886,7 +926,7 @@ function paint(container, comments) {
       caretsAt(at).forEach((c) => fragment.appendChild(caret(c)));
       const next = ordered[index + 1];
       if (next === undefined || next === at) continue;
-      const piece = text.slice(at, next);
+      const piece = text.slice(at, next).join("");
       const covering = spans.filter(
         (c) => clamp(c.current_anchor.start) <= at && clamp(c.current_anchor.end) >= next
       );
@@ -924,6 +964,79 @@ function drawRender(host, data) {
   host.innerHTML = data.render;
   linkAssets(host, data);
   drawDiagrams(host);
+  drawPreviews(host);
+  drawOutline(host);
+}
+
+function drawOutline(host) {
+  const headings = [...host.querySelectorAll("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]")];
+  if (headings.length < 2) return;
+  const outline = document.createElement("details");
+  outline.className = "outline";
+  const title = document.createElement("summary");
+  title.textContent = "contents";
+  outline.appendChild(title);
+  const nav = document.createElement("nav");
+  nav.setAttribute("aria-label", "table of contents");
+  const baseLevel = Math.min(...headings.map((heading) => Number(heading.tagName[1])));
+  headings.forEach((heading) => {
+    const link = document.createElement("a");
+    link.href = "#" + heading.id;
+    link.textContent = heading.textContent;
+    link.style.paddingLeft = (Number(heading.tagName[1]) - baseLevel) + "em";
+    nav.appendChild(link);
+  });
+  outline.appendChild(nav);
+  host.prepend(outline);
+}
+
+const PREVIEW_ROUTE = "/api/preview";
+const previewUrls = new Set();
+
+function clearPreviews() {
+  previewUrls.forEach((url) => URL.revokeObjectURL(url));
+  previewUrls.clear();
+}
+
+function drawPreviews(host) {
+  host.querySelectorAll("a[href]").forEach(async (link) => {
+    const ref = previewRef(link.getAttribute("href"));
+    if (!ref) return;
+    const box = document.createElement("span");
+    box.className = "htmlpreview";
+    const frame = document.createElement("iframe");
+    frame.title = link.textContent || ref;
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.referrerPolicy = "no-referrer";
+    const note = document.createElement("span");
+    note.className = "previewnote";
+    note.textContent = "loading HTML preview…";
+    box.append(frame, note);
+    box.appendChild(button("expand preview", () => {
+      const expanded = box.classList.toggle("expanded");
+      const toggle = box.querySelector("button");
+      toggle.textContent = expanded ? "shrink preview" : "expand preview";
+      toggle.setAttribute("aria-expanded", String(expanded));
+    }));
+    box.querySelector("button").setAttribute("aria-expanded", "false");
+    link.after(box);
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      box.scrollIntoView({ block: "nearest" });
+    });
+    try {
+      const result = await api(PREVIEW_ROUTE, undefined, { path: ref });
+      if (!box.isConnected) return;
+      const url = URL.createObjectURL(new Blob([previewDocument(result.html)], { type: "text/html" }));
+      previewUrls.add(url);
+      frame.src = url;
+      note.textContent = "HTML preview · comment on the link text above · external resources disabled";
+    } catch (error) {
+      if (!box.isConnected) return;
+      frame.remove();
+      note.textContent = "HTML preview unavailable — " + error.message;
+    }
+  });
 }
 
 // -- diagrams --------------------------------------------------------------
@@ -1123,6 +1236,7 @@ function draw() {
   // Same race `renderControls` names: a mode button is clickable before the first
   // state has arrived.
   if (!data) return;
+  clearPreviews();
   // Gated on having a text to show, not on having a round — see `readable`. With
   // no round there is nothing to write and still something to read, and this is
   // where the second half used to be thrown away.
@@ -1335,7 +1449,7 @@ function card(comment) {
   // recorded by a slip could only be undone from a shell — and a gate you can
   // only pass somewhere else is a gate people route around.
   actions.appendChild(button(comment.settled ? "supersede" : "dispose", () => disposeBox(comment)));
-  actions.appendChild(button(comment.resolved ? "reopen" : "resolve", () => threadBox(comment)));
+  actions.appendChild(button(comment.resolved ? "reopen" : comment.settled ? "resolve" : "dispose & resolve", () => threadBox(comment)));
   element.appendChild(actions);
   element.addEventListener("click", () => focus(comment.id, "card"));
   return element;
@@ -1353,6 +1467,31 @@ function button(label, onClick, primary) {
 
 function clearComposer() {
   $("composer").textContent = "";
+}
+
+function roundBox(action) {
+  if (action.body.open) return act(action.body, "/api/round");
+  const round = state.data.round;
+  if (!round.undisposed_count && !round.unresolved_thread_count) return act(action.body, "/api/round");
+  const box = panel("finish the review before closing, or explicitly leave work for later");
+  const body = { open: false, ...viewBasis() };
+  for (const [count, key, label] of [
+    [round.undisposed_count, "allow_undisposed", "leave undisposed comments"],
+    [round.unresolved_thread_count, "allow_unresolved", "leave unresolved threads"],
+  ]) {
+    if (!count) continue;
+    const row = document.createElement("label");
+    row.className = "check";
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.addEventListener("change", () => { body[key] = check.checked; });
+    row.append(check, document.createTextNode(label + " (" + count + ")"));
+    box.appendChild(row);
+  }
+  box.appendChild(button("close round", async () => {
+    if (await act(body, "/api/round")) clearComposer();
+  }, true));
+  box.appendChild(button("cancel", clearComposer));
 }
 
 function panel(title) {
@@ -1376,6 +1515,7 @@ function panel(title) {
 }
 
 function commentBox(span) {
+  const basis = viewBasis();
   const box = panel(span ? "comment on the selection" : "comment on the whole document");
   if (span) {
     const quote = document.createElement("div");
@@ -1395,8 +1535,8 @@ function commentBox(span) {
   const actions = document.createElement("div");
   actions.className = "acts";
   actions.appendChild(button("add comment", async () => {
-    const body = { body: area.value, author: $("author").value, whole: !span };
-    if (span) Object.assign(body, { space: span.space, start: span.start, end: span.end });
+    const body = { ...basis, body: area.value, author: $("author").value, whole: !span };
+    if (span) Object.assign(body, { space: span.space, start: span.start, end: span.end, quote: span.quote });
     if (await act(body, "/api/comment")) clearComposer();
   }, true));
   actions.appendChild(button("cancel", clearComposer));
@@ -1473,7 +1613,7 @@ async function sendReply(comment, body) {
   state.reply = replyAfter(state.reply, { kind: "type", id: comment.id, text: body });
 }
 
-function disposeBox(comment) {
+function disposeBox(comment, finish = false) {
   // On a settled comment this box overturns a decision instead of making one,
   // and the ledger wants that said out loud (I5). The flag is derived from the
   // state the page is already showing rather than offered as a checkbox: the
@@ -1499,6 +1639,17 @@ function disposeBox(comment) {
   row.className = "row";
   row.appendChild(choice);
   box.appendChild(row);
+  const finishLabel = document.createElement("label");
+  finishLabel.className = "check";
+  const finishBox = document.createElement("input");
+  finishBox.type = "checkbox";
+  finishBox.checked = finish;
+  finishLabel.append(finishBox, document.createTextNode("resolve after recording the final verdict"));
+  box.appendChild(finishLabel);
+  choice.addEventListener("change", () => {
+    finishBox.disabled = choice.value === "deferred";
+    if (finishBox.disabled) finishBox.checked = false;
+  });
   const area = document.createElement("textarea");
   area.placeholder = "the reason — required for every verdict";
   box.appendChild(area);
@@ -1508,6 +1659,7 @@ function disposeBox(comment) {
     const body = {
       target: comment.id, verdict: choice.value, reason: area.value,
       author: $("author").value, supersede: overturning,
+      resolve: finishBox.checked, actor: $("actor").value,
     };
     if (await act(body, "/api/dispose")) clearComposer();
   }, true));
@@ -1518,6 +1670,7 @@ function disposeBox(comment) {
 
 function threadBox(comment) {
   const closing = !comment.resolved;
+  if (closing && !comment.settled) return disposeBox(comment, true);
   const box = panel((closing ? "resolve " : "reopen ") + comment.id);
   const area = document.createElement("textarea");
   area.placeholder = closing ? "a closing note (optional)" : "why it goes back — required";
@@ -1599,6 +1752,7 @@ function markFocus() {
 // -- raw editing → suggestion (G8) ---------------------------------------
 
 function startEditing() {
+  state.editBasis = viewBasis();
   state.editing = true;
   $("edittext").value = state.data.base || "";
   $("editnote").textContent = "editing the text this round froze — submitting records a patch, "
@@ -1741,6 +1895,7 @@ function setMode(mode) {
 function renderControls() {
   // A mode button is clickable before the first state has arrived.
   if (!state.data) return;
+  const changesOnly = $("changesonly")?.checked ?? false;
   const host = $("doc");
   const existing = $("modebar");
   if (existing) existing.remove();
@@ -1753,6 +1908,7 @@ function renderControls() {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.id = "changesonly";
+    box.checked = changesOnly;
     box.addEventListener("change", draw);
     label.appendChild(box);
     label.appendChild(document.createTextNode(" changed lines only"));
@@ -1776,7 +1932,7 @@ function renderControls() {
   // sits beside the commenting controls rather than in the header, because it
   // is an act and the header states facts.
   const round_act = roundAction(state.data);
-  if (round_act) bar.appendChild(button(round_act.label, () => act(round_act.body, "/api/round")));
+  if (round_act) bar.appendChild(button(round_act.label, () => roundBox(round_act)));
   if (state.data.blocked) {
     const note = document.createElement("span");
     note.className = "meta";
@@ -1798,6 +1954,12 @@ function placeFloat() {
 
 async function load({ redrawDocument = true } = {}) {
   const data = await api("/api/state");
+  const previous = state.data;
+  // A different round/file may arrive while the comment request is in flight.
+  // Reuse the DOM only while it still represents the text and asset directory.
+  if (!previous || previous.base !== data.base || previous.live !== data.live
+      || previous.reading !== data.reading || previous.doc !== data.doc
+      || previous.workspace?.selected !== data.workspace?.selected) redrawDocument = true;
   state.data = data;
   // From here on the page names the document explicitly, including the first
   // load, where the server chose it. The header shows the workspace's name for
@@ -1829,7 +1991,8 @@ async function load({ redrawDocument = true } = {}) {
   applyMode(modeFor(state.mode, data));
   renderControls();
   const host = $("doc");
-  if (redrawDocument) draw(); else paint(host, shownComments());
+  if (redrawDocument) draw();
+  else { paint(host, shownComments()); markFocus(); }
   drawThreads();
 }
 
@@ -1861,7 +2024,7 @@ $("float").addEventListener("mousedown", (event) => {
 });
 document.addEventListener("selectionchange", placeFloat);
 $("propose").addEventListener("click", async () => {
-  const body = { text: $("edittext").value, body: $("editwhy").value, author: $("author").value };
+  const body = { ...state.editBasis, text: $("edittext").value, body: $("editwhy").value, author: $("author").value };
   if (await act(body, "/api/suggestion")) { stopEditing(); $("editwhy").value = ""; }
 });
 $("editcancel").addEventListener("click", stopEditing);

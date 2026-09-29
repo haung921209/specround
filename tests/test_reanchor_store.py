@@ -253,7 +253,7 @@ def test_the_carry_reaches_a_comment_whose_round_is_closed(
 ):
     """A comment outlives its round; the revision that moves it usually lands later."""
     store.dispose(anchored_comment, author="alice", verdict="deferred", reason="next round")
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     doc.write_text("> Draft.\n\n" + doc_text, encoding="utf-8")
     report = carry(store, doc)
     assert report.rebound == [anchored_comment]

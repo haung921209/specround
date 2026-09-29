@@ -195,7 +195,15 @@ round in a set is an ordinary round to every invariant here, and the verbs that
 close or list a set read the membership off the record. The paths are absolute,
 so the note is machine-local — which is what `ext` may be and a field may not.
 
-All four are promotion candidates, and candidates is all they are — promotion
+New round-close writers also record
+`ext.thread_close = {"unresolved": [comment IDs]}` as an audit of the threads
+explicitly left open. This is separate from the v0 top-level `unresolved`
+(undisposed IDs). The writer checks both completion axes and rechecks the
+ledger sequence under the append lock; a concurrent change asks the caller to
+read status again. Replay does not impose the new completion policy on old
+round-close events. It continues to preserve `ext` without interpreting it.
+
+These extensions are promotion candidates, and candidates is all they are — promotion
 bumps major.
 
 **Event kinds are closed in the same sense** — an unknown `type` is refused. So
@@ -456,14 +464,17 @@ the reading side, "an agent judged this discussion over" and "a person did" are
 different facts that lead to different next actions, and the `agent:` prefix in
 the author string is a convention a reader cannot check (§3).
 
-The round need not be open. Threads outlive rounds, and a conversation usually
-wraps up after the round is closed.
+The round need not be open. Explicitly retained threads may outlive rounds.
 
 **Resolve is not a disposition.** A disposition (§`disposition`) is what was
 done about one comment, and resolve is whether that conversation is over —
-different axes (§7). So a thread that is resolved with no disposition (simply
-agreed) is normal, and so is a thread that is settled but still open (applied,
-discussion continuing). **`round.close`'s undisposed count does not look at
+different axes (§7). Current writers require a final verdict before resolve:
+`applied`, `rejected` or `answered`. To defer a completed thread, reopen it first.
+The write is checked against the ledger sequence under lock, so a concurrent
+change cannot bypass that precondition. Old events with a resolution but no
+final verdict still replay; `round status.incomplete_resolutions` identifies
+them without reopening them. A settled thread may remain open while discussion
+continues. **`round.close`'s undisposed count does not look at
 resolve** — if it did, closing a thread would have become a way to walk past an
 undisposed comment quietly (exactly what I6 prevents).
 
@@ -505,7 +516,10 @@ The text it is checked against is **the snapshot that anchor names**. For
 `comment.add` and `suggestion.add` that is the round's base (the text the
 reviewer read); for `anchor.reanchor` it is that event's `base`.
 
-Offsets are in **characters**, not bytes, and a snapshot preserves the original
+Offsets are in **Unicode codepoints**, not bytes, UTF-16 code units or grapheme
+clusters. Browser selections convert DOM UTF-16 offsets at the boundary; raw
+lines and rendered marks use the same codepoint convention as the ledger.
+A snapshot preserves the original
 bytes with no normalization (CRLF and a trailing newline included) — touch the
 snapshot and the anchors shift quietly.
 
@@ -729,10 +743,10 @@ the command when it was answering a different question. The count was right. The
 word was borrowed.
 
 Nothing kept the old spelling as an alias. `Comment.unresolved` and the wire's
-`unresolved` key were removed rather than redefined, and `--allow-unresolved`
-and `comments --unresolved` are refused rather than accepted — a reader still
-using them gets an error it can see, instead of a number that quietly changed
-which question it answers. There is **one exception, and it is on disk**: the
+`unresolved` key were removed rather than redefined; `comments --unresolved`
+is still refused. The current `round close --allow-unresolved` flag explicitly
+permits retaining open **threads**, separately from `--allow-undisposed`.
+There is **one historical spelling on disk**: the
 `round.close` record's own `unresolved` field (§4). Within a major the field set
 is closed and an unknown key is refused whole (§2), so renaming it would not be
 a rename — every ledger that used it would stop being readable. It keeps its v0

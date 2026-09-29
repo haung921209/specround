@@ -56,6 +56,9 @@ _ITEM = re.compile(r"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(.*)$")
 _DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
 _AUTOLINK = re.compile(r"^<([a-zA-Z][a-zA-Z0-9+.-]*:[^<>\s]+)>")
 _SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*):")
+_REFERENCE_DEFINITION = re.compile(
+    r'''^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^<>\n]+)>|(\S+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$'''
+)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -277,7 +280,20 @@ def _closing_run(text: str, ticks: str, at: int) -> int:
 def render(text: str) -> str:
     """Render ``text`` to HTML whose text runs carry their document offsets."""
     renderer = _Renderer()
-    renderer.blocks(lines_of(text))
+    lines = lines_of(text)
+    code = iter(code_spans(text))
+    span = next(code, None)
+    for line in lines:
+        while span is not None and span[1] <= line.start:
+            span = next(code, None)
+        if span is not None and span[0] <= line.start < span[1]:
+            continue
+        definition = _REFERENCE_DEFINITION.match(line.text)
+        if definition:
+            label = " ".join(definition[1].split()).casefold()
+            renderer.references.setdefault(label, definition[2] or definition[3])
+            renderer.definitions.add(line.start)
+    renderer.blocks(lines)
     return "".join(renderer.out)
 
 
@@ -299,6 +315,9 @@ class _Renderer:
 
     def __init__(self) -> None:
         self.out: list[str] = []
+        self.references: dict[str, str] = {}
+        self.definitions: set[int] = set()
+        self.heading_ids: set[str] = set()
 
     # -- text ------------------------------------------------------------
 
@@ -315,7 +334,7 @@ class _Renderer:
         total = len(lines)
         while index < total:
             line = lines[index].text
-            if not line.strip():
+            if not line.strip() or lines[index].start in self.definitions:
                 index += 1
             elif _FENCE.match(line):
                 index = self._fence(lines, index)
@@ -362,10 +381,21 @@ class _Renderer:
         body = match.group(2).rstrip()
         # A closing run of #'s is decoration, not content — drop it from the run
         # rather than from the offset, which stays where the text starts.
-        trimmed = body.rstrip("#").rstrip() if body.endswith("#") else body
+        trimmed = re.sub(r"[ \t]+#+$", "", body)
         chunk = Chunk([piece.cut(match.start(2), match.start(2) + len(trimmed))])
+        opening = len(self.out)
         self.out.append(f"<h{level}>")
         self._inline(chunk, 0, len(chunk))
+        plain = "".join(run.text for run in runs_of("".join(self.out[opening + 1 :])))
+        slug = re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", plain.lower()).strip()) or "section"
+        unique = slug
+        number = 1
+        while unique in self.heading_ids:
+            unique = f"{slug}-{number}"
+            number += 1
+        self.heading_ids.add(unique)
+        # Keep document-authored IDs separate from the review application's IDs.
+        self.out[opening] = f'<h{level} id="md-{_attr(unique)}">'
         self.out.append(f"</h{level}>")
         return index + 1
 
@@ -401,7 +431,8 @@ class _Renderer:
     def _starts_block(self, lines: Sequence[Piece], index: int) -> bool:
         line = lines[index].text
         return bool(
-            _FENCE.match(line)
+            lines[index].start in self.definitions
+            or _FENCE.match(line)
             or _HEADING.match(line)
             or _RULE.match(line)
             or _QUOTE.match(line)
@@ -597,6 +628,8 @@ class _Renderer:
         if found is None:
             return 0
         label, close, href = found
+        if href.startswith("#"):
+            href = "#md-" + href[1:]
         self.text(chunk, pending, at)
         self.out.append(f'<a href="{_attr(safe_href(href))}" rel="noreferrer">')
         self._inline(chunk, at + 1, label)
@@ -650,8 +683,18 @@ class _Renderer:
                 if depth == 0:
                     label = index
                     break
-        if label == -1 or label + 1 >= high or text[label + 1] != "(":
+        if label == -1:
             return None
+        if label + 1 >= high or text[label + 1] != "(":
+            close = label
+            name = text[at + 1 : label]
+            if label + 1 < high and text[label + 1] == "[":
+                close = text.find("]", label + 2, high)
+                if close == -1:
+                    return None
+                name = text[label + 2 : close] or name
+            target = self.references.get(" ".join(name.split()).casefold())
+            return (label, close, target) if target is not None else None
         close = text.find(")", label + 2, high)
         if close == -1:
             return None

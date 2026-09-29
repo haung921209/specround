@@ -258,7 +258,8 @@ def round_json(state: State, round_: Round) -> dict[str, Any]:
     ``undisposed_count`` is what ``round.close`` has to account for (I6);
     ``unresolved_thread_count`` is how much of the conversation this round
     started is still going. A round can close with the first at zero and the
-    second not, which is ordinary — the fix landed and the talk carries on.
+    second not when the caller explicitly leaves threads for later. Older
+    histories may also contain such closes without the new writer gate.
     """
     comments = state.comments_in(round_.id)
     return {

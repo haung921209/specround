@@ -141,6 +141,8 @@ def run_full_loop(doc: Path, clock) -> ReviewStore:
     store.reply(comment_id, author="alice", body="agreed")
     store.dispose(comment_id, author="alice", verdict="applied", reason="raised to 60")
     store.dispose(suggestion_id, author="alice", verdict="applied", reason="patch taken")
+    store.resolve(comment_id, author="alice", actor="human")
+    store.resolve(suggestion_id, author="alice", actor="human")
     store.close_round(round_id, author="alice")
     return store
 
@@ -236,7 +238,7 @@ def test_the_ledger_is_readable_as_plain_text(tmp_path, clock, no_subprocess):
 
     # G4: an agent with no library can cat the log and understand it.
     lines = (central_store_dir(doc) / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 7
+    assert len(lines) == 9
     assert '"type":"round.open"' in lines[0]
     assert lines[-1].startswith('{"author":"alice"')
     assert "sha256:" in lines[0]
@@ -249,7 +251,7 @@ def test_a_document_outside_any_home_or_repository_works(tmp_path, clock, no_sub
     doc = workdir / "notes.md"
     doc.write_text(DOC, encoding="utf-8")
     store = run_full_loop(doc, clock)
-    assert store.fold().count == 7
+    assert store.fold().count == 9
 
 
 def test_sys_modules_never_gains_a_git_library(tmp_path, clock, no_subprocess):

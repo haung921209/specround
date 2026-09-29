@@ -101,19 +101,24 @@ def a_revision(run, doc, text, *, author="agent:reanchor") -> dict:
     only act that moves comments into one. Writing the file and calling
     ``reanchor`` is refused now, and is what these tests used to do.
     """
-    run("round", "close", doc, "--author", "alice", "--allow-undisposed")
+    result = run("round", "close", doc, "--author", "alice", "--allow-undisposed", "--allow-unresolved")
+    assert result.code == 0, result.err
     doc.write_text(text, encoding="utf-8")
     result = run("round", "open", doc, "--author", author, "--json")
     assert result.code == 0, result.err
     return result.json["carried"]
 
 
-def a_comment(run, doc, *, quote="30 seconds", body="too short for the proxy") -> str:
+def a_comment(run, doc, *, quote="30 seconds", body="too short for the proxy", settled=False) -> str:
     argv = ["comment", doc, "--author", "bob", "--body", body, "--json"]
     if quote is not None:
         argv += ["--quote", quote]
     result = run(*argv)
     assert result.code == 0, result.err
+    if settled:
+        done = run("dispose", doc, "--comment", result.json["comment"]["id"],
+                   "--as", "answered", "--why", "test conversation answered")
+        assert done.code == 0, done.err
     return result.json["comment"]["id"]
 
 
@@ -214,7 +219,7 @@ def test_a_round_with_work_left_does_not_claim_to_be_finished(run, doc, opened):
     assert "nothing outstanding" not in run("round", "status", doc).out
 
 
-def test_resolving_a_thread_clears_the_thread_axis_and_not_the_other(run, doc, opened):
+def test_legacy_resolution_keeps_both_axes_readable(run, doc, opened):
     """The report that named this item: resolve the talk, and the count stays.
 
     It was right to stay — the comment has no verdict, and ``round.close`` has to
@@ -224,7 +229,8 @@ def test_resolving_a_thread_clears_the_thread_axis_and_not_the_other(run, doc, o
     asks whether the conversation is over.
     """
     comment = a_comment(run, doc)
-    run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "agreed in chat")
+    ReviewStore.for_document(doc).ledger.append({"type": "thread.resolve", "target": comment,
+                                               "author": "old-client", "actor": "human"})
 
     payload = run("round", "status", doc, "--json").json
     assert payload["undisposed"] == [comment]  # no verdict — close must still declare it
@@ -250,7 +256,8 @@ def test_round_status_prints_both_axes_in_words_that_do_not_collide(run, doc, op
     """A reader who ran ``resolve`` must be able to see which number it moved."""
     resolved_only = a_comment(run, doc)
     a_comment(run, doc, quote=None, body="retry policy is missing")
-    run("resolve", doc, "--comment", resolved_only, "--author", "alice")
+    ReviewStore.for_document(doc).ledger.append({"type": "thread.resolve", "target": resolved_only,
+                                               "author": "old-client", "actor": "human"})
 
     result = run("round", "status", doc)
     assert result.code == 0
@@ -500,7 +507,7 @@ def test_a_deferred_comment_is_completed_with_no_flag(run, doc, opened):
     comment = a_comment(run, doc, quote=None, body="retry policy is missing")
     assert run("dispose", doc, "--comment", comment, "--as", "deferred",
                "--why", "queued", "--author", "alice").code == 0
-    assert run("round", "close", doc, "--author", "alice", "--allow-undisposed").code == 0
+    assert run("round", "close", doc, "--author", "alice", "--allow-undisposed", "--allow-unresolved").code == 0
 
     done = run("dispose", doc, "--comment", comment, "--as", "applied",
                "--why", "handled off the queue", "--author", "alice", "--json")
@@ -563,7 +570,7 @@ def test_dispose_takes_a_prefix_of_the_id(run, doc, opened):
 
 def test_round_close_records_what_it_left_open(run, doc, opened):
     comment = a_comment(run, doc)
-    result = run("round", "close", doc, "--author", "alice", "--allow-undisposed",
+    result = run("round", "close", doc, "--author", "alice", "--allow-undisposed", "--allow-unresolved",
                  "--note", "retries move to round 2", "--json")
     assert result.code == 0
     assert result.json["undisposed"] == [comment]
@@ -572,6 +579,80 @@ def test_round_close_records_what_it_left_open(run, doc, opened):
 
 
 # -- threads: reply, resolve, reopen (G4 × G11) --------------------------
+
+
+def test_disposed_threads_must_be_resolved_before_closing(run, doc, opened):
+    comment = a_comment(run, doc)
+    done = run("dispose", doc, "--comment", comment, "--as", "applied", "--why", "fixed", "--json")
+    assert done.code == 0
+    assert done.json["next_actions"] == [{"verb": "resolve", "comment": comment, "when": "conversation_complete"}]
+    refused = run("round", "close", doc)
+    assert refused.code == 3
+    assert comment in refused.err and "--allow-unresolved" in refused.err
+    assert run("round", "status", doc, "--json").json["open"] == [opened]
+    assert run("resolve", doc, "--comment", comment).code == 0
+    assert run("round", "close", doc).code == 0
+
+
+def test_dispose_can_explicitly_finish_the_thread(run, doc, opened):
+    comment = a_comment(run, doc)
+    done = run("dispose", doc, "--comment", comment, "--as", "answered", "--why", "explained",
+               "--resolve", "--actor", "agent", "--json")
+    assert done.code == 0, done.err
+    assert done.json["comment"]["resolved"] is True
+    assert done.json["comment"]["resolutions"][-1]["actor"] == "agent"
+    assert done.json["next_actions"] == []
+    assert run("round", "close", doc).code == 0
+
+
+def test_deferred_work_is_not_resolved_by_the_completion_shortcut(run, doc, opened):
+    comment = a_comment(run, doc)
+    refused = run("dispose", doc, "--comment", comment, "--as", "deferred", "--why", "waiting",
+                  "--resolve")
+    assert refused.code == 2
+    item = run("comments", doc, "--json").json["comments"][0]
+    assert item["verdict"] is None and item["resolved"] is False
+
+
+def test_close_requires_both_explicit_exceptions_and_reports_remaining_work(run, doc, opened):
+    comment = a_comment(run, doc)
+    assert run("round", "close", doc, "--allow-undisposed").code == 3
+    closed = run("round", "close", doc, "--allow-undisposed", "--allow-unresolved", "--json")
+    assert closed.code == 0, closed.err
+    assert closed.json["unresolved_threads"] == [comment]
+    assert closed.json["next_actions"] == [{"verb": "dispose", "comment": comment, "when": "final_verdict_decided"}]
+    status = run("round", "status", doc, "--json").json
+    assert status["next_actions"] == closed.json["next_actions"]
+
+
+def test_legacy_incomplete_resolutions_are_reported_without_reopening(run, doc, opened):
+    cid = a_comment(run, doc)
+    store = ReviewStore.for_document(doc)
+    store.ledger.append({"type": "thread.resolve", "target": cid, "author": "old-client", "actor": "agent"})
+    before = store.ledger.count()
+    status = run("round", "status", doc, "--json").json
+    assert status["incomplete_resolutions"] == [cid]
+    assert store.ledger.count() == before and store.fold().comments[cid].resolved
+    assert run("dispose", doc, "--comment", cid, "--as", "answered", "--why", "recorded outcome").code == 0
+    assert run("round", "status", doc, "--json").json["incomplete_resolutions"] == []
+
+
+def test_comment_context_names_snapshot_lines_and_live_mismatch(run, doc, opened):
+    cid = a_comment(run, doc)
+    doc.write_text("Changed on disk.\n", encoding="utf-8")
+    result = run("comments", doc, "--context", "--json")
+    assert result.code == 0, result.err
+    context = result.json["contexts"][cid]
+    assert context["source"] == "snapshot" and context["matches_file"] is False
+    assert context["line_start"] == context["line_end"] == 5
+    assert "Timeouts are 30 seconds." in context["text"]
+    assert result.json["comments"][0]["current_anchor"]["exact"] == "30 seconds"
+
+
+def test_resolve_action_is_conditional_on_finishing_the_conversation(run, doc, opened):
+    cid = a_comment(run, doc)
+    done = run("dispose", doc, "--comment", cid, "--as", "applied", "--why", "changed", "--json")
+    assert done.json["next_actions"] == [{"verb": "resolve", "comment": cid, "when": "conversation_complete"}]
 
 
 def test_a_person_and_an_agent_answer_through_the_same_verb(run, doc, opened):
@@ -614,7 +695,7 @@ def test_a_reply_needs_a_body(run, doc, opened):
 
 def test_replying_to_a_resolved_thread_is_a_state_error(run, doc, opened):
     """3, not 2: the command is fine, the history is what refuses it."""
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     assert run("resolve", doc, "--comment", comment, "--author", "alice").code == 0
     result = run("reply", doc, "--comment", comment, "--author", "bob", "--body", "one more thing")
     assert result.code == 3
@@ -622,7 +703,7 @@ def test_replying_to_a_resolved_thread_is_a_state_error(run, doc, opened):
 
 
 def test_reopening_makes_the_reply_land(run, doc, opened):
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     run("resolve", doc, "--comment", comment, "--author", "alice")
     assert run("reopen", doc, "--comment", comment, "--author", "bob",
                "--why", "it came back in revision 3").code == 0
@@ -632,7 +713,7 @@ def test_reopening_makes_the_reply_land(run, doc, opened):
 
 
 def test_resolving_records_who_and_which_kind(run, doc, opened):
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     result = run("resolve", doc, "--comment", comment, "--author", "agent:reviewer",
                  "--actor", "agent", "--note", "applied upstream", "--json")
     assert result.code == 0
@@ -646,14 +727,14 @@ def test_resolving_records_who_and_which_kind(run, doc, opened):
 
 def test_the_actor_defaults_to_human_rather_than_reading_the_author(run, doc, opened):
     """``agent:`` in a name is a convention; the CLI does not promote it to a fact."""
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     result = run("resolve", doc, "--comment", comment, "--author", "agent:reviewer", "--json")
     assert result.json["comment"]["resolutions"][-1]["actor"] == "human"
 
 
 def test_the_environment_can_name_the_actor(run, doc, opened, monkeypatch):
     monkeypatch.setenv("SPECROUND_ACTOR", "agent")
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     result = run("resolve", doc, "--comment", comment, "--author", "agent:reviewer", "--json")
     assert result.json["comment"]["resolutions"][-1]["actor"] == "agent"
 
@@ -668,7 +749,7 @@ def test_a_bad_actor_in_the_environment_is_a_usage_error(run, doc, opened, monke
 
 def test_resolving_an_already_resolved_thread_succeeds_and_says_nothing_changed(run, doc, opened):
     """I10 reaching the shell: a retry is safe, so an agent can just retry."""
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     run("resolve", doc, "--comment", comment, "--author", "alice")
     result = run("resolve", doc, "--comment", comment, "--author", "carol", "--json")
     assert result.code == 0
@@ -691,15 +772,15 @@ def test_reopening_an_open_thread_succeeds_and_says_nothing_changed(run, doc, op
 
 
 def test_reopening_requires_a_reason(run, doc, opened):
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     run("resolve", doc, "--comment", comment, "--author", "alice")
     assert run("reopen", doc, "--comment", comment, "--author", "bob").code == 2
 
 
-def test_resolving_leaves_the_disposition_axis_alone(run, doc, opened):
+def test_resolving_does_not_invent_a_missing_verdict(run, doc, opened):
     """Closing the talk is not deciding the comment — and round.close still counts it."""
     comment = a_comment(run, doc)
-    run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "agreed in chat")
+    assert run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "agreed in chat").code == 3
     status = run("round", "status", doc, "--json").json
     assert status["undisposed"] == [comment]
     assert run("round", "close", doc, "--author", "alice").code == 3
@@ -709,7 +790,7 @@ def test_a_thread_can_be_closed_after_its_round(run, doc, opened):
     comment = a_comment(run, doc)
     run("dispose", doc, "--comment", comment, "--as", "answered", "--why", "see the reply",
         "--author", "alice")
-    assert run("round", "close", doc, "--author", "alice").code == 0
+    assert run("round", "close", doc, "--author", "alice", "--allow-unresolved").code == 0
     assert run("resolve", doc, "--comment", comment, "--author", "alice").code == 0
 
 
@@ -899,7 +980,7 @@ def test_every_payload_names_its_schema_verb_and_subject(run, doc, opened):
 
 def test_the_comment_object_field_set_is_closed(run, doc, opened):
     comment = a_comment(run, doc)
-    run("dispose", doc, "--comment", comment, "--as", "held", "--why", "later", "--author", "alice")
+    run("dispose", doc, "--comment", comment, "--as", "answered", "--why", "explained", "--author", "alice")
     run("reply", doc, "--comment", comment, "--body", "the proxy caps it", "--author", "alice")
     run("resolve", doc, "--comment", comment, "--author", "alice", "--note", "settled")
     payload = run("comments", doc, "--all", "--json").json["comments"][0]
@@ -947,7 +1028,7 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
 
 
 def test_the_comments_payload_says_which_view_it_is_and_what_it_left_out(run, doc, opened):
-    closed = a_comment(run, doc)
+    closed = a_comment(run, doc, settled=True)
     a_comment(run, doc, quote=None, body="retries are missing")
     run("resolve", doc, "--comment", closed, "--author", "alice")
 
@@ -976,7 +1057,7 @@ def test_the_json_listing_nests_replies_under_their_thread(run, doc, opened):
 
 
 def test_the_thread_payload_field_set_is_closed(run, doc, opened):
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     for argv in (
         ("resolve", doc, "--comment", comment, "--author", "alice"),
         ("reopen", doc, "--comment", comment, "--author", "alice", "--why", "again"),
@@ -1101,7 +1182,7 @@ def test_the_status_payload_field_set_is_closed(run, doc, opened):
     payload = run("round", "status", doc, "--json").json
     assert set(payload) == {
         "counts", "doc", "document", "misplaced", "open", "orphans", "path", "rounds",
-        "schema", "store", "undisposed", "unresolved_threads", "verb",
+        "schema", "store", "undisposed", "unresolved_threads", "verb", "next_actions", "incomplete_resolutions",
     }
     assert set(payload["document"]) == {"added", "matches", "present", "removed"}
     assert set(payload["counts"]) == {
@@ -1229,7 +1310,7 @@ def test_the_table_indents_replies_under_their_thread(run, doc, opened):
 
 
 def test_resolved_threads_are_hidden_from_the_default_listing(run, doc, opened):
-    closed = a_comment(run, doc)
+    closed = a_comment(run, doc, settled=True)
     living = a_comment(run, doc, quote=None, body="retries are missing")
     run("resolve", doc, "--comment", closed, "--author", "alice")
     out = run("comments", doc).out
@@ -1240,7 +1321,7 @@ def test_resolved_threads_are_hidden_from_the_default_listing(run, doc, opened):
 
 
 def test_the_all_flag_brings_resolved_threads_back(run, doc, opened):
-    closed = a_comment(run, doc)
+    closed = a_comment(run, doc, settled=True)
     a_comment(run, doc, quote=None, body="retries are missing")
     run("resolve", doc, "--comment", closed, "--author", "alice")
     out = run("comments", doc, "--all").out
@@ -1249,7 +1330,7 @@ def test_the_all_flag_brings_resolved_threads_back(run, doc, opened):
 
 
 def test_a_listing_with_nothing_but_resolved_threads_does_not_claim_emptiness(run, doc, opened):
-    comment = a_comment(run, doc)
+    comment = a_comment(run, doc, settled=True)
     run("resolve", doc, "--comment", comment, "--author", "alice")
     out = run("comments", doc).out
     assert "no open threads" in out and "1 resolved" in out
@@ -1456,7 +1537,7 @@ def test_a_settled_round_closes_after_the_document_is_gone(run, doc, opened, tmp
     writes to the ledger; the file is not part of it.
     """
     comment_id = a_comment(run, doc, body="outlives the file")
-    assert run("dispose", doc, "--comment", comment_id, "--as", "applied", "--why", "done").code == 0
+    assert run("dispose", doc, "--comment", comment_id, "--as", "applied", "--why", "done", "--resolve").code == 0
     doc.rename(tmp_path / "renamed.md")
 
     result = run("round", "close", doc, "--author", "alice", "--note", "moved to the wiki", "--json")
@@ -2100,7 +2181,7 @@ def test_the_all_listing_marks_resolved_threads_in_their_rows(run, doc, opened):
     listing contains a resolved thread, so the default view (which hides them)
     keeps its width.
     """
-    settled = a_comment(run, doc, quote="client sends")
+    settled = a_comment(run, doc, quote="client sends", settled=True)
     still_open = a_comment(run, doc, quote="30 seconds")
     run("resolve", doc, "--comment", settled, "--author", "alice", "--note", "done")
 

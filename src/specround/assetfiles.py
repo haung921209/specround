@@ -42,6 +42,7 @@ is a trap for whoever adds the third.)
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Collection
 
 from specround.errors import SpecroundError
 
@@ -113,7 +114,7 @@ class AssetRefused(SpecroundError):
         self.reason = reason
 
 
-def resolve(root: Path, base: Path, ref: str) -> Path:
+def resolve(root: Path, base: Path, ref: str, *, suffixes: Collection[str] = SUFFIX_TYPES) -> Path:
     """Where ``ref`` points, if this process may read it.
 
     ``base`` is the directory the reference counts from — the document's own.
@@ -136,7 +137,9 @@ def resolve(root: Path, base: Path, ref: str) -> Path:
             f"{ref!r} is an absolute path — a document's images are named relative to it",
         )
     suffix = candidate.suffix.lower()
-    if suffix not in SUFFIX_TYPES:
+    if suffix not in suffixes:
+        if suffixes is not SUFFIX_TYPES:
+            raise AssetRefused(UNSUPPORTED, f"{ref!r} is not a preview type: {', '.join(sorted(suffixes))}")
         raise AssetRefused(UNSUPPORTED, _unsupported(ref, suffix))
     # `resolve` both flattens `..` and follows every link on the way, so one
     # comparison covers the two ways out of the tree. Non-strict on purpose:

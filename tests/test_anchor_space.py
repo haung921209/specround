@@ -148,7 +148,7 @@ def test_opening_a_round_carries_the_live_comments_onto_its_base(
     store, doc, doc_text, round_id, anchored_comment
 ):
     """The carry moves to the one moment a new anchor space comes into existence."""
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
     doc.write_text(DRAFT + doc_text, encoding="utf-8")
     second = store.open_round(doc, author="alice", title="second pass")
 
@@ -241,7 +241,7 @@ def test_every_anchoring_a_writer_produces_names_a_round_base(store, doc, doc_te
         patch="-30\n+60\n",
         anchor=store.anchor_in_round(round_id, "hello frame"),
     )
-    store.close_round(round_id, author="alice", allow_undisposed=True)
+    store.close_round(round_id, author="alice", allow_undisposed=True, allow_unresolved=True)
 
     doc.write_text(DRAFT + doc_text, encoding="utf-8")  # moved down the page
     store.open_round(doc, author="alice")

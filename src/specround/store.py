@@ -29,6 +29,7 @@ from specround.events import (
     ANCHOR_ORPHAN,
     ANCHOR_REANCHOR,
     COMMENT_ADD,
+    DEFERRED,
     DISPOSITION,
     REPLY,
     ROUND_CLOSE,
@@ -471,9 +472,9 @@ class ReviewStore:
 
     # -- writing ---------------------------------------------------------
 
-    def _append(self, record: Mapping[str, Any]) -> str:
+    def _append(self, record: Mapping[str, Any], *, expected_seq: int | None = None) -> str:
         write_origin(self.root, self.origin)
-        return self.ledger.append(record)["id"]
+        return self.ledger.append(record, expected_seq=expected_seq)["id"]
 
     def open_round(
         self,
@@ -626,6 +627,10 @@ class ReviewStore:
         The key is written only when true, which keeps every ordinary
         disposition the same bytes — and therefore the same id — as before.
         """
+        state = self.fold()
+        comment = state.comments.get(target)
+        if verdict == DEFERRED and comment is not None and comment.resolved:
+            raise InvariantError("reopen the completed thread before deferring it")
         record: dict[str, Any] = {
             "type": DISPOSITION,
             "author": author,
@@ -635,7 +640,7 @@ class ReviewStore:
         }
         if supersede:
             record[SUPERSEDE] = True
-        return self._append(record)
+        return self._append(record, expected_seq=state.count)
 
     # -- threads ---------------------------------------------------------
 
@@ -650,9 +655,8 @@ class ReviewStore:
         closed. Writing the redundant line instead would put "still fine" noise
         in the log, the same reason an unchanged anchor records nothing.
 
-        Independent of :meth:`dispose`. Resolving does not settle the comment,
-        and a resolved thread whose comment nobody disposed still has to be
-        declared by ``round.close``.
+        A final disposition must already exist. Legacy incomplete resolutions
+        remain readable and can be completed by recording their final verdict.
         """
         return self._assert_thread(
             THREAD_RESOLVE, target, author=author, actor=actor, text=note, resolved=True
@@ -680,7 +684,13 @@ class ReviewStore:
         text: str | None,
         resolved: bool,
     ) -> str | None:
-        comment = self.fold().comments.get(target)
+        state = self.fold()
+        comment = state.comments.get(target)
+        if resolved and comment is not None and not comment.settled:
+            raise InvariantError(
+                f"{target} needs a final verdict before resolve — use dispose with "
+                "applied, rejected, or answered and a reason (dispose --resolve can do both)"
+            )
         if comment is not None and comment.resolved == resolved:
             return None
         record: dict[str, Any] = {
@@ -696,7 +706,7 @@ class ReviewStore:
         # An unknown target falls through to the append, where folding the
         # prospective history refuses it (I8) — one oracle, not a second copy of
         # the rule here.
-        return self._append(record)
+        return self._append(record, expected_seq=state.count)
 
     def close_round(
         self,
@@ -704,6 +714,7 @@ class ReviewStore:
         *,
         author: str,
         allow_undisposed: bool = False,
+        allow_unresolved: bool = False,
         note: str | None = None,
     ) -> str:
         """Close a round, recording anything it leaves undisposed.
@@ -713,9 +724,7 @@ class ReviewStore:
         exit. The record carries the list either way, so the ledger never loses
         them (G3).
 
-        The axis is disposition, never thread. Resolving a conversation does not
-        take a comment off this list, or ending the talk would become a way past
-        the gate.
+        Verdicts and threads have separate gates. Each exception must be explicit.
         """
         state = self.fold()
         round_ = state.rounds.get(round_id)
@@ -737,9 +746,19 @@ class ReviewStore:
             # The record's field keeps its v0 spelling on disk; what it holds is
             # this undisposed set (format §4).
             record["unresolved"] = outstanding
+        unresolved = sorted(c.id for c in state.comments_in(round_id) if not c.resolved)
+        if unresolved and not allow_unresolved:
+            raise InvariantError(
+                f"round {round_id!r} has {len(unresolved)} unresolved thread(s): "
+                f"{', '.join(unresolved)} — resolve completed threads, or explicitly "
+                "leave them open with --allow-unresolved (allow_unresolved=True)"
+            )
+        # Keep an audit of explicitly retained threads without changing v0's
+        # meaning. The append checks the sequence under lock before writing.
+        record["ext"] = {"thread_close": {"unresolved": unresolved}}
         if note:
             record["note"] = note
-        return self._append(record)
+        return self._append(record, expected_seq=state.count)
 
     # -- re-anchoring ----------------------------------------------------
 

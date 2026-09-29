@@ -41,6 +41,7 @@ import argparse
 import getpass
 import json
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,7 @@ from specround.imports import BatchError, apply_plan, load_batch, parse_text, pl
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
+from specround.snapshots import digest_bytes
 from specround.viewtokens import ROTATED, STORED, token_for
 from specround.webview import (
     DEFAULT_HOST,
@@ -664,6 +666,7 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         round_.id,
         author=_author(args),
         allow_undisposed=args.allow_undisposed,
+        allow_unresolved=args.allow_unresolved,
         note=args.note or None,
     )
     state = target.store.fold()
@@ -673,8 +676,13 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "round": round_json(state, closed),
         "close": close_id,
         "undisposed": list(closed.undisposed_at_close),
+        "unresolved_threads": sorted(c.id for c in state.comments_in(round_.id) if not c.resolved),
+        "next_actions": _next_actions(state.comments_in(round_.id)),
     }
     lines = [f"closed {round_.id} on {target.key}"]
+    if payload["unresolved_threads"]:
+        lines.append("left unresolved: " + ", ".join(payload["unresolved_threads"]))
+        lines.append(f"Review remaining threads: specround comments {shlex.quote(str(target.path))} --json")
     if closed.undisposed_at_close:
         lines.append(
             f"left undisposed ({len(closed.undisposed_at_close)}): "
@@ -701,6 +709,7 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     comments = comments_on(state, target.key)
     undisposed = [c.id for c in comments if c.undisposed]
     unresolved_threads = [c.id for c in comments if not c.resolved]
+    incomplete_resolutions = [c.id for c in comments if c.resolved and not c.settled]
     orphans = [c.id for c in comments if c.orphaned]
     # I12, and a different question from the three above it: not "was it
     # answered", "can it be placed", or "is the talk over", but "do the offsets
@@ -717,6 +726,8 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "open": open_ids,
         "undisposed": undisposed,
         "unresolved_threads": unresolved_threads,
+        "incomplete_resolutions": incomplete_resolutions,
+        "next_actions": _next_actions(comments),
         "orphans": orphans,
         "misplaced": misplaced,
         "counts": {
@@ -737,6 +748,11 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         f"store  {target.store.root}",
     ]
     lines.extend(_standing_lines(standing))
+    if incomplete_resolutions:
+        lines.append(
+            "legacy resolved threads missing a final verdict: " + ", ".join(incomplete_resolutions)
+            + " — record their outcome with dispose; no threads have been reopened"
+        )
     if misplaced:
         lines.append(
             f"{len(misplaced)} anchor(s) cut from another text than this round's base — "
@@ -896,6 +912,12 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         "include_resolved": bool(args.all),
         "hidden": hidden,
     }
+    if args.context:
+        try:
+            live_ref = digest_bytes(target.path.read_bytes())
+        except OSError:
+            live_ref = None
+        payload["contexts"] = {c.id: _comment_context(target.store, state, c, live_ref) for c in items}
     if not items:
         if hidden:
             # Not "no comments": there are some, this view is just not showing
@@ -905,7 +927,32 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
                 f"no open threads on {target.key} — {len(hidden)} resolved, show with --all"
             ]
         return payload, [f"no comments on {target.key}"]
-    return payload, _comment_rows(items, hidden=hidden)
+    lines = _comment_rows(items, hidden=hidden)
+    if args.context:
+        for cid, context in payload["contexts"].items():
+            if context is None:
+                continue
+            lines.extend(["", f"{cid} — snapshot {context['base']}, line {context['line_start']}"
+                          + (" (matches file)" if context["matches_file"] else " (not the current file)"),
+                          context["text"]])
+    return payload, lines
+
+
+def _comment_context(store: ReviewStore, state: State, comment: Comment, live_ref: str | None) -> dict[str, Any] | None:
+    anchor = comment.current_anchor
+    if anchor is None:
+        return None
+    placed = comment.current_anchoring
+    base = placed.base if placed else state.rounds[comment.round].base
+    source = store.snapshots.get_text(base)
+    anchor.verify(source)
+    line = source.count("\n", 0, anchor.start) + 1
+    last_line = source.count("\n", 0, max(anchor.start, anchor.end - 1)) + 1
+    lines = source.split("\n")
+    low, high = max(0, line - 3), min(len(lines), line + 2)
+    return {"source": "snapshot", "base": base, "matches_file": base == live_ref,
+            "line_start": line, "line_end": last_line, "context_start_line": low + 1,
+            "context_end_line": high, "text": "\n".join(lines[low:high])}
 
 
 def _carry_lines(carried: Mapping[str, Any], headline: str) -> list[str]:
@@ -1228,11 +1275,22 @@ def _import(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, lines
 
 
+def _next_actions(comments: Sequence[Comment]) -> list[dict[str, str]]:
+    return [
+        {"verb": "dispose" if c.undisposed else "resolve", "comment": c.id,
+         "when": "final_verdict_decided" if c.undisposed else "conversation_complete"}
+        for c in comments if c.undisposed or not c.resolved
+    ]
+
+
 def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     state = target.store.fold()
     comment = _comment(state, target.key, args.comment)
     verdict = VERDICT_ALIASES.get(args.verdict, args.verdict)
+    actor = _actor(args) if args.resolve else HUMAN
+    if args.resolve and verdict == DEFERRED:
+        raise UsageError("--resolve completes a thread; deferred work needs a later verdict")
     target.store.dispose(
         comment.id,
         author=_author(args),
@@ -1240,12 +1298,15 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         reason=args.why,
         supersede=args.supersede,
     )
+    if args.resolve:
+        target.store.resolve(comment.id, author=_author(args), actor=actor, note=args.why)
     state = target.store.fold()
     disposed = state.comments[comment.id]
     payload = {
         **target.envelope(),
         "comment": comment_json(disposed),
         "disposition": disposition_json(disposed.disposition),
+        "next_actions": _next_actions([disposed]),
     }
     current = disposed.disposition
     assert current is not None  # just appended
@@ -1253,9 +1314,20 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     # comment read as a contradiction unless the second one is marked as having
     # been meant, and the reader of this line is usually the person who typed it.
     overturned = " (superseding)" if current.supersede else ""
-    return payload, [
+    lines = [
         f"{disposed.id} {current.verdict}{overturned} by {current.author} — {current.reason}"
     ]
+    if disposed.resolved:
+        lines.append("thread resolved")
+    elif disposed.settled:
+        lines.append(
+            "thread still open — when the conversation is complete: "
+            f"specround resolve {shlex.quote(str(target.path))} --comment {disposed.id}"
+            f" --store {shlex.quote(str(target.store.root))}"
+        )
+    else:
+        lines.append("deferred — still outstanding; decide its final verdict before resolving")
+    return payload, lines
 
 
 def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable[[], None]]:
@@ -1621,6 +1693,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="close over comments with no verdict, recording which ones were left",
     )
     closer.set_defaults(handler=_round_close, verb_name="round.close")
+    closer.add_argument("--allow-unresolved", action="store_true",
+                        help="explicitly leave unresolved threads for later; does not resolve them")
 
     status = round_verbs.add_parser(
         "status", parents=[common], help="rounds, counts, and what is outstanding"
@@ -1697,6 +1771,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="include resolved threads, which the default view hides (they are never deleted)",
     )
     listing.set_defaults(handler=_comments, verb_name="comments")
+    listing.add_argument("--context", action="store_true",
+                         help="include snapshot line numbers and two surrounding lines; label live-file drift")
 
     rebind = verbs.add_parser(
         "reanchor",
@@ -1764,6 +1840,9 @@ def build_parser() -> argparse.ArgumentParser:
         "(deferred needs no flag — completing it later is the ordinary path)",
     )
     dispose.set_defaults(handler=_dispose, verb_name="dispose")
+    dispose.add_argument("--resolve", action="store_true",
+                         help="also resolve this completed thread (not with deferred)")
+    _add_actor(dispose)
 
     importing = verbs.add_parser(
         "import",

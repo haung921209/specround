@@ -32,6 +32,54 @@ Two consequences worth spelling out:
   the read path an adapter can parse; their field sets are closed and their
   envelope is versioned.
 
+## Completing a review as an agent
+
+Collecting a comment does not complete it. For each comment, read its thread,
+make and verify the change or answer it, then record the verdict and end the
+conversation when it is finished:
+
+```bash
+specround comments SPEC.md --context --json
+specround dispose SPEC.md --comment c-ID --as applied --why "changed and verified" --resolve --actor agent
+# Already disposed, but the conversation is still open:
+specround resolve SPEC.md --comment c-ID --actor agent --note "complete"
+specround round status SPEC.md --json
+specround round close SPEC.md
+```
+
+`dispose`, `round status`, and `round close` JSON payloads include `next_actions`:
+objects with `verb` (`dispose` or `resolve`), `comment` (the full ID), and `when`
+(`final_verdict_decided` or `conversation_complete`).
+They describe remaining work, not unconditional commands: a thread awaiting a
+reviewer's answer must stay open. Status covers every round on the document;
+close covers the round being closed; dispose covers the affected comment.
+New resolutions require a final verdict first: `applied`, `rejected` or `answered`.
+To defer a completed thread, first reopen it and then supersede its verdict.
+There is no additional pending state or queue. Historical resolutions without
+a final verdict remain readable; `round status` reports their IDs separately
+as `incomplete_resolutions`. Inspect them with `comments --all --context --json`
+and record the missing outcome. Reading status does not reopen or modify them.
+
+`comments --context` adds a `contexts` map keyed by comment ID (or `null` for a
+whole-document comment). It names the snapshot hash, the anchor's `line_start`
+and `line_end`, and two lines around the anchor's starting line with their line
+numbers. `matches_file` says whether those offsets describe the file currently
+on disk. Do not apply snapshot line numbers directly to a changed file. The
+ordinary comment object already carries the quoted anchor and all replies in
+order, with the latest reply last. Orphan context comes from its last placed
+snapshot, not a guessed location in the current file.
+
+Both `undisposed` and `unresolved_threads` must be empty to report the document's
+review complete. `round close` checks those two axes on its own round and exits
+3 if either is left. Explicit carry-over requires `--allow-undisposed` and/or
+`--allow-unresolved`; closing with these flags does not complete or hide the
+remaining work. Report those retained IDs and reasons in the handoff.
+`deferred` remains outstanding and cannot be combined with `dispose --resolve`.
+
+The combined dispose/resolve command writes two ordinary ledger events. If it
+is interrupted after the verdict, inspect status and run `resolve` for that ID;
+do not repeat the verdict with `--supersede` just to close the thread.
+
 ## What a running view does *not* need restarting for
 
 An adapter that cycles rounds around a live view should not be restarting the
