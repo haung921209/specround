@@ -73,6 +73,8 @@
   #notice.show { display: block; }
   #notice.bad { background: var(--del); color: var(--bad); }
   #notice.info { background: var(--panel); color: var(--dim); }
+  #reviewnotice { padding: 8px 14px; background: var(--mark); border-bottom: 1px solid var(--line); }
+  #reviewnotice[hidden] { display: none; }
   /* Five tracks always, and every child placed by hand into one of them. Source
      order would be enough until a column is folded away — a folded column is
      `display: none`, and auto-placement slides everything after it one track to
@@ -297,6 +299,11 @@
   <button class="btn" id="refresh" title="re-read the ledger and the document">reload</button>
 </header>
 <div id="notice"></div>
+<div id="reviewnotice" hidden role="status">
+  <span id="reviewstatus"></span>
+  <button class="btn" id="loadrevision" hidden>view new review revision</button>
+  <button class="btn" id="publishrevision" hidden>publish file changes to this round</button>
+</div>
 <main id="layout">
   <nav id="files" aria-label="documents in this workspace"></nav>
   <div class="split" id="splitnav" role="separator" aria-orientation="vertical"
@@ -349,7 +356,7 @@ const state = {
 // -- transport ------------------------------------------------------------
 
 async function api(path, body, params = {}) {
-  if (body !== undefined && ["/api/comment", "/api/suggestion", "/api/round"].includes(path)) {
+  if (body !== undefined && ["/api/comment", "/api/suggestion", "/api/round", "/api/refresh"].includes(path)) {
     body = { ...viewBasis(), ...body };
   }
   const options = {
@@ -423,6 +430,7 @@ function viewBasis() {
   return {
     expected_round: state.data?.round?.id ?? null,
     expected_base: state.data?.round?.base ?? null,
+    expected_review: state.data?.round?.revision ?? null,
     expected_revision: state.data?.live_digest ?? null,
   };
 }
@@ -866,7 +874,7 @@ function actionFocus(path, result) {
 }
 
 function actionRedraw(path) {
-  return path === "/api/round";
+  return path === "/api/round" || path === "/api/refresh";
 }
 
 function previewRef(ref) {
@@ -1952,15 +1960,59 @@ function placeFloat() {
   floater.classList.add("show");
 }
 
+function hasDrafts() {
+  return [...document.querySelectorAll("#composer textarea")].some((area) => area.value.trim())
+    || Object.values(state.reply.drafts).some((text) => text.trim())
+    || (state.editing && ($("edittext").value !== (state.data.base || "") || $("editwhy").value.trim()));
+}
+
+function showReviewUpdate(review) {
+  const changed = review.revision !== (state.data?.round?.revision ?? null);
+  $("reviewnotice").hidden = !changed && !review.unpublished_changes;
+  $("reviewstatus").textContent = changed
+    ? "A new review revision is available. Your current text and draft have been kept."
+    : review.message;
+  $("loadrevision").hidden = !changed;
+  $("publishrevision").hidden = changed || !review.unpublished_changes || !state.data?.round || state.data.round.status !== "open";
+}
+
+let checkingReview = false;
+async function checkReview() {
+  if (checkingReview || document.hidden || !state.data) return;
+  const doc = state.doc;
+  const revision = state.data.round?.revision;
+  checkingReview = true;
+  try {
+    const review = await api("/api/review");
+    if (doc === state.doc && revision === state.data?.round?.revision) showReviewUpdate(review);
+  } catch (error) {
+    // A stopped/restarting local server must not erase a draft or interrupt reading.
+    console.debug("Review update check failed:", error);
+  } finally { checkingReview = false; }
+}
+
+async function acceptReviewRevision() {
+  if (hasDrafts()) {
+    notice("Copy your draft, then cancel it before loading the new review revision; nothing has been discarded.", "info");
+    return;
+  }
+  await load();
+}
+
 async function load({ redrawDocument = true } = {}) {
   const data = await api("/api/state");
   const previous = state.data;
+  if (previous && previous.round?.revision !== data.round?.revision && hasDrafts()) {
+    showReviewUpdate(data.review);
+    return;
+  }
   // A different round/file may arrive while the comment request is in flight.
   // Reuse the DOM only while it still represents the text and asset directory.
   if (!previous || previous.base !== data.base || previous.live !== data.live
       || previous.reading !== data.reading || previous.doc !== data.doc
       || previous.workspace?.selected !== data.workspace?.selected) redrawDocument = true;
   state.data = data;
+  showReviewUpdate(data.review);
   // From here on the page names the document explicitly, including the first
   // load, where the server chose it. The header shows the workspace's name for
   // it rather than the store's: a central store keys `docs/sub/a.md` as `a.md`,
@@ -1974,7 +2026,7 @@ async function load({ redrawDocument = true } = {}) {
   // the record (the notice, only when it is).
   const reading = readingNote(data);
   $("roundmeta").textContent = (data.round
-    ? data.round.id + " · " + data.round.status + " · base " + data.round.base.slice(7, 19)
+    ? data.round.id + " · " + data.round.status + " · revision " + data.round.revisions.length + " · base " + data.round.base.slice(7, 19)
       + (data.round.title ? " · " + data.round.title : "")
     : "no round") + (reading ? " · " + reading : "");
   // Clickable exactly when there is a difference to go and look at, so the
@@ -2015,6 +2067,14 @@ $("showresolved").addEventListener("change", () => {
   drawThreads();
 });
 $("refresh").addEventListener("click", () => load().catch((e) => notice(String(e.message || e), "bad")));
+$("loadrevision").addEventListener("click", () => acceptReviewRevision().catch((e) => notice(e.message, "bad")));
+$("publishrevision").addEventListener("click", () => {
+  if (hasDrafts()) { notice("Finish or save your draft before publishing a new review revision.", "info"); return; }
+  act({}, "/api/refresh");
+});
+setInterval(checkReview, 5000);
+document.addEventListener("visibilitychange", checkReview);
+window.addEventListener("focus", checkReview);
 $("float").addEventListener("mousedown", (event) => {
   // mousedown, not click: clicking clears the selection before the handler runs.
   event.preventDefault();

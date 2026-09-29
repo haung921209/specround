@@ -52,6 +52,7 @@ from specround.events import (
     REPLY,
     ROUND_CLOSE,
     ROUND_OPEN,
+    ROUND_REFRESH,
     SUGGESTION_ADD,
     SUPERSEDE,
     TERMINAL_VERDICTS,
@@ -159,6 +160,9 @@ class Comment:
     #: bare fold therefore means "not checked", not "checked and clean"; every
     #: read that matters goes through a store.
     misplaced: bool = False
+    #: Snapshot the original comment was made against, never changed by refresh.
+    base: str | None = None
+    revision: str | None = None
 
     @property
     def disposition(self) -> Disposition | None:
@@ -298,6 +302,15 @@ class Round:
     close_note: str = ""
     #: The reserved additive object from ``round.open``, preserved not read.
     ext: dict[str, Any] | None = None
+    revisions: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def initial_base(self) -> str:
+        return self.revisions[0]["base"] if self.revisions else self.base
+
+    @property
+    def revision(self) -> str:
+        return self.revisions[-1]["id"] if self.revisions else self.id
 
     @property
     def open(self) -> bool:
@@ -459,10 +472,34 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
             ts=record["ts"],
             title=record.get("title", ""),
             ext=dict(record["ext"]) if "ext" in record else None,
+            revisions=[{key: record[key] for key in ("id", "base", "author", "ts")}],
         )
+
+    elif kind == ROUND_REFRESH:
+        round_ = _live_round_or_raise(state, record["round"], f"round.refresh {event_id!r}")
+        if record["previous"] != round_.revision:
+            raise InvariantError("review revision changed — re-read before refreshing")
+        if record["base"] == round_.base:
+            raise InvariantError("round.refresh must publish a different snapshot")
+        for target, placement in record["anchors"].items():
+            comment = _comment_or_raise(state, target, "round.refresh")
+            if comment.anchor is None or state.rounds[comment.round].doc != round_.doc:
+                raise InvariantError("round.refresh can only place anchors belonging to this document")
+            comment.anchorings.append(Anchoring(
+                id=event_id, author=record["author"], ts=record["ts"], base=record["base"],
+                anchor=Anchor.from_json(placement["anchor"]) if placement["anchor"] is not None else None,
+                strategy=placement.get("strategy"), ambiguous=placement.get("ambiguous", False),
+                reason=placement.get("reason", ""),
+            ))
+        round_.base = record["base"]
+        round_.revisions.append({key: record[key] for key in ("id", "base", "author", "ts")})
 
     elif kind in COMMENT_KINDS:
         round_ = _live_round_or_raise(state, record["round"], f"{kind} {event_id!r}")
+        if (record.get("base", round_.base) != round_.base
+                or record.get("revision", round_.revision) != round_.revision
+                or (len(round_.revisions) > 1 and not {"base", "revision"} <= record.keys())):
+            raise InvariantError("comment snapshot is outdated or missing — reload the current review revision")
         anchor = record.get("anchor")
         state.comments[event_id] = Comment(
             id=event_id,
@@ -474,6 +511,8 @@ def apply_event(state: State, record: Mapping[str, Any]) -> State:
             patch=record["patch"] if kind == SUGGESTION_ADD else None,
             anchor=Anchor.from_json(anchor) if anchor is not None else None,
             ext=dict(record["ext"]) if "ext" in record else None,
+            base=round_.base,
+            revision=round_.revision,
         )
 
     elif kind == REPLY:

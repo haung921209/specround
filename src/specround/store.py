@@ -23,7 +23,7 @@ from typing import Any, Mapping, Sequence
 
 from specround.anchors import Anchor, anchor_for, anchor_for_quote
 from specround.critic import COMMENT, Annotation, Skipped, parse
-from specround.diffs import unified_patch
+from specround.diffs import diff, unified_patch
 from specround.errors import AnchorError, InvariantError, SpecroundError
 from specround.events import (
     ANCHOR_ORPHAN,
@@ -34,6 +34,7 @@ from specround.events import (
     REPLY,
     ROUND_CLOSE,
     ROUND_OPEN,
+    ROUND_REFRESH,
     SUGGESTION_ADD,
     SUPERSEDE,
     THREAD_REOPEN,
@@ -369,7 +370,7 @@ class ReviewStore:
             if comment.anchor is not None:
                 self._check_anchor(
                     comment.anchor,
-                    state.rounds[comment.round].base,
+                    comment.base or state.rounds[comment.round].initial_base,
                     f"the anchor on {comment.id!r}",
                 )
             for attempt in comment.anchorings:
@@ -490,8 +491,9 @@ class ReviewStore:
         The snapshot is the round's base, not a commit: nothing is staged and
         nothing is committed to open a review (G10).
 
-        **Opening a round is the only act that makes a new anchor space, so it
-        is also the act that carries the comments into it.** Every surface paints
+        **Opening a round publishes its first snapshot and carries comments.**
+        `refresh_round` publishes further immutable revisions of the same round.
+        Every surface paints
         ``current_anchor`` over the round's base (I7), so a comment left behind
         in the previous round's space would be drawn at offsets belonging to a
         text nobody is looking at. Carrying here rather than in a verb somebody
@@ -528,7 +530,69 @@ class ReviewStore:
         self._carry_onto(self.fold(), key, base, author=author, min_similarity=min_similarity)
         return round_id
 
-    def _verify_anchor(self, round_id: str, anchor: Anchor | Mapping[str, Any] | None) -> dict[str, Any] | None:
+    def refresh_round(self, round_id: str, doc: Path, *, author: str,
+                      min_similarity: float = MIN_SIMILARITY, expected_review: str | None = None) -> ReanchorReport:
+        """Publish a new immutable review revision without closing the round."""
+        state = self.fold()
+        round_ = state.rounds.get(round_id)
+        if round_ is None or not round_.open:
+            raise InvariantError("cannot refresh an unknown or closed round")
+        if expected_review is not None and round_.revision != expected_review:
+            raise InvariantError("review revision changed — re-read before refreshing")
+        key = self.doc_key(doc)
+        rounds = [r for r in state.rounds.values() if r.doc == key]
+        if round_.doc != key or not rounds or rounds[-1].id != round_id:
+            raise InvariantError("only the latest round of this document can be refreshed")
+        base = self.snapshots.put_file(doc)
+        if base == round_.base:
+            return ReanchorReport(base=base)
+        report, records = self._carry_records(state, key, base, author=author, min_similarity=min_similarity)
+        placements = {}
+        for record in records:
+            placements[record["target"]] = (
+                {"anchor": record["anchor"], "strategy": record["strategy"],
+                 "ambiguous": record.get("ambiguous", False)}
+                if "anchor" in record else {"anchor": None, "reason": record["reason"]}
+            )
+        self._append({"type": ROUND_REFRESH, "round": round_id, "author": author,
+                      "previous": round_.revision, "base": base, "anchors": placements},
+                     expected_seq=state.count)
+        return report
+
+    def review_status(self, doc: Path, *, state: State | None = None, round_id: str | None = None) -> dict[str, Any]:
+        """What render/raw would serve, compared with the current file, not a tab acknowledgement."""
+        state = state or self.fold()
+        key = self.doc_key(doc)
+        rounds = [r for r in state.rounds.values() if r.doc == key]
+        active = [r for r in rounds if r.open]
+        round_ = state.rounds.get(round_id) if round_id else (active[0] if len(active) == 1 else rounds[-1] if rounds else None)
+        try:
+            live = _document_text(doc)
+        except SpecroundError:
+            live = None
+        base = round_.base if round_ else None
+        file_ref = digest_text(live) if live is not None else None
+        matches = file_ref == base if file_ref is not None and base is not None else None
+        pending = matches is False
+        change = diff(self._snapshot_text(base), live) if pending else None
+        action = None
+        if pending:
+            message = f"file changes are not yet published to the review (+{change.added} / -{change.removed}); reloading render/raw still shows the published snapshot"
+            action = {"verb": "round.refresh" if round_.open else "round.open", "when": "changes_ready_for_review"}
+        elif matches:
+            message = "the published review matches the file"
+        else:
+            message = "no published review yet" if round_ is None else "the source file is unavailable"
+        if len(active) > 1 and round_id is None:
+            action = None
+            message = "multiple rounds are open — choose a round before publishing changes"
+        return {"round": round_.id if round_ else None, "revision": round_.revision if round_ else None,
+                "base": base, "file": file_ref, "matches": matches, "unpublished_changes": pending,
+                "added": change.added if change else 0, "removed": change.removed if change else 0,
+                "next_action": action, "message": message}
+
+    def _verify_anchor(self, round_id: str, anchor: Anchor | Mapping[str, Any] | None,
+                       *, base: str | None = None) -> dict[str, Any] | None:
         """Check an anchor against the round's base before it becomes history.
 
         An anchor is verified where it was made — against the snapshot this
@@ -546,7 +610,7 @@ class ReviewStore:
             return None
         resolved = anchor if isinstance(anchor, Anchor) else Anchor.from_json(anchor)
         self._check_anchor(
-            resolved, self.round_base(round_id), f"the anchor given for round {round_id!r}"
+            resolved, base or self.round_base(round_id), f"the anchor given for round {round_id!r}"
         )
         return resolved.to_json()
 
@@ -558,15 +622,23 @@ class ReviewStore:
         body: str,
         anchor: Anchor | Mapping[str, Any] | None = None,
         ext: Mapping[str, Any] | None = None,
+        expected_base: str | None = None,
+        expected_review: str | None = None,
     ) -> str:
         """Record a comment, optionally anchored to a span of the round's base."""
+        round_ = self.fold().rounds.get(round_id)
+        if round_ is None:
+            raise InvariantError(f"unknown round {round_id!r}")
+        base = expected_base or round_.base
         record: dict[str, Any] = {
             "type": COMMENT_ADD,
+            "revision": expected_review or round_.revision,
             "author": author,
             "round": round_id,
             "body": body,
+            "base": base,
         }
-        anchor_json = self._verify_anchor(round_id, anchor)
+        anchor_json = self._verify_anchor(round_id, anchor, base=base)
         if anchor_json is not None:
             record["anchor"] = anchor_json
         if ext:
@@ -582,17 +654,25 @@ class ReviewStore:
         body: str = "",
         anchor: Anchor | Mapping[str, Any] | None = None,
         ext: Mapping[str, Any] | None = None,
+        expected_base: str | None = None,
+        expected_review: str | None = None,
     ) -> str:
         """Record a suggestion — a comment whose substance is a patch (G8)."""
+        round_ = self.fold().rounds.get(round_id)
+        if round_ is None:
+            raise InvariantError(f"unknown round {round_id!r}")
+        base = expected_base or round_.base
         record: dict[str, Any] = {
             "type": SUGGESTION_ADD,
+            "revision": expected_review or round_.revision,
             "author": author,
             "round": round_id,
             "patch": patch,
+            "base": base,
         }
         if body:
             record["body"] = body
-        anchor_json = self._verify_anchor(round_id, anchor)
+        anchor_json = self._verify_anchor(round_id, anchor, base=base)
         if anchor_json is not None:
             record["anchor"] = anchor_json
         if ext:
@@ -805,7 +885,8 @@ class ReviewStore:
             raise InvariantError(
                 f"{key} on disk is not the base round {self._round_at(state, base)} froze "
                 f"({_short(live)} vs {_short(base)}) — nothing has frozen the revision, so "
-                "an anchor cut from it would name a snapshot no view shows. Either open a "
+                "an anchor cut from it would name a snapshot no view shows. Publish it with "
+                "'specround round refresh', or open a "
                 "round on the revision ('specround round open') and the comments carry onto "
                 "it, or leave it: against this round's base there is nothing to move."
             )
@@ -848,6 +929,15 @@ class ReviewStore:
         return "?"  # pragma: no cover - the base came from a round
 
     def _carry_onto(
+        self, state: State, key: str, base: str, *, author: str,
+        min_similarity: float = MIN_SIMILARITY,
+    ) -> ReanchorReport:
+        report, records = self._carry_records(state, key, base, author=author, min_similarity=min_similarity)
+        for record in records:
+            self._append(record)
+        return report
+
+    def _carry_records(
         self,
         state: State,
         key: str,
@@ -855,17 +945,17 @@ class ReviewStore:
         *,
         author: str,
         min_similarity: float = MIN_SIMILARITY,
-    ) -> ReanchorReport:
+    ) -> tuple[ReanchorReport, list[dict[str, Any]]]:
         """Move every anchored comment on ``key`` into ``base``'s space.
 
-        The one implementation of the carry. :meth:`open_round` runs it because
-        opening a round is the only act that makes a new anchor space, and
-        :meth:`reanchor_document` runs it to re-drive the same thing — two
-        callers, one ladder, so a comment cannot be carried two different ways
+        Shared planning for open, refresh, and explicit re-anchoring. Refresh
+        stores the entire plan in one event; the other paths append the ordinary
+        anchor events. One ladder means a comment cannot be carried different ways
         depending on which verb the caller reached for.
         """
         text = self._snapshot_text(base)
         report = ReanchorReport(base=base)
+        records: list[dict[str, Any]] = []
         for comment in self._anchored_comments(state, key):
             if comment.bound_to == base:
                 report.skipped.append(comment.id)
@@ -888,10 +978,10 @@ class ReviewStore:
                 if result.ambiguous:
                     record["ambiguous"] = True
                     report.ambiguous.append(comment.id)
-                self._append(record)
+                records.append(record)
                 report.rebound.append(comment.id)
             else:
-                self._append(
+                records.append(
                     {
                         "type": ANCHOR_ORPHAN,
                         "author": author,
@@ -901,7 +991,7 @@ class ReviewStore:
                     }
                 )
                 report.orphaned.append(comment.id)
-        return report
+        return report, records
 
     def repair_document(
         self,
@@ -1127,7 +1217,8 @@ class ReviewStore:
             raise InvariantError(
                 f"the {annotation.kind} on line {annotation.source_line} has no place in "
                 f"the base round {round_.id} froze ({rebind.reason}) — the document has "
-                "moved on beyond its markers, so close this round and open a new one on "
+                "moved on beyond its markers. Publish with 'specround round refresh', "
+                "or close this round and open a new one on "
                 "the document as it is now, or take that marker off text the round cannot see"
             )
         assert rebind.anchor is not None  # found, by the branch above
@@ -1165,6 +1256,7 @@ class ReviewStore:
                 body=annotation.body,
                 anchor=placement.anchor,
                 ext=ext,
+                expected_base=round_.base, expected_review=round_.revision,
             )
         return self.add_suggestion(
             round_.id,
@@ -1172,6 +1264,7 @@ class ReviewStore:
             patch=unified_patch(clean, annotation.proposed(clean), label=key),
             anchor=placement.anchor,
             ext=ext,
+            expected_base=round_.base, expected_review=round_.revision,
         )
 
     def orphans(self, doc: Path | None = None) -> list[Comment]:

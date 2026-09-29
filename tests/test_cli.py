@@ -649,6 +649,37 @@ def test_comment_context_names_snapshot_lines_and_live_mismatch(run, doc, opened
     assert result.json["comments"][0]["current_anchor"]["exact"] == "30 seconds"
 
 
+def test_agent_is_told_when_file_edits_are_not_published(run, doc, opened):
+    cid = a_comment(run, doc)
+    doc.write_text("New section.\n\n" + doc.read_text(), encoding="utf-8")
+    for argv in [("comments", doc), ("reply", doc, "--comment", cid, "--body", "updated the file"),
+                 ("dispose", doc, "--comment", cid, "--as", "applied", "--why", "changed"),
+                 ("resolve", doc, "--comment", cid), ("round", "status", doc)]:
+        result = run(*argv, "--json")
+        assert result.code == 0, result.err
+        review = result.json["review"]
+        assert review["unpublished_changes"] is True
+        assert review["next_action"]["verb"] == "round.refresh"
+    assert "not yet published" in run("comments", doc).out
+    published = run("round", "refresh", doc, "--json")
+    assert published.code == 0, published.err
+    assert published.json["round"]["id"] == opened
+    assert published.json["changed"] is True
+    assert published.json["review"]["matches"] is True
+    assert run("round", "refresh", doc, "--json").json["changed"] is False
+
+
+def test_a_failed_status_lookup_does_not_claim_a_successful_write_failed(run, doc, opened, monkeypatch):
+    cid = a_comment(run, doc)
+    def unavailable(*args, **kwargs):
+        raise OSError("temporary status read failure")
+    monkeypatch.setattr(ReviewStore, "review_status", unavailable)
+    result = run("reply", doc, "--comment", cid, "--body", "saved once", "--json")
+    assert result.code == 0
+    assert result.json["review"]["available"] is False
+    assert [r.body for r in ReviewStore.for_document(doc).fold().comments[cid].replies] == ["saved once"]
+
+
 def test_resolve_action_is_conditional_on_finishing_the_conversation(run, doc, opened):
     cid = a_comment(run, doc)
     done = run("dispose", doc, "--comment", cid, "--as", "applied", "--why", "changed", "--json")
@@ -987,6 +1018,8 @@ def test_the_comment_object_field_set_is_closed(run, doc, opened):
     assert set(payload) == {
         "ambiguous",
         "anchor",
+        "anchor_base",
+        "revision",
         "anchoring",
         "anchorings",
         "author",
@@ -1034,7 +1067,7 @@ def test_the_comments_payload_says_which_view_it_is_and_what_it_left_out(run, do
 
     default = run("comments", doc, "--json").json
     assert set(default) == {
-        "comments", "doc", "hidden", "include_resolved", "path", "schema", "store", "verb",
+        "comments", "doc", "hidden", "include_resolved", "path", "schema", "store", "verb", "review",
     }
     assert default["include_resolved"] is False
     assert default["hidden"] == [closed]
@@ -1064,7 +1097,7 @@ def test_the_thread_payload_field_set_is_closed(run, doc, opened):
     ):
         payload = run(*argv, "--json").json
         assert set(payload) == {
-            "changed", "comment", "doc", "event", "path", "resolved", "schema", "store", "verb",
+            "changed", "comment", "doc", "event", "path", "resolved", "schema", "store", "verb", "review",
         }
 
 
@@ -1072,7 +1105,7 @@ def test_the_reply_payload_field_set_is_closed(run, doc, opened):
     comment = a_comment(run, doc)
     payload = run("reply", doc, "--comment", comment, "--author", "alice",
                   "--body", "because of the proxy", "--json").json
-    assert set(payload) == {"comment", "doc", "path", "reply", "schema", "store", "verb"}
+    assert set(payload) == {"comment", "doc", "path", "reply", "schema", "store", "verb", "review"}
     assert payload["reply"]["id"].startswith("p-")
 
 
@@ -1160,6 +1193,7 @@ def test_the_listing_stays_quiet_about_an_ordinary_move(run, doc, opened, doc_te
 def test_the_round_object_field_set_is_closed(run, doc, opened):
     payload = run("round", "status", doc, "--json").json["rounds"][0]
     assert set(payload) == {
+        "initial_base", "revision", "revisions",
         "author",
         "base",
         "close_note",
@@ -1182,7 +1216,7 @@ def test_the_status_payload_field_set_is_closed(run, doc, opened):
     payload = run("round", "status", doc, "--json").json
     assert set(payload) == {
         "counts", "doc", "document", "misplaced", "open", "orphans", "path", "rounds",
-        "schema", "store", "undisposed", "unresolved_threads", "verb", "next_actions", "incomplete_resolutions",
+        "schema", "store", "undisposed", "unresolved_threads", "verb", "next_actions", "incomplete_resolutions", "review",
     }
     assert set(payload["document"]) == {"added", "matches", "present", "removed"}
     assert set(payload["counts"]) == {
@@ -1197,7 +1231,7 @@ def test_the_status_payload_field_set_is_closed(run, doc, opened):
 
 def test_the_round_open_payload_field_set_is_closed(run, doc):
     payload = run("round", "open", doc, "--author", "alice", "--json").json
-    assert set(payload) == {"carried", "doc", "path", "round", "schema", "store", "verb"}
+    assert set(payload) == {"carried", "doc", "path", "round", "schema", "store", "verb", "review"}
     # Opening a round carries the comments into its base, so the payload has to
     # say what that did — in the same shape ``reanchor`` reports it.
     assert set(payload["carried"]) == {
@@ -1503,7 +1537,7 @@ def test_the_verbs_that_read_the_document_are_named_in_one_place():
     document had moved on could not be recorded as finished. A ``touch`` of an
     empty file satisfied the check, which is the proof it was guarding nothing.
     """
-    assert READS_THE_DOCUMENT == frozenset({"round.open", "harvest", "reanchor"})
+    assert READS_THE_DOCUMENT == frozenset({"round.open", "round.refresh", "harvest", "reanchor"})
 
 
 @pytest.mark.parametrize(

@@ -25,11 +25,12 @@ from specround.reanchor import STRATEGIES
 from specround.snapshots import parse_ref
 
 SCHEMA_NAME = "specround.ledger"
-SCHEMA_VERSION = 0
+SCHEMA_VERSION = 1
 #: The value every record carries in its ``schema`` field.
 SCHEMA = f"{SCHEMA_NAME}/v{SCHEMA_VERSION}"
 
 ROUND_OPEN = "round.open"
+ROUND_REFRESH = "round.refresh"
 COMMENT_ADD = "comment.add"
 SUGGESTION_ADD = "suggestion.add"
 REPLY = "reply"
@@ -42,6 +43,7 @@ THREAD_REOPEN = "thread.reopen"
 
 EVENT_TYPES = (
     ROUND_OPEN,
+    ROUND_REFRESH,
     COMMENT_ADD,
     SUGGESTION_ADD,
     REPLY,
@@ -119,10 +121,11 @@ _ENVELOPE: dict[str, str] = {
 _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
     # type: (required, optional)
     ROUND_OPEN: ({"doc": _STRING, "base": _REF}, {"title": _TEXT}),
-    COMMENT_ADD: ({"round": _STRING, "body": _STRING}, {"anchor": _OBJECT}),
+    ROUND_REFRESH: ({"round": _STRING, "previous": _STRING, "base": _REF, "anchors": _OBJECT}, {}),
+    COMMENT_ADD: ({"round": _STRING, "body": _STRING}, {"anchor": _OBJECT, "base": _REF, "revision": _STRING}),
     SUGGESTION_ADD: (
         {"round": _STRING, "patch": _STRING},
-        {"anchor": _OBJECT, "body": _TEXT},
+        {"anchor": _OBJECT, "body": _TEXT, "base": _REF, "revision": _STRING},
     ),
     REPLY: ({"target": _STRING, "body": _STRING}, {}),
     # ``supersede`` is what lets a settled comment take a second verdict (I5).
@@ -150,6 +153,7 @@ _PAYLOAD: dict[str, tuple[dict[str, str], dict[str, str]]] = {
 #: Event ids are prefixed by kind so a bare id in a log line is readable.
 _ID_PREFIX: dict[str, str] = {
     ROUND_OPEN: "r",
+    ROUND_REFRESH: "f",
     COMMENT_ADD: "c",
     SUGGESTION_ADD: "s",
     REPLY: "p",
@@ -205,7 +209,7 @@ def check_schema_compatible(value: Any) -> None:
     name, major = parse_schema(value)
     if name != SCHEMA_NAME:
         raise SchemaError(f"foreign ledger schema {name!r}: this reader knows {SCHEMA_NAME!r}")
-    if major != SCHEMA_VERSION:
+    if major not in (0, SCHEMA_VERSION):
         raise SchemaError(
             f"ledger schema {value!r} is major version {major}; "
             f"this reader implements v{SCHEMA_VERSION} and will not guess"
@@ -266,6 +270,11 @@ def validate_event(record: Any) -> None:
 
     where = f"{kind} record"
     required, optional = _PAYLOAD[kind]
+    if parse_schema(record["schema"])[1] == 0:
+        if kind == ROUND_REFRESH:
+            raise SchemaError("round.refresh requires specround.ledger/v1")
+        if kind in COMMENT_KINDS:
+            optional = {key: value for key, value in optional.items() if key not in {"base", "revision"}}
     allowed = set(_ENVELOPE) | set(required) | set(optional) | {EXT_FIELD}
     unknown = sorted(set(record) - allowed)
     if unknown:
@@ -285,6 +294,24 @@ def validate_event(record: Any) -> None:
         _check_field(where, EXT_FIELD, _OBJECT, record[EXT_FIELD])
 
     check_id(kind, record["id"])
+
+    if kind == ROUND_REFRESH:
+        for target, placement in record["anchors"].items():
+            if not isinstance(target, str) or not target or not isinstance(placement, Mapping):
+                raise SchemaError("round.refresh anchors must map comment IDs to placements")
+            fields = {"anchor", "strategy", "ambiguous"} if placement.get("anchor") is not None else {"anchor", "reason"}
+            if set(placement) != fields:
+                raise SchemaError("round.refresh placement has invalid fields")
+            if placement["anchor"] is None:
+                _check_field(where, "reason", _STRING, placement["reason"])
+            else:
+                try:
+                    Anchor.from_json(placement["anchor"])
+                except AnchorError as exc:
+                    raise SchemaError(str(exc)) from exc
+                if placement["strategy"] not in STRATEGIES:
+                    raise SchemaError("round.refresh placement has unknown strategy")
+                _check_field(where, "ambiguous", _FLAG, placement["ambiguous"])
 
     if kind == DISPOSITION and record["verdict"] not in VERDICTS:
         raise SchemaError(

@@ -96,11 +96,12 @@ def test_every_payload_field_the_code_knows_is_documented(doc_text):
 
 def test_the_worked_example_is_a_valid_ledger(doc_text):
     blocks = jsonl_blocks(doc_text)
-    assert len(blocks) == 1, "the document should carry exactly one example ledger"
-    records = [json.loads(line) for line in blocks[0]]
-    for record in records:
-        validate_event(record)
-    assert [r["seq"] for r in records] == list(range(len(records)))
+    assert len(blocks) == 2, "legacy and refreshed histories are separate examples"
+    for block in blocks:
+        records = [json.loads(line) for line in block]
+        for record in records:
+            validate_event(record)
+        assert [r["seq"] for r in records] == list(range(len(records)))
 
 
 def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
@@ -142,8 +143,17 @@ def test_the_worked_example_folds_to_what_the_document_claims(doc_text):
 
 def test_the_worked_example_shows_every_event_type(doc_text):
     """The example is the doc's only executable part — it should cover the format."""
-    records = [json.loads(line) for line in jsonl_blocks(doc_text)[0]]
+    records = [json.loads(line) for block in jsonl_blocks(doc_text) for line in block]
     assert {r["type"] for r in records} == set(EVENT_TYPES)
+
+
+def test_the_same_round_example_preserves_the_initial_snapshot(doc_text):
+    records = [json.loads(line) for line in jsonl_blocks(doc_text)[1]]
+    state = fold(records)
+    assert len(state.rounds) == 1
+    round_ = next(iter(state.rounds.values()))
+    assert round_.open and round_.initial_base == records[0]["base"]
+    assert round_.base == records[1]["base"] and len(round_.revisions) == 2
 
 
 def test_the_worked_example_anchors_hold_against_the_snapshots_it_names(doc_text):

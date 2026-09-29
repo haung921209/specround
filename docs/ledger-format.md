@@ -1,4 +1,4 @@
-# Ledger format — `specround.ledger/v0`
+# Ledger format — `specround.ledger/v1` (also reads v0)
 
 > This format is the contract. The core, the CLI, and the web view are
 > implementations we can swap out; what remains is this file's schema
@@ -132,13 +132,16 @@ to the parent.
 ## 2. Schema version and the compatibility rule
 
 Every line carries a `schema` field. The form is `<name>/v<major>` and the
-current value is **`specround.ledger/v0`**.
+current writer value is **`specround.ledger/v1`**. Readers accept v0 and v1
+records in one history without rewriting existing bytes. Older v0-only binaries
+must be upgraded before sharing a store with a v1 writer.
 
 | situation | what the reader does |
 |---|---|
 | no `schema`, or a malformed one | refuse |
 | a different name (`other.tool/v0`) | refuse — it is somebody else's ledger |
-| a different major (`…/v1`) | **refuse. No guessing** |
+| a supported legacy major (`…/v0`) | read using its original field set |
+| an unknown major (`…/v2`) | **refuse. No guessing** |
 | an unknown top-level key within the major | refuse |
 
 Within a major the field set is **closed**. Letting an unknown key through
@@ -283,12 +286,38 @@ tool froze, so opening a review never involves staging or committing (G10).
 | `base` | ✓ | the snapshot reference `sha256:<64 hex>` |
 | `title` | | the round's name (an empty string is allowed) |
 
-**Opening a round is the only event that makes a new anchor space, so it is
-also what carries the comments into one** (§5.2). The `anchor.reanchor` and
+**Opening a round creates its initial anchor space and carries comments into it**
+(§5.2). Refreshing later creates another published revision in the same round.
+The `anchor.reanchor` and
 `anchor.orphan` records the carry appends follow this record and name this
 `base`; a document that did not change is addressed to the same snapshot, so
 nothing is appended. This is a rule about the tool rather than the format — the
 format's part of it is I12.
+
+### `round.refresh` — publish a revision in the same open round (v1)
+
+| field | required | meaning |
+|---|---|---|
+| `round` | ✓ | the open round, whose ID remains unchanged |
+| `previous` | ✓ | the current revision event ID (initially the round-open ID) |
+| `base` | ✓ | the new immutable snapshot reference; must differ from the current one |
+| `anchors` | ✓ | object keyed by comment ID, containing changed placements |
+
+A placement is either `{anchor, strategy, ambiguous}` or `{anchor: null, reason}`.
+Strategies are the same closed vocabulary used by `anchor.reanchor`. Targets must
+be anchored comments on this document; comments from preceding rounds may follow
+the document too. The complete refresh and its placements form **one event**, with
+an `f-` ID. Publication is guarded by both `previous` and a writer-side sequence
+check under the append lock. Concurrent activity requires recomputing the plan.
+
+Projection preserves `initial_base` and the `revisions` list (`id`, `base`, `author`,
+`ts`). `base` is the currently published snapshot; `revision` is its event ID.
+Original comment anchors and their snapshot/revision remain immutable. New v1
+comments and suggestions carry `base` and `revision`; both must match the current
+revision when appended, and both are mandatory once a round has been refreshed.
+V0 comment records retain their original shape, with provenance inferred while
+replaying the round-open event that preceded them. Verdicts and thread resolution
+are unaffected by refresh. An unchanged file is a no-op and writes no refresh.
 
 ### `comment.add` — a comment
 
@@ -297,6 +326,8 @@ format's part of it is I12.
 | `round` | ✓ | the target round's id (**it must be open**) |
 | `body` | ✓ | the text (an empty string is not allowed) |
 | `anchor` | | the document anchor (§5). Without it, the comment is about the whole document |
+| `base` | v1 after refresh | the original comment's published snapshot |
+| `revision` | v1 after refresh | the original comment's published revision event ID |
 
 ### `suggestion.add` — a suggestion (G8)
 
@@ -587,8 +618,8 @@ and the current file — were living in one field.
 
 The rule that closes it has two halves.
 
-- **An anchoring's `base` is a round's base.** New space is made by `round.open`
-  and by nothing else, and opening carries the comments into it (§4). There is
+- **An anchoring's `base` is a published review snapshot.** New space is made by
+  `round.open` or `round.refresh`, which also carry comments into it (§4). There is
   no verb that freezes a text for anchors without freezing it for the review.
 - **I12: a comment's `current_anchor` holds in the base it is painted on.**
   `current_anchor` is the last anchor bound to it, or the one it was made with.
@@ -617,7 +648,7 @@ such as "skip just that line".
 | I4 | a comment or suggestion names an **open** round | refused (open a new round) |
 | I5 | a settled comment is re-disposed **only** by a disposition that declares `supersede` — and `supersede` on a comment that is not settled is refused just as hard | refused |
 | I6 | `round.close`'s `unresolved` field == the real undisposed set (the disposition axis — resolving a thread does not take a comment out of it) | refused |
-| I7 | an anchor is consistent with the snapshot it names (comment = the round's base · re-anchor = that event's `base`) | refused |
+| I7 | an anchor is consistent with the snapshot it names (comment = its original `base`, inferred on replay for v0 · re-anchor/refresh = that event's `base`) | refused |
 | I8 | the `target` of a reply, disposition, resolve, or reopen is an existing comment or suggestion | refused |
 | I9 | the `target` of a re-anchor or an orphan is a comment or suggestion **that has an anchor** | refused (a whole-document comment has nowhere to move) |
 | I10 | a resolve or reopen on a thread already in that state **does not change the state** | not refused — idempotent |
@@ -861,6 +892,16 @@ Lines are canonical JSON, **key-sorted and without whitespace** (the same record
 → always the same bytes, which is what makes id derivation work and file
 comparison meaningful). Non-ASCII text is not `\u`-escaped — a person has to be
 able to read it with `cat` (G4).
+
+### Same-round revision example (v0 → v1)
+
+This separate history starts with the bytes `Before\n` and publishes `After\n`.
+The old event remains intact, the round stays open, and both snapshots remain named.
+
+```jsonl
+{"author":"alice","base":"sha256:14a36e848f2c31b5c469c0b7287a4568447450ad9a72a914f09b909880fe03a9","doc":"draft.md","id":"r-a41ef9ffd57e","schema":"specround.ledger/v0","seq":0,"ts":"2026-09-30T00:00:00Z","type":"round.open"}
+{"anchors":{},"author":"alice","base":"sha256:f84380673ff095296b5ba0b0aacdccf721d255ef1f4fb5e998cc6dab5130e9b9","id":"f-0d2951ce5424","previous":"r-a41ef9ffd57e","round":"r-a41ef9ffd57e","schema":"specround.ledger/v1","seq":1,"ts":"2026-09-30T00:01:00Z","type":"round.refresh"}
+```
 
 ## 10. What this format has not settled
 

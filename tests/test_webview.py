@@ -79,12 +79,13 @@ def call(view, path, body=None, *, token=None, origin=None, method=None, params=
     own ``?doc=…`` into ``path`` would push the token out of the query and get a
     403 for what it meant as a 400.
     """
-    if with_basis and isinstance(body, dict) and path in {"/api/comment", "/api/suggestion", "/api/round"}:
+    if with_basis and isinstance(body, dict) and path in {"/api/comment", "/api/suggestion", "/api/round", "/api/refresh"}:
         document = body.get("doc") or (params or {}).get("doc")
         status, shown = call(view, "/api/state", token=token, params={"doc": document} if document else None)
         if status == 200:
             round_ = shown["round"] or {}
             body = {"expected_round": round_.get("id"), "expected_base": round_.get("base"),
+                    "expected_review": round_.get("revision"),
                     "expected_revision": shown.get("live_digest"), **body}
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"}
@@ -2199,6 +2200,33 @@ def test_stale_page_cannot_attach_a_comment_to_a_new_round(opened, store, doc, r
     assert not store.fold().comments
 
 
+def test_refresh_changes_revision_without_closing_the_round(opened, store, doc, round_id, doc_text):
+    before = state(opened)
+    doc.write_text("New material.\n\n" + doc_text, encoding="utf-8")
+    pending = call(opened, "/api/review")[1]
+    assert pending["unpublished_changes"] and pending["revision"] == before["round"]["revision"]
+    status, result = call(opened, "/api/refresh", {})
+    assert status == 200 and result["round"]["id"] == round_id
+    assert result["round"]["revision"] != before["round"]["revision"]
+    assert state(opened)["base"].startswith("New material.")
+    status, _ = call(opened, "/api/comment", {
+        "whole": True, "body": "stale draft", "expected_round": round_id,
+        "expected_base": before["round"]["base"], "expected_review": before["round"]["revision"],
+    })
+    assert status == 409 and not store.fold().comments
+
+
+def test_refresh_identity_changes_even_when_a_later_revision_restores_the_bytes(opened, store, doc, round_id, doc_text):
+    before = state(opened)
+    doc.write_text("Intermediate.\n" + doc_text, encoding="utf-8")
+    store.refresh_round(round_id, doc, author="alice")
+    doc.write_text(doc_text, encoding="utf-8")
+    store.refresh_round(round_id, doc, author="alice")
+    assert store.round_base(round_id) == before["round"]["base"]
+    status, _ = call(opened, "/api/comment", {"whole": True, "body": "old draft", "expected_review": before["round"]["revision"]})
+    assert status == 409 and not store.fold().comments
+
+
 def test_comment_from_a_page_without_version_context_is_refused(opened, store):
     status, result = call(opened, "/api/comment", {"whole": True, "body": "old page"}, with_basis=False)
     assert status == 409 and "reload" in result["error"]["message"]
@@ -2694,7 +2722,7 @@ def test_no_share_scope_settles(shared, round_id):
     The gate sits before the body is read: a share probing the owner verbs
     learns the ceiling, not which arguments would have been valid.
     """
-    for path in ("/api/dispose", "/api/thread", "/api/round"):
+    for path in ("/api/dispose", "/api/thread", "/api/round", "/api/refresh"):
         status, payload = call(shared, path, {}, token=shared.share_token)
         assert status == 403, path
         assert payload["error"]["kind"] == "share", path

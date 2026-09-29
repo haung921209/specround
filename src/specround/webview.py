@@ -98,6 +98,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 from specround import __version__, assetfiles, markdown
+from specround.anchors import anchor_for
 from specround.assetfiles import AssetRefused
 from specround.diffs import changed_span, diff, unified_patch
 from specround.errors import AnchorError, InvariantError, SpecroundError
@@ -642,7 +643,7 @@ class WebView:
         if not self.path.is_file():
             return None
         try:
-            return self.path.read_text(encoding="utf-8")
+            return self.path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 
@@ -710,7 +711,7 @@ class WebView:
         state = self.store.fold()
         round_, blocked = self.resolve_round(state)
         live = self.live_text()
-        base = self.store.base_text(round_.id) if round_ is not None else None
+        base = self.store.snapshots.get_text(round_.base) if round_ is not None else None
         reading, shown = self._reading(base, live)
         comments = comments_on(state, self.key)
         payload: dict[str, Any] = {
@@ -725,6 +726,7 @@ class WebView:
             "actors": list(ACTORS),
             "verdicts": list(VERDICTS),
             "round": round_json(state, round_) if round_ is not None else None,
+            "review": self.store.review_status(self.path, state=state, round_id=round_.id if round_ else None),
             "rounds": [round_json(state, r) for r in rounds_on(state, self.key)],
             "comments": [comment_json(c) for c in comments],
             "commentable": round_ is not None and round_.open,
@@ -806,7 +808,8 @@ class WebView:
 
     def _check_basis(self, body: Mapping[str, Any], round_: Round | None) -> None:
         expected = {"expected_round": round_.id if round_ else None,
-                    "expected_base": round_.base if round_ else None}
+                    "expected_base": round_.base if round_ else None,
+                    "expected_review": round_.revision if round_ else None}
         if any(key not in body or body[key] != value for key, value in expected.items()):
             raise _state("the displayed round changed or this page is outdated — reload and reselect; your draft has not been submitted")
 
@@ -839,7 +842,8 @@ class WebView:
             if space == BASE and "quote" in body and body["quote"] != anchor.exact:
                 raise _state("selection text does not match this base — reload and reselect")
         comment_id = self.store.add_comment(
-            round_.id, author=_author(body, self.author), body=text, anchor=anchor, ext=ext
+            round_.id, author=_author(body, self.author), body=text, anchor=anchor, ext=ext,
+            expected_base=round_.base, expected_review=round_.revision,
         )
         return {
             "comment": comment_json(self.store.fold().comments[comment_id]),
@@ -861,7 +865,7 @@ class WebView:
         proposed = body.get("text")
         if not isinstance(proposed, str):
             raise _usage("a suggestion needs the edited text in 'text'")
-        base = self.store.base_text(round_.id)
+        base = self.store.snapshots.get_text(round_.base)
         span = changed_span(base, proposed)
         if span is None:
             raise _usage("the text is unchanged — there is nothing to propose")
@@ -871,8 +875,18 @@ class WebView:
             patch=unified_patch(base, proposed, label=self.key),
             body=str(body.get("body", "")).strip(),
             anchor=self._cut(round_, *span),
+            expected_base=round_.base,
+            expected_review=round_.revision,
         )
         return {"comment": comment_json(self.store.fold().comments[suggestion_id])}
+
+    def refresh(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        state = self.store.fold()
+        round_ = self._writable(state)
+        self._check_basis(body, round_)
+        report = self.store.refresh_round(round_.id, self.path, author=_author(body, self.author), expected_review=round_.revision)
+        state = self.store.fold()
+        return {"round": round_json(state, state.rounds[round_.id]), "carried": carry_json(state, report)}
 
     def reply(self, body: Mapping[str, Any]) -> dict[str, Any]:
         target = _text(body, "target")
@@ -998,7 +1012,7 @@ class WebView:
 
     def _cut(self, round_: Round, start: int, end: int) -> Any:
         try:
-            return self.store.anchor_span_in_round(round_.id, start, end)
+            return anchor_for(self.store.snapshots.get_text(round_.base), start, end)
         except AnchorError as exc:
             raise _usage(f"that span is not in the base round {round_.id} froze: {exc}") from exc
 
@@ -1016,7 +1030,8 @@ class WebView:
         if rebind.orphaned:
             raise _state(
                 f"that text has no place in the base round {round_.id} froze "
-                f"({rebind.reason}) — comment on the whole document instead, or open a "
+                f"({rebind.reason}) — publish the revision with 'specround round refresh', "
+                "comment on the whole document instead, or open a "
                 "new round on the revised document to review it as it is now"
             )
         return rebind.anchor, {"strategy": rebind.strategy, "ambiguous": rebind.ambiguous}
@@ -1199,6 +1214,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _state(self) -> None:
         self._json(self.view.select(self.named_doc).state_payload())
 
+    def _review(self) -> None:
+        view = self.view.select(self.named_doc)
+        state = view.store.fold()
+        round_, _ = view.resolve_round(state)
+        self._json(view.store.review_status(view.path, state=state, round_id=round_.id if round_ else None))
+
     def _preview(self) -> None:
         ref = (self.query.get("path") or [""])[0]
         self._json(self.view.select(self.named_doc).preview(ref))
@@ -1258,6 +1279,7 @@ class _Handler(BaseHTTPRequestHandler):
 _GETS: dict[str, Callable[[_Handler], None]] = {
     "/": _Handler._page,
     "/api/state": _Handler._state,
+    "/api/review": _Handler._review,
     "/api/asset": _Handler._asset,
     "/api/mermaid": _Handler._mermaid,
     "/api/preview": _Handler._preview,
@@ -1270,6 +1292,7 @@ _POSTS: dict[str, Callable[[_Handler], None]] = {
     "/api/dispose": lambda h: h._write(WebView.dispose),
     "/api/thread": lambda h: h._write(WebView.thread),
     "/api/round": lambda h: h._write(WebView.round),
+    "/api/refresh": lambda h: h._write(WebView.refresh),
 }
 
 #: The writes no share scope reaches. Comment, suggestion, and reply *say*
@@ -1277,4 +1300,4 @@ _POSTS: dict[str, Callable[[_Handler], None]] = {
 #: and settling is the owner's whatever the share was for. A round is the review
 #: itself — ending one, or starting the next on a revision, is the furthest thing
 #: from an opinion a link was handed out to collect.
-_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread", "/api/round"})
+_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread", "/api/round", "/api/refresh"})

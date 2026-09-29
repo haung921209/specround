@@ -148,3 +148,69 @@ fetch('https://example.invalid/blocked').catch(() => {});
         assert [a.exact for a in anchors] == ["", "Comment"]
     finally:
         served.shutdown()
+
+
+def test_same_round_update_notifies_without_replacing_an_active_draft(store, doc, doc_text, monkeypatch, tmp_path):
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to Chromium")
+    round_id = store.open_round(doc, author="test")
+    cid = store.add_comment(round_id, author="test", body="existing",
+                            anchor=store.anchor_in_round(round_id, "30 seconds"))
+    original = webview.page()
+    def publish(handler):
+        handler._body()
+        doc.write_text("Published introduction.\n\n" + doc_text, encoding="utf-8")
+        store.refresh_round(round_id, doc, author="agent")
+        handler._json({"ok": True})
+    monkeypatch.setitem(webview._POSTS, "/api/test-publish", publish)
+    probe = r"""<script>
+(async () => {
+  const report = document.createElement('pre');
+  report.id = 'browser-result'; document.body.appendChild(report);
+  const check = (ok, reason) => { if (!ok) throw Error(reason); };
+  const waitFor = async (test) => {
+    for (let i = 0; i < 500; i++) { if (test()) return; await new Promise(r => setTimeout(r, 20)); }
+    throw Error('timed out');
+  };
+  try {
+    await waitFor(() => state.data);
+    const round = state.data.round.id;
+    const revision = state.data.round.revision;
+    const text = $('doc').textContent;
+    commentBox({space:'base', start:0, end:0, quote:''});
+    const draft = document.querySelector('#composer textarea');
+    draft.value = 'keep my draft';
+    await api('/api/test-publish', {});
+    await waitFor(() => !checkingReview);
+    await checkReview();
+    check(!$('reviewnotice').hidden && !$('loadrevision').hidden, 'notification missing');
+    check(state.data.round.revision === revision && $('doc').textContent === text, 'poll replaced text');
+    await acceptReviewRevision();
+    check(state.data.round.revision === revision && draft.value === 'keep my draft', 'draft not protected');
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => $('notice').textContent.includes('reload'));
+    check(document.querySelector('#composer textarea') === draft && draft.value === 'keep my draft', 'refusal erased draft');
+    clearComposer();
+    await acceptReviewRevision();
+    check(state.data.round.id === round && state.data.round.revision !== revision, 'wrong round/revision');
+    check($('doc').textContent.includes('Published introduction.'), 'published text missing');
+    check(document.querySelector('mark.anch')?.textContent === '30 seconds', 'anchor lost');
+    check($('reviewnotice').hidden, 'accepted update still pending');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="test", port=0)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking",
+                                 f"--user-data-dir={tmp_path / 'profile'}", "--dump-dom", "--virtual-time-budget=15000", served.url],
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr[-2500:]
+        assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
+        state = store.fold()
+        assert list(state.comments) == [cid] and state.rounds[round_id].open
+    finally:
+        served.shutdown()

@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from specround import __version__
-from specround.anchors import Anchor, count_occurrences
+from specround.anchors import Anchor, anchor_for_quote, count_occurrences
 from specround.critic import COMMENT, DELETE, INSERT, Annotation, MarkupError
 from specround.diffs import diff
 from specround.errors import AnchorError, InvariantError, SpecroundError
@@ -90,7 +90,7 @@ STATE = 3
 #: The ``--json`` envelope carries its own version, for the same reason the
 #: ledger lines do: a consumer should be able to tell that the shape it parses
 #: is the shape it was written against.
-CLI_SCHEMA = "specround.cli/v0"
+CLI_SCHEMA = "specround.cli/v1"
 
 #: ``held`` is the word this CLI was specified with; ``deferred`` is the word
 #: the ledger stores and every output prints. Both are accepted on the way in
@@ -186,7 +186,7 @@ class UsageError(SpecroundError):
 #: check it was stuck behind was satisfied by ``touch``ing an empty file. Naming
 #: the three puts a new verb on the permissive side by default, which is where
 #: all but three of them belong.
-READS_THE_DOCUMENT = frozenset({"round.open", "harvest", "reanchor"})
+READS_THE_DOCUMENT = frozenset({"round.open", "round.refresh", "harvest", "reanchor"})
 
 
 @dataclass(frozen=True)
@@ -287,7 +287,7 @@ def _standing(target: Target, rounds: list[Round]) -> dict[str, Any]:
     if not target.path.is_file():
         return absent
     try:
-        live = target.path.read_text(encoding="utf-8")
+        live = target.path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         # Unreadable is not missing, and neither is a comparison. Reporting it
         # as present with nothing to say beats guessing which one it resembles.
@@ -418,12 +418,12 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
     """
     if not quote:
         raise UsageError("--quote must not be empty")
-    text = store.base_text(round_.id)
+    text = store.snapshots.get_text(round_.base)
     total = count_occurrences(text, quote)
     if total == 0:
         raise UsageError(
             f"--quote {quote!r} is not in the snapshot round {round_.id} froze "
-            "(the document may have been revised since — quote the base, or open a new round)"
+            "(the file may have changed — quote the published review, or publish it with 'specround round refresh')"
         )
     if total > 1 and occurrence is None:
         raise UsageError(
@@ -431,7 +431,7 @@ def _anchor(store: ReviewStore, round_: Round, quote: str, occurrence: int | Non
             f"say which one with --occurrence 0..{total - 1}"
         )
     try:
-        return store.anchor_in_round(round_.id, quote, occurrence=occurrence or 0)
+        return anchor_for_quote(text, quote, occurrence=occurrence or 0)
     except AnchorError as exc:
         raise UsageError(str(exc)) from exc
 
@@ -643,6 +643,20 @@ def _round_open(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     return payload, lines
 
 
+def _round_refresh(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    target = _target(args)
+    before = target.store.fold()
+    round_ = _live_round(before, target.key, args.round, verb="refresh")
+    report = target.store.refresh_round(round_.id, target.path, author=_author(args), expected_review=round_.revision)
+    state = target.store.fold()
+    current = state.rounds[round_.id]
+    changed = current.revision != round_.revision
+    carried = carry_json(state, report)
+    payload = {**target.envelope(), "round": round_json(state, current), "changed": changed, "carried": carried}
+    label = f"published revision {current.revision} in round {current.id}" if changed else "the review already matches the file — nothing published"
+    return payload, _carry_lines(carried, label)
+
+
 def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     target = _target(args)
     state = target.store.fold()
@@ -815,7 +829,8 @@ def _comment_add(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         )
     anchor = _anchor(target.store, round_, args.quote, args.occurrence) if args.quote else None
     comment_id = target.store.add_comment(
-        round_.id, author=_author(args), body=body, anchor=anchor
+        round_.id, author=_author(args), body=body, anchor=anchor,
+        expected_base=round_.base, expected_review=round_.revision,
     )
     state = target.store.fold()
     comment = state.comments[comment_id]
@@ -943,7 +958,7 @@ def _comment_context(store: ReviewStore, state: State, comment: Comment, live_re
     if anchor is None:
         return None
     placed = comment.current_anchoring
-    base = placed.base if placed else state.rounds[comment.round].base
+    base = placed.base if placed else comment.base or state.rounds[comment.round].initial_base
     source = store.snapshots.get_text(base)
     anchor.verify(source)
     line = source.count("\n", 0, anchor.start) + 1
@@ -1681,6 +1696,12 @@ def build_parser() -> argparse.ArgumentParser:
     opener.add_argument("--title", default="", help="a name for this round")
     opener.set_defaults(handler=_round_open, verb_name="round.open")
 
+    refresher = round_verbs.add_parser("refresh", parents=[common, writing],
+                                      help="publish the file as a new review revision in the same open round")
+    refresher.add_argument("doc")
+    refresher.add_argument("--round", metavar="ID", help="the open round to refresh")
+    refresher.set_defaults(handler=_round_refresh, verb_name="round.refresh")
+
     closer = round_verbs.add_parser(
         "close", parents=[common, writing], help="close the open round"
     )
@@ -1971,6 +1992,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fail(args, verb, exc, STATE, "state")
     except (SpecroundError, OSError) as exc:
         return _fail(args, verb, exc, FAILURE, "error")
+
+    if verb in {"comments", "comment", "reply", "dispose", "resolve", "reopen",
+                "round.status", "round.open", "round.close", "round.refresh"}:
+        # A status lookup failing after a write must not report that write as failed.
+        try:
+            path = Path(payload["path"])
+            store = ReviewStore.for_document(path, store=Path(payload["store"]))
+            review = store.review_status(path)
+            payload["review"] = review
+            if review["unpublished_changes"]:
+                lines.append("review: " + review["message"])
+                if review["next_action"]:
+                    command = review["next_action"]["verb"].replace(".", " ")
+                    lines.append(f"When ready: specround {command} {shlex.quote(str(path))} --store {shlex.quote(str(store.root))}")
+        except (SpecroundError, OSError) as exc:
+            payload["review"] = {"available": False, "message": str(exc)}
+            lines.append("command completed; review status could not be checked: " + str(exc))
 
     if args.json:
         print(_dump({"schema": CLI_SCHEMA, "verb": verb, **payload}))

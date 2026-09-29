@@ -35,6 +35,7 @@ def valid(kind: str, **overrides):
     }
     payloads = {
         "round.open": {"doc": "spec.md", "base": "sha256:" + "0" * 64},
+        "round.refresh": {"round": "r-1", "previous": "r-1", "base": "sha256:" + "1" * 64, "anchors": {}},
         "comment.add": {"round": "r-1", "body": "why 30 seconds?"},
         "suggestion.add": {"round": "r-1", "patch": "-30\n+60\n"},
         "reply": {"target": "c-1", "body": "because of the proxy"},
@@ -91,8 +92,8 @@ def test_unknown_field_is_rejected_and_ext_is_the_escape_hatch():
 
 
 def test_a_foreign_or_future_schema_is_refused_not_guessed():
-    with pytest.raises(SchemaError, match="major version 1"):
-        validate_event(valid("comment.add", schema=f"{SCHEMA_NAME}/v1"))
+    with pytest.raises(SchemaError, match="major version 2"):
+        validate_event(valid("comment.add", schema=f"{SCHEMA_NAME}/v2"))
     with pytest.raises(SchemaError, match="foreign ledger schema"):
         validate_event(valid("comment.add", schema="other.tool/v0"))
     with pytest.raises(SchemaError, match="malformed schema"):
@@ -103,6 +104,24 @@ def test_a_foreign_or_future_schema_is_refused_not_guessed():
 
 def test_parse_schema_splits_name_and_major():
     assert parse_schema(SCHEMA) == (SCHEMA_NAME, SCHEMA_VERSION)
+
+
+def test_legacy_schema_does_not_accept_refresh_or_new_provenance_fields():
+    with pytest.raises(SchemaError, match="requires"):
+        validate_event(valid("round.refresh", schema="specround.ledger/v0"))
+    with pytest.raises(SchemaError, match="unknown field"):
+        validate_event(valid("comment.add", schema="specround.ledger/v0", revision="r-old"))
+
+
+@pytest.mark.parametrize("placement", [
+    {"anchor": None},
+    {"anchor": None, "reason": ""},
+    {"anchor": {"exact": "x", "start": 0, "end": 2}, "strategy": "quote", "ambiguous": False},
+    {"anchor": {"exact": "x", "start": 0, "end": 1}, "strategy": "guess", "ambiguous": False},
+])
+def test_refresh_refuses_malformed_placements(placement):
+    with pytest.raises(SchemaError):
+        validate_event(valid("round.refresh", anchors={"c-one": placement}))
 
 
 def test_empty_strings_are_rejected_where_content_is_required():

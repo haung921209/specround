@@ -95,8 +95,38 @@ specround dispose SPEC.md --comment c-d35c --as rejected --why "backed out" --su
 specround round open SPEC.md --title "second pass"
 ```
 
-An anchor belongs to a round's base, and opening a round is the only thing that
-makes a new one. That is why there is no "carry it over now" step to remember:
+During an open round, publish verified file edits without ending the review:
+
+```bash
+specround round refresh SPEC.md
+```
+
+This creates an immutable review revision in the **same round**, carries existing
+comments, and reports moved, ambiguous, and orphaned anchors. Verdicts and resolved
+states stay unchanged. Refreshing unchanged bytes is a no-op. `round status --json`
+lists the original snapshot and every published revision. Comments keep their
+original snapshot/revision as well as their current placement.
+
+File edits alone are **not yet published to render/raw**; reloading the page or
+restarting the server does not publish them. Comment and completion commands report
+this explicitly, including a `review` object in JSON with `unpublished_changes`,
+`matches`, the two hashes, and a conditional `next_action`. The agent's loop is
+edit → verify → `round refresh` → ask for another review.
+
+The browser checks for updates every five seconds while visible and on focus. It
+offers **view new review revision** rather than replacing the text being read.
+An active draft blocks switching; stale submissions preserve their draft. The
+owner can also use **publish file changes to this round** in the page.
+
+**Compatibility:** new writes use `specround.ledger/v1`. Existing v0 events remain
+unchanged and readable, including mixed histories. Older binaries cannot read a
+history containing v1 records: upgrade all writers and running views before using
+the new version on a shared store. There is no automatic destructive migration.
+CLI JSON is now `specround.cli/v1`; consumers should read `initial_base` when
+they need the opening snapshot rather than the current published `base`.
+
+An anchor belongs to an immutable snapshot; opening or refreshing a round creates
+the next published snapshot and carries comments in that operation:
 `reanchor` only re-drives the carry onto the base you are already looking at,
 and refuses once the file has moved past it — nothing has frozen that revision,
 so an anchor cut from it would sit in a space no view shows. For a ledger that
@@ -105,8 +135,8 @@ the right base and appends the corrections (a dry run until `--apply`).
 
 **A review outlives the document it is about.** Rename the file, move it into a
 wiki, delete it outright — the ledger is where the review lives, and every verb
-goes on working from it. The three exceptions are the ones that open the file:
-`round open` freezes it, `harvest` rewrites it, `reanchor` compares against it.
+goes on working from it. The four exceptions need the live file:
+`round open` and `round refresh` freeze it, `harvest` rewrites it, `reanchor` compares against it.
 So a round whose document has been withdrawn still closes, a comment still
 anchors (it is cut from the base, and the base is in the store), and a thread
 still resolves. A path the store has never heard of is a different thing and is
@@ -355,8 +385,8 @@ ends it. `specround round status` prints the same two facts.
 The anchor space is the round's base in every mode, because that snapshot is the
 text the round is a review of (I7). In the diff, a line only the revision has has
 no place in the base — selecting it carries the text back through the re-anchor
-ladder, and when the ladder finds nothing the view says so and names the two ways
-on (comment on the whole document, or open a new round on the revision). It never
+ladder, and when the ladder finds nothing the view says so: publish the file with
+`round refresh`, comment on the whole document, or open a new round. It never
 guesses a nearby span.
 
 It is a local process, not hosting: loopback only, a token in the URL, no state

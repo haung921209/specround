@@ -279,6 +279,18 @@ target is spec and prose documents — PR tools already do code well).
   separately without rewriting history. `next_actions.when` states the judgment
   required before executing the suggested operation; `comments --context`
   provides snapshot line numbers and surrounding text with a live-file match flag.
+- **Same-round review publication** (2026-09-30): `round refresh` snapshots the
+  verified working file into the same open round and records the new revision
+  with every changed/orphaned placement as one ledger event. The initial snapshot,
+  revision history, original comment anchors and their snapshot/revision remain
+  available; verdicts and resolution do not change. Unchanged files are no-ops.
+  `round.base` denotes the current published snapshot; `initial_base` is the
+  opening snapshot. Missing locations are reported, never guessed onto a line.
+  CLI comment/completion commands report unpublished file changes and a conditional
+  publication action. The browser checks for revision updates and offers to load
+  one, protecting drafts instead of automatically switching the displayed text.
+  New writes and CLI output use v1 formats; v0 ledger records remain readable
+  unchanged. All binaries sharing a store must be upgraded before v1 writes.
 - **Overturning a settled verdict = `supersede`, and deferring never needed it**
   (settled by the implementation 2026-08-08, from a user report). The report was
   that parking a point as `deferred` and completing it later got refused as a
@@ -320,7 +332,8 @@ target is spec and prose documents — PR tools already do code well).
   not overwrite the anchor: they stay as **new ledger events**
   (`anchor.reanchor`/`anchor.orphan`), so where a comment went in which revision
   reads as history. Details in `docs/ledger-format.md` §5.1.
-- **An anchor space is a round's base, and only `round.open` makes one (settled
+- **An anchor space is a published snapshot (initially `round.open`, extended
+  by same-round refresh below; settled
   by the implementation 2026-08-08, from a measured failure)**. The ladder above
   says *how* a comment is carried; this says *into what*, which turned out to be
   a second definition nobody had written down. Re-anchoring took its target from
@@ -331,12 +344,12 @@ target is spec and prose documents — PR tools already do code well).
   the verification read the same revised text, so it passed too. Two definitions
   of "the anchor's space" were living in one field.
   Three things settle it:
-  **① Opening a round is what carries.** Freezing the revision is what makes the
+  **① Publishing a snapshot is what carries.** Freezing the revision is what makes the
   space, so it is what moves the comments into it. Not a step to remember, and
   therefore not one to skip — the ladder runs where the space is made or nowhere.
   **② `reanchor` may not invent a space.** It re-drives the carry onto the base
   the document is painted on, and is **refused** (exit 3) once the file has moved
-  past it, naming the two ways out (open a round on the revision · nothing to
+  past it, naming the ways out (refresh this round or open a new one · nothing to
   move against this base). The old behaviour is unreachable rather than
   discouraged.
   **③ I12 is reported, not refused.** A comment whose `current_anchor` does not

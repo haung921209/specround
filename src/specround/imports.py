@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from specround.anchors import Anchor, count_occurrences
+from specround.anchors import Anchor, anchor_for_quote, count_occurrences
 from specround.errors import AnchorError, SpecroundError
 from specround.fold import Comment, State
 from specround.store import ReviewStore
@@ -363,6 +363,8 @@ class Plan:
 
     source: str
     round: str
+    base: str = ""
+    revision: str = ""
     planned: list[Planned] = field(default_factory=list)
     skipped: list[Skipped] = field(default_factory=list)
     rejected: list[Rejected] = field(default_factory=list)
@@ -444,7 +446,7 @@ def _resolve(store: ReviewStore, round_id: str, base: str, item: Item) -> Planne
             f"the quote {item.quote!r} appears {total} time(s); "
             f"occurrence {item.occurrence} does not exist"
         )
-    anchor = store.anchor_in_round(round_id, item.quote, occurrence=item.occurrence or 0)
+    anchor = anchor_for_quote(base, item.quote, occurrence=item.occurrence or 0)
     return Planned(item=item, anchor=anchor, how=BY_QUOTE)
 
 
@@ -455,9 +457,10 @@ def plan_import(store: ReviewStore, round_id: str, key: str, batch: Batch) -> Pl
     is reading the whole file. A refusal is per-item: the document moved on
     under one comment, which says nothing about the others.
     """
-    base = store.base_text(round_id)
+    round_ = store.fold().rounds[round_id]
+    base = store.snapshots.get_text(round_.base)
     seen = already_imported(store.fold(), key, batch.source)
-    plan = Plan(source=batch.source, round=round_id)
+    plan = Plan(source=batch.source, round=round_id, base=round_.base, revision=round_.revision)
     for item in batch.items:
         existing = seen.get(item.id)
         if existing is not None:
@@ -489,6 +492,7 @@ def apply_plan(plan: Plan, store: ReviewStore, *, author: str) -> list[tuple[Ite
             body=item.body,
             anchor=entry.anchor,
             ext={EXT_KEY: origin},
+            expected_base=plan.base or None, expected_review=plan.revision or None,
         )
         written.append((item, comment_id))
     return written

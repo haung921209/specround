@@ -14,8 +14,8 @@ not know.
 
 | surface | contract | where it is written |
 |---|---|---|
-| the ledger and the store layout | `specround.ledger/v0` | [`ledger-format.md`](ledger-format.md) — the format *is* the contract, including where a store lives and how a document's key is derived |
-| CLI output | `specround.cli/v0` | every verb takes `--json` and the envelope carries its schema; human tables are for humans and may be reworded |
+| the ledger and the store layout | `specround.ledger/v1` (reads v0 too) | [`ledger-format.md`](ledger-format.md) — snapshots and revision history are append-only |
+| CLI output | `specround.cli/v1` | versioned revision/provenance and publication-status fields; human tables may be reworded |
 | exit codes | `0` ok · `2` fix the invocation · `3` the history refuses · `1` anything else | [`README.md`](../README.md) — judge by `$?`, never by matching output text |
 | `view` stdout | the **first line is the URL**, before the server is up; `port …` and `token …` lines follow and say where each half of that URL came from | README / SPEC §3 |
 | a document's URL | the **same document comes back on the same URL** — port and token both derived from, or stored against, the document's path. It moves only when the port was taken (`port_source: fallback`) or `--rotate-token` was passed, and both say so | README, and "restarting a view" below |
@@ -80,6 +80,30 @@ The combined dispose/resolve command writes two ordinary ledger events. If it
 is interrupted after the verdict, inspect status and run `resolve` for that ID;
 do not repeat the verdict with `--supersede` just to close the thread.
 
+## Publishing file edits during a round
+
+The CLI's `review` object (on comments, replies, dispositions, thread actions,
+and round commands) describes the **published review snapshot**, not an acknowledgement
+from an individual browser tab. `unpublished_changes: true` means render/raw will
+still serve older text even after a reload. The hashes `base` and `file`, revision
+ID, change counts, and `next_action` make this explicit.
+
+After changing and verifying the file, run `specround round refresh SPEC.md`.
+Do not close the round or resolve unfinished comments just to expose new text.
+Check the returned `carried` report for orphaned or ambiguous anchors. The round
+ID stays stable; the revision ID changes. Each comment records `anchor_base`
+and `revision` for its original anchor, separately from later anchor placements.
+
+Browser tabs announce the new revision and offer to load it. They do not replace
+an active draft. An old revision cannot submit a comment as if it had reviewed
+the new one, even when a later revision restores the same bytes.
+
+New ledger writes use v1; old v0 events remain readable without rewriting them.
+CLI JSON also uses `specround.cli/v1`, since a round's `base` now names its current
+published revision; use `initial_base` for the opening snapshot.
+Upgrade every CLI and running server sharing a store before writing with this
+version. A v0-only binary will refuse histories containing v1 records.
+
 ## What a running view does *not* need restarting for
 
 An adapter that cycles rounds around a live view should not be restarting the
@@ -93,13 +117,11 @@ reviewer's comment.
   new round, new base, new anchor space — with nobody restarting anything. The
   same is true in the other direction: a view started before any round existed
   begins commenting the moment one is opened.
-- **An open round's `render` and `raw` show the round's base, and that is not
-  staleness.** A comment on this round is verified against the snapshot the
-  round froze (I7), so the two modes a comment is made in have to show that
-  snapshot. Edit the file while the round is open and the edit appears in the
-  **diff** mode, which is what diff mode is for — not in the other two. Close
-  the round and open the next one and the new base is picked up, again without
-  a restart.
+- **Render/raw show the latest published revision of the round.** File edits
+  appear in diff first. `round refresh` freezes those edits as the next review
+  revision and carries comments there without closing the round. The initial
+  snapshot stays in `initial_base`; `base` names the current published snapshot.
+  Diff compares that current snapshot with the working file.
 
 Reading the first as staleness produces a restart-per-round procedure, and
 before the token was persisted every restart also rotated it: the URL the pane
