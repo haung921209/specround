@@ -669,6 +669,58 @@ def test_agent_is_told_when_file_edits_are_not_published(run, doc, opened):
     assert run("round", "refresh", doc, "--json").json["changed"] is False
 
 
+def test_named_review_cli_requires_scope_and_does_not_cross_overlapping_files(run, doc, tmp_path):
+    other = tmp_path / "other.md"
+    other.write_text("Other\n", encoding="utf-8")
+    first = run("review", "open", doc, other, "--title", "A", "--json")
+    assert first.code == 0, first.err
+    a = first.json["scope"]["id"]
+    b = run("review", "open", doc, "--title", "B", "--json").json["scope"]["id"]
+    created = run("comment", doc, "--review", a, "--body", "only A", "--json")
+    assert created.code == 0, created.err
+    cid = created.json["comment"]["id"]
+    assert created.json["scope"]["id"] == a
+    listed = run("comments", "--review", b, "--json")
+    assert listed.code == 0, listed.err
+    assert all(not d["comments"] for d in listed.json["documents"])
+    denied = run("dispose", doc, "--review", b, "--comment", cid, "--as", "answered", "--why", "wrong scope")
+    assert denied.code != 0
+    ambiguous = run("comments", doc)
+    assert ambiguous.code == 2 and a in ambiguous.err and b in ambiguous.err
+    listed = run("comments", "--review", a, "--context", "--json")
+    assert [c["body"] for d in listed.json["documents"] for c in d["comments"]] == ["only A"]
+    assert listed.json["scope"]["commands"]["comments"] == ["specround", "comments", "--review", a, "--json"]
+    status = run("review", "status", a, "--json").json
+    actions = [action for d in status["documents"] for action in d["next_actions"]]
+    assert actions == [{"verb": "dispose", "comment": cid, "when": "final_verdict_decided"}]
+    assert status["scope"]["commands"]["close"] == ["specround", "review", "close", a, "--json"]
+
+
+def test_named_review_view_cli_selects_member_and_keeps_scope_identity(run, doc, tmp_path, served):
+    other = tmp_path / "other.md"
+    other.write_text("Other\n", encoding="utf-8")
+    rid = run("review", "open", doc, other, "--json").json["scope"]["id"]
+    result = run("view", other, "--review", rid, "--port", "0", "--json")
+    assert result.code == 0, result.err
+    assert result.json["scope"]["id"] == rid
+    assert result.json["workspace"]["selected"] == "other.md"
+    assert served == [result.json["url"]]
+
+
+def test_directory_review_cli_reports_new_files_and_refreshes_explicitly(run, doc, tmp_path):
+    opened = run("review", "open", tmp_path, "--json")
+    assert opened.code == 0, opened.err
+    rid = opened.json["scope"]["id"]
+    (tmp_path / "new.md").write_text("New\n", encoding="utf-8")
+    status = run("review", "status", rid, "--json").json["scope"]
+    assert status["members"] == [doc.name] and status["new_files"] == ["new.md"]
+    assert run("comments", "new.md", "--review", rid).code == 2
+    refreshed = run("review", "refresh", rid, "--json")
+    assert refreshed.code == 0, refreshed.err
+    assert refreshed.json["scope"]["members"] == ["new.md", doc.name]
+    assert run("review", "close", rid, "--json").json["scope"]["status"] == "closed"
+
+
 def test_a_failed_status_lookup_does_not_claim_a_successful_write_failed(run, doc, opened, monkeypatch):
     cid = a_comment(run, doc)
     def unavailable(*args, **kwargs):

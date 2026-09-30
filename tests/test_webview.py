@@ -2616,7 +2616,7 @@ def test_the_page_calls_exactly_the_routes_the_server_serves():
     show up here as an inequality.
     """
     html = page().decode("utf-8")
-    called = set(re.findall(r'"(/api/[a-z]+)"', html))
+    called = set(re.findall(r'"(/api/[a-z-]+)"', html))
     served = set(_GETS) | set(_POSTS)
     assert called == served - {"/"}
 
@@ -2722,7 +2722,7 @@ def test_no_share_scope_settles(shared, round_id):
     The gate sits before the body is read: a share probing the owner verbs
     learns the ceiling, not which arguments would have been valid.
     """
-    for path in ("/api/dispose", "/api/thread", "/api/round", "/api/refresh"):
+    for path in ("/api/dispose", "/api/thread", "/api/round", "/api/refresh", "/api/scope-refresh"):
         status, payload = call(shared, path, {}, token=shared.share_token)
         assert status == 403, path
         assert payload["error"]["kind"] == "share", path

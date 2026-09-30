@@ -31,7 +31,10 @@ import os
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from specround.reviews import Review
 
 from specround.errors import SpecroundError
 from specround.fold import State
@@ -151,6 +154,8 @@ class Workspace:
     store: Path | None = None
     clock: Clock | None = None
     limit: int = DEFAULT_LIMIT
+    review: Review | None = None
+    bounded: bool = False
     #: Store handles, kept because they are handles — a store caches immutable
     #: snapshot text and re-reads the ledger on every fold, so reusing one can
     #: never serve a stale answer.
@@ -169,6 +174,8 @@ class Workspace:
         over: a listing that dies on one bad permission is a listing nobody can
         use, and the document under it was never reachable anyway.
         """
+        if self.review is not None:
+            return self.review.members(), 0
         keys: list[str] = []
         seen = {self.root.resolve()}
         revisits = 0
@@ -200,6 +207,8 @@ class Workspace:
                         # what ``resolve`` collapses, and it does it without
                         # walking the tree a second time to ask about case.
                         real = path.resolve()
+                        if self.bounded and not real.is_relative_to(self.root):
+                            continue
                         if real in seen:
                             revisits += 1
                             continue
@@ -265,6 +274,9 @@ class Workspace:
     def store_for(self, path: Path) -> ReviewStore:
         """The store that owns one document, by the ordinary resolution rules."""
         resolved = canonical_path(path)
+        if self.review is not None:
+            self.review.resolve_input(str(path))
+            return self.review.store
         held = self._stores.get(resolved)
         if held is None:
             held = ReviewStore.for_document(resolved, store=self.store, clock=self.clock)
@@ -285,6 +297,8 @@ class Workspace:
         privilege boundary; it is the guard that keeps a mistyped or stale key
         from quietly opening some other file's history under this one's name.
         """
+        if self.review is not None:
+            return self.review.resolve_key(key)
         if not key or key != key.strip():
             raise SpecroundError("a document key must not be empty or padded")
         candidate = Path(key)

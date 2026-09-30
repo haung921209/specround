@@ -110,6 +110,7 @@ from specround.store import ReviewStore
 from specround.snapshots import digest_text
 from specround.wire import carry_json, comment_json, comments_on, round_json, rounds_on
 from specround.workspace import Workspace
+from specround.reviews import Review, PartialReviewError
 
 __all__ = [
     "BASE",
@@ -324,6 +325,7 @@ class WebView:
     #: store keys ``docs/sub/a.md`` as ``a.md``) and mixing them would read one
     #: document's history under another's name.
     doc: str = ""
+    review: Review | None = None
 
     def __post_init__(self) -> None:
         self.key = self.store.doc_key(self.path)
@@ -360,7 +362,7 @@ class WebView:
         on would move the whole tree's port the day somebody adds a file that
         sorts before it, which is a port nobody could rely on.
         """
-        return self.workspace.root if self.workspace is not None else self.path
+        return self.review.directory if self.review else self.workspace.root if self.workspace is not None else self.path
 
     def bind(self) -> "WebView":
         """Take the port, so the URL is knowable before anything is served.
@@ -541,6 +543,11 @@ class WebView:
         belongs to one document, and carrying the hint onto a sibling would
         turn every other document in the tree into "no round X on Y".
         """
+        if self.review:
+            try:
+                self.review.resolve_key(key or self.doc or self.key)
+            except SpecroundError as exc:
+                raise _usage(str(exc)) from exc
         if self.workspace is None:
             if key and key != self.key:
                 raise _usage(
@@ -567,6 +574,7 @@ class WebView:
                 token=self.token,
                 workspace=self.workspace,
                 doc=key,
+                review=self.review,
             )
             self._bound[key] = bound
         return bound
@@ -607,6 +615,8 @@ class WebView:
         single file was given one directory and has no ground to serve out of a
         sibling nobody named.
         """
+        if self.review and self.review.mode == "files":
+            return self.path.parent
         return self.workspace.root if self.workspace is not None else self.path.parent
 
     def asset(self, ref: str) -> tuple[bytes, str]:
@@ -721,12 +731,13 @@ class WebView:
             "path": str(self.path),
             "store": str(self.store.root),
             "workspace": self.workspace_payload(),
+            "scope": self.review.describe(state) if self.review else None,
             "author": self.author,
             "actor": self.actor,
             "actors": list(ACTORS),
             "verdicts": list(VERDICTS),
             "round": round_json(state, round_) if round_ is not None else None,
-            "review": self.store.review_status(self.path, state=state, round_id=round_.id if round_ else None),
+            "review": (self.review or self.store).review_status(self.path, state=state, round_id=round_.id if round_ else None),
             "rounds": [round_json(state, r) for r in rounds_on(state, self.key)],
             "comments": [comment_json(c) for c in comments],
             "commentable": round_ is not None and round_.open,
@@ -888,8 +899,24 @@ class WebView:
         state = self.store.fold()
         return {"round": round_json(state, state.rounds[round_.id]), "carried": carry_json(state, report)}
 
-    def reply(self, body: Mapping[str, Any]) -> dict[str, Any]:
+    def _comment_target(self, body: Mapping[str, Any]) -> str:
         target = _text(body, "target")
+        state = self.store.fold()
+        comment = state.comments.get(target)
+        if comment is None:
+            raise _state("unknown comment in this document/review")
+        if state.rounds[comment.round].doc != self.key:
+            raise _state("comment does not belong to the selected document/review")
+        return target
+
+    def refresh_review(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        if self.review is None:
+            raise _usage("this view is not a named review")
+        results = self.review.refresh(author=_author(body, self.author))
+        return {"scope": self.review.describe(), "results": results}
+
+    def reply(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        target = self._comment_target(body)
         answered = self.store.reply(
             target, author=_author(body, self.author), body=_text(body, "body")
         )
@@ -905,7 +932,7 @@ class WebView:
         page to undo it, and a gate you can only pass somewhere else is a gate
         people route around.
         """
-        target = _text(body, "target")
+        target = self._comment_target(body)
         verdict = _text(body, "verdict")
         if verdict not in VERDICTS:
             raise _usage(f"unknown verdict {verdict!r}: use {', '.join(VERDICTS)}")
@@ -949,6 +976,15 @@ class WebView:
         state = self.store.fold()
         author = _author(body, self.author)
         self._check_basis(body, self.resolve_round(state)[0])
+        if self.review:
+            if body.get("open"):
+                raise _usage("use review open to start a new named review")
+            results = self.review.close(author=author, allow_undisposed=bool(body.get("allow_undisposed")),
+                                        allow_unresolved=bool(body.get("allow_unresolved")))
+            state = self.store.fold()
+            round_ = self.resolve_round(state)[0]
+            return {"round": round_json(state, round_) if round_ else None,
+                    "scope": self.review.describe(state), "results": results, "carried": None}
         live = [r for r in rounds_on(state, self.key) if r.open]
         if body.get("open"):
             if live:
@@ -989,7 +1025,7 @@ class WebView:
         error, exactly as the ledger has it (I10): a retry has to be safe for the
         agents this is for, and a button somebody clicked twice is a retry.
         """
-        target = _text(body, "target")
+        target = self._comment_target(body)
         actor = str(body.get("actor") or self.actor)
         if actor not in ACTORS:
             raise _usage(f"unknown actor {actor!r}: use {' or '.join(ACTORS)}")
@@ -1151,6 +1187,9 @@ class _Handler(BaseHTTPRequestHandler):
             route(self)
         except Refusal as exc:
             self._error(exc.status, exc.kind, str(exc), exc.reason)
+        except PartialReviewError as exc:
+            self._json({"schema": VIEW_SCHEMA, "error": {"kind": "partial", "message": str(exc)},
+                        "report": exc.report}, HTTPStatus.CONFLICT)
         except InvariantError as exc:
             # The ledger refused. It is the same class of answer the CLI exits 3
             # for, and the message is the ledger's own — the view does not
@@ -1218,7 +1257,9 @@ class _Handler(BaseHTTPRequestHandler):
         view = self.view.select(self.named_doc)
         state = view.store.fold()
         round_, _ = view.resolve_round(state)
-        self._json(view.store.review_status(view.path, state=state, round_id=round_.id if round_ else None))
+        payload = (view.review or view.store).review_status(view.path, state=state, round_id=round_.id if round_ else None)
+        payload["scope"] = view.review.describe(state) if view.review else None
+        self._json(payload)
 
     def _preview(self) -> None:
         ref = (self.query.get("path") or [""])[0]
@@ -1272,7 +1313,10 @@ class _Handler(BaseHTTPRequestHandler):
         named = body.get("doc")
         if named is not None and not isinstance(named, str):
             raise _usage("'doc' names a document in this workspace and must be a string")
-        payload = method(self.view.select(named or self.named_doc), body)
+        selected = self.view.select(named or self.named_doc)
+        if selected.review and body.get("review_id", selected.review.id) != selected.review.id:
+            raise _usage("request review ID does not match this view")
+        payload = method(selected, body)
         self._json({"schema": VIEW_SCHEMA, **payload})
 
 
@@ -1293,6 +1337,7 @@ _POSTS: dict[str, Callable[[_Handler], None]] = {
     "/api/thread": lambda h: h._write(WebView.thread),
     "/api/round": lambda h: h._write(WebView.round),
     "/api/refresh": lambda h: h._write(WebView.refresh),
+    "/api/scope-refresh": lambda h: h._write(WebView.refresh_review),
 }
 
 #: The writes no share scope reaches. Comment, suggestion, and reply *say*
@@ -1300,4 +1345,4 @@ _POSTS: dict[str, Callable[[_Handler], None]] = {
 #: and settling is the owner's whatever the share was for. A round is the review
 #: itself — ending one, or starting the next on a revision, is the furthest thing
 #: from an opinion a link was handed out to collect.
-_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread", "/api/round", "/api/refresh"})
+_OWNER_POSTS = frozenset({"/api/dispose", "/api/thread", "/api/round", "/api/refresh", "/api/scope-refresh"})

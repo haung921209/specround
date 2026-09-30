@@ -274,6 +274,7 @@
 <body>
 <header>
   <span class="doc" id="docname">…</span>
+  <span class="meta" id="scopename"></span>
   <span class="meta" id="roundmeta"></span>
   <span class="grow"></span>
   <div class="modes" id="modes" role="group" aria-label="view mode">
@@ -364,6 +365,7 @@ async function api(path, body, params = {}) {
     method: body === undefined ? "GET" : "POST",
   };
   if (body !== undefined) options.body = JSON.stringify(body);
+  if (body !== undefined && state.data?.scope) options.body = JSON.stringify({ ...body, review_id: state.data.scope.id });
   const query = new URLSearchParams({ ...params, t: TOKEN });
   if (state.doc) query.set("doc", state.doc);
   const response = await fetch(path + "?" + query.toString(), options);
@@ -553,6 +555,10 @@ function roundAction(data) {
   // over a document that is gone has no next round to start (G12: the review
   // stays readable, but a base is cut from a text and there is none).
   if (!data || !data.reading) return null;
+  if (data.scope) {
+    return data.scope.status === "closed" ? null
+      : { label: "end this review — " + data.scope.counts.documents + " files", body: {open: false} };
+  }
   const counts = data.counts || {};
   if (data.round && data.round.status === "open") {
     const undecided = data.round.undisposed_count ?? counts.undisposed ?? 0;
@@ -874,7 +880,7 @@ function actionFocus(path, result) {
 }
 
 function actionRedraw(path) {
-  return path === "/api/round" || path === "/api/refresh";
+  return path === "/api/round" || path === "/api/refresh" || path === "/api/scope-refresh";
 }
 
 function previewRef(ref) {
@@ -1479,7 +1485,8 @@ function clearComposer() {
 
 function roundBox(action) {
   if (action.body.open) return act(action.body, "/api/round");
-  const round = state.data.round;
+  const round = state.data.scope ? {undisposed_count:state.data.scope.counts.undisposed,
+                                    unresolved_thread_count:state.data.scope.counts.unresolved_threads} : state.data.round;
   if (!round.undisposed_count && !round.unresolved_thread_count) return act(action.body, "/api/round");
   const box = panel("finish the review before closing, or explicitly leave work for later");
   const body = { open: false, ...viewBasis() };
@@ -1967,13 +1974,20 @@ function hasDrafts() {
 }
 
 function showReviewUpdate(review) {
-  const changed = review.revision !== (state.data?.round?.revision ?? null);
-  $("reviewnotice").hidden = !changed && !review.unpublished_changes;
+  const scope = review.scope;
+  const membershipChanged = scope && JSON.stringify(scope.members) !== JSON.stringify(state.data?.scope?.members);
+  const changed = membershipChanged || review.revision !== (state.data?.round?.revision ?? null);
+  const newFiles = scope?.new_files?.length || 0;
+  const missing = scope?.missing_files?.length || 0;
+  $("reviewnotice").hidden = !changed && !review.unpublished_changes && !newFiles && !missing;
   $("reviewstatus").textContent = changed
     ? "A new review revision is available. Your current text and draft have been kept."
-    : review.message;
+    : review.message + (newFiles ? " · " + newFiles + " new files not yet included in this review" : "")
+      + (missing ? " · " + missing + " files missing on disk; review history retained" : "");
   $("loadrevision").hidden = !changed;
-  $("publishrevision").hidden = changed || !review.unpublished_changes || !state.data?.round || state.data.round.status !== "open";
+  $("publishrevision").hidden = changed || (!review.unpublished_changes && !newFiles)
+    || (scope ? scope.status !== "open" : !state.data?.round || state.data.round.status !== "open");
+  $("publishrevision").textContent = scope ? "refresh this review's files" : "publish file changes to this round";
 }
 
 let checkingReview = false;
@@ -2002,8 +2016,9 @@ async function acceptReviewRevision() {
 async function load({ redrawDocument = true } = {}) {
   const data = await api("/api/state");
   const previous = state.data;
-  if (previous && previous.round?.revision !== data.round?.revision && hasDrafts()) {
-    showReviewUpdate(data.review);
+  if (previous && (previous.round?.revision !== data.round?.revision
+      || JSON.stringify(previous.scope?.members) !== JSON.stringify(data.scope?.members)) && hasDrafts()) {
+    showReviewUpdate({ ...data.review, scope: data.scope });
     return;
   }
   // A different round/file may arrive while the comment request is in flight.
@@ -2012,7 +2027,10 @@ async function load({ redrawDocument = true } = {}) {
       || previous.reading !== data.reading || previous.doc !== data.doc
       || previous.workspace?.selected !== data.workspace?.selected) redrawDocument = true;
   state.data = data;
-  showReviewUpdate(data.review);
+  showReviewUpdate({ ...data.review, scope: data.scope });
+  $("scopename").textContent = data.scope
+    ? data.scope.title + " · " + data.scope.id + " · comments from this review only"
+    : "document history · no named review";
   // From here on the page names the document explicitly, including the first
   // load, where the server chose it. The header shows the workspace's name for
   // it rather than the store's: a central store keys `docs/sub/a.md` as `a.md`,
@@ -2070,7 +2088,7 @@ $("refresh").addEventListener("click", () => load().catch((e) => notice(String(e
 $("loadrevision").addEventListener("click", () => acceptReviewRevision().catch((e) => notice(e.message, "bad")));
 $("publishrevision").addEventListener("click", () => {
   if (hasDrafts()) { notice("Finish or save your draft before publishing a new review revision.", "info"); return; }
-  act({}, "/api/refresh");
+  act({}, state.data.scope ? "/api/scope-refresh" : "/api/refresh");
 });
 setInterval(checkReview, 5000);
 document.addEventListener("visibilitychange", checkReview);

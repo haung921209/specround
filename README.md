@@ -31,8 +31,8 @@ pipx install git+https://github.com/haung921209/specround
 From a checkout, `uv tool install --editable .` puts `specround` on your PATH
 and leaves it pointing at the working tree.
 
-Homebrew is prepared and not yet published: [`packaging/homebrew/`](packaging/homebrew)
-holds the formula and the release checklist. Once a release exists,
+Homebrew releases are available; [`packaging/homebrew/`](packaging/homebrew)
+holds the formula and the release checklist:
 
 ```bash
 brew tap haung921209/specround
@@ -142,6 +142,45 @@ anchors (it is cut from the base, and the base is in the store), and a thread
 still resolves. A path the store has never heard of is a different thing and is
 still refused — that one is a typo, and answering "no comments" to a typo would
 be a wrong answer that reads like a fact.
+
+## Several files, one isolated review
+
+```bash
+specround review open docs/api.md docs/storage.md --title "API changes" --json
+# Or select a directory of Markdown documents:
+specround review open docs/ --title "Design review" --json
+
+# Use the returned R-… ID in every subsequent command.
+specround view --review R-ID
+specround comments --review R-ID --context --json
+specround dispose docs/api.md --review R-ID --comment c-ID --as applied --why "verified" --resolve --actor agent
+specround review refresh R-ID --json
+specround review status R-ID --json
+specround review close R-ID
+specround review list --json
+```
+
+Each named review has its own ledger, snapshots, token and URL. Overlapping files
+do **not** share comments or review revisions. The working files themselves are
+still shared: edits made for review A can be published into B only by explicitly
+refreshing B. Existing document history stays separate; nothing is migrated or
+copied automatically. `view <directory>` remains navigation over that legacy
+history, not a named review.
+
+Explicit file lists stay fixed. Directory reviews discover new `.md`/`.markdown`
+files, but report them as **not yet included** until `review refresh` publishes
+them. Hidden paths and symlinks outside the directory are excluded. Missing
+published files retain their snapshots, comments and membership. Refresh publishes
+existing members' edits in their same rounds and opens child rounds for new files.
+It never changes verdicts or resolves threads.
+
+The JSON `scope` names the review, exact members, new/missing files, membership
+policy and copyable commands. A file belonging to an open named review requires
+`--review`; the CLI will not guess which history an agent meant. Close checks all
+members and refuses outstanding comments, conversations or unpublished new files.
+Refresh/close preflight the group, but are atomic **per file**, not across files:
+a later failure reports which files succeeded so the agent can inspect and retry.
+Closed reviews remain readable; start a new named review for another independent pass.
 
 ## In your editor
 

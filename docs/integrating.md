@@ -80,6 +80,43 @@ The combined dispose/resolve command writes two ordinary ledger events. If it
 is interrupted after the verdict, inspect status and run `resolve` for that ID;
 do not repeat the verdict with `--supersede` just to close the thread.
 
+## Named review scope: pass the ID, not just a filename
+
+`review open a.md b.md` creates an isolated, fixed file selection; `review open
+docs/` creates a directory selection. Both return a `scope.id` (`R-…`). Pass that
+ID with `--review` on all document commands. To collect the complete review, use
+`comments --review R-ID --context --json`, not an unscoped scan of its files.
+An open named review containing a file makes an unscoped document command fail
+with the candidate review IDs rather than silently choosing another ledger.
+
+Every scoped response identifies `scope`: title, root, exact `members`, `new_files`,
+`missing_files`, status, comment visibility, membership policy, counts and command
+argument arrays. Review-wide comments/status also return `documents`, each with a
+document key/path, publication `review` status and conditional `next_actions`.
+These actions retain the existing verdict/conversation distinction; no new pending
+state is introduced. Execute a document action with both its path and `--review`.
+
+Directory discovery is not publication. If `scope.new_files` is nonempty, those
+files are not visible in that review yet. After verifying edits, run `review
+refresh R-ID --json`; inspect per-file `results` including ambiguous/orphaned
+anchors. Missing members retain their last published snapshots and comments.
+Explicit selections never expand. `review close R-ID` checks the entire group,
+including unpublished new files; individual `round open/close --review` is refused.
+
+Review A and B may name the same physical file, but their comments, snapshots,
+tokens and completion state never merge. Editing the working file does affect the
+same disk path: refreshing B is a separate decision, not a side effect of A.
+Legacy document stores are not imported, and `view directory` is not a named
+review. Handoff must include the review ID, members, unpublished changes and the
+`scope.commands.comments` command so the next agent keeps this boundary.
+
+The registry is `<central-root>/reviews/R-ID/review.json` with manifest schema
+`specround.review/v1`; its sibling `store/` uses the existing directory-store
+format and ledger v1. Each member is an ordinary round with `ext.review.id`.
+Group operations preflight but are not cross-file transactions. On partial
+failure, JSON errors include `report.review_id` and per-file `report.results`;
+read status before retrying. Do not claim the whole group succeeded.
+
 ## Publishing file edits during a round
 
 The CLI's `review` object (on comments, replies, dispositions, thread actions,

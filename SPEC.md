@@ -620,40 +620,30 @@ target is spec and prose documents — PR tools already do code well).
   disposing, and resolving work there exactly as they do from the CLI today.
   `round status` also gains, per round, how many comments the carry brought
   in and how many it orphaned — `carry_of` already knows.
-- H20 several documents in one review (user, 2026-09-08 — "pass the files as
-  arguments and a round opens on them") — **direction settled (user decision
-  2026-09-08)**. §3 ④ stands: there is no workspace round, no shared anchor
-  space, no second definition of undisposed. A **set** is N ordinary rounds
-  opened together and recorded as belonging together, in `ext.set = {id,
-  members, title}` on each `round.open` — the fourth use of `ext`, an
-  observation the fold preserves and never acts on (H12's shape). Nothing in
-  the store, the anchors, or the fold changes; what changes is what the verbs
-  accept. **`round open a.md b.md c.md`** checks everything first — every path
-  is a file, no path twice, no member with a round already open (named,
-  "close it or leave it out") — and only then appends, one store at a time;
-  one document is exactly today's verb, and no set is written. **A set closes
-  as one gate** (user decision): `round close a.md --set` reads the
-  membership off a.md's open round, folds every member, counts the undisposed
-  per document, and refuses naming them (`b.md 2, c.md 1`) unless
-  `--allow-undisposed`; a single document still closes alone with the verb it
-  always had, and the set then reads as partly closed. Since the checks run
-  before the first append, a failure between appends can only be the disk,
-  and it is reported with which members closed. The set id is `S` plus twelve
-  digest characters over the timestamp and the sorted paths — it is a value
-  in `ext`, not a record, so it is not derived the way record ids are. The
-  member paths are absolute and therefore machine-local, which is what an
-  observation in `ext` is allowed to be and a field is not. **`view a.md
-  b.md`** is the directory view with the walk replaced by the list: the bar
-  shows those files, the asset root is their common ancestor, and the port
-  and token key on the sorted paths, for the reason the directory view keys
-  on the directory rather than the file it opens on. It needs no set — two
-  files are two files. Where the open round carries `ext.set`, the page's
-  round control becomes the set's (`end this set — 3 documents, leaves N
-  undisposed` · `start the next round on the 3 revisions`) through the same
-  `/api/round` with a `set` flag. Not done, until it is asked for: expanding
-  a directory into a set, an index of sets, renaming one. The adapter that
-  opens reviews from an issue tracker passing several files through is that
-  adapter's work, outside this repository.
+- H20 several documents in one review — **landed 2026-09-30; supersedes the
+  2026-09-08 metadata-only set direction**. Overlapping selections must not
+  expose one another's comments, so membership metadata alone is insufficient.
+  `review open a.md b.md` or `review open docs/` creates an `R-…` namespace with
+  its own ordinary directory store, snapshots and `specround.review/v1`
+  manifest. Each member is an ordinary per-document round with `ext.review.id`;
+  anchors and verdict/resolve semantics stay unchanged. No existing history is
+  imported. §3 ④ remains the legacy `view directory` navigation contract;
+  `view --review R-ID` instead serves only that namespace's published members,
+  with its own stable port/token identity and visible title/ID.
+  Explicit file lists stay fixed. Directory reviews detect new Markdown files
+  but only `review refresh R-ID` publishes them; existing members receive
+  same-round revisions, and removed files retain snapshots and comments.
+  Hidden paths and out-of-root symlinks are excluded. Working files are shared,
+  published history is not: refreshing A never publishes into B.
+  Agents collect with `comments --review R-ID --json`; scoped responses include
+  exact members, new/missing files, publication status and command arrays.
+  Unscoped document commands refuse when an open named review contains that
+  file. Whole-review status/comments include per-document next actions.
+  `review close R-ID` gates every member's undisposed and unresolved comments
+  and requires newly discovered files to be published first. Individual scoped
+  round open/close is refused. Group refresh/close preflight, but each member
+  remains its own atomic write: a later failure reports completed/failed files
+  explicitly. Closed reviews remain readable; a new review is independent.
 
 ## 5. Done-ness (of the spec stage)
 

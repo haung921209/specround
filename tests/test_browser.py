@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from specround import webview
+from specround.reviews import Review
+from specround.workspace import Workspace
 
 
 def test_html_preview_is_isolated_and_survives_commenting(store, doc, monkeypatch, tmp_path):
@@ -214,3 +216,64 @@ def test_same_round_update_notifies_without_replacing_an_active_draft(store, doc
         assert list(state.comments) == [cid] and state.rounds[round_id].open
     finally:
         served.shutdown()
+
+
+def test_review_browser_shows_scope_and_explicitly_includes_new_files(monkeypatch, tmp_path):
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to Chromium")
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# A\n\nShared text.\n", encoding="utf-8")
+    a = Review.create([root], title="Alpha", author="alice")
+    b = Review.create([root], title="Beta", author="alice")
+    foreign = b.store.add_comment(b.store.latest_round(root / "a.md").id, author="bob", body="only Beta")
+    def add_file(handler):
+        handler._body()
+        (root / "new.md").write_text("# New\n", encoding="utf-8")
+        handler._json({"ok": True})
+    monkeypatch.setitem(webview._POSTS, "/api/test-new-file", add_file)
+    original = webview.page()
+    probe = r"""<script>
+(async () => {
+  const report = document.createElement('pre'); report.id = 'browser-result'; document.body.appendChild(report);
+  const check = (ok, why) => { if (!ok) throw Error(why); };
+  const waitFor = async (test) => { for (let i=0;i<500;i++) { if(test()) return; await new Promise(r=>setTimeout(r,20)); } throw Error('timed out'); };
+  try {
+    await waitFor(() => state.data);
+    const scope = state.data.scope.id;
+    check($('scopename').textContent.includes('Alpha') && state.data.comments.length === 0, 'scope mixed');
+    let denied = false;
+    try { await api('/api/reply', {target: 'FOREIGN_ID', body:'wrong review'}); } catch (_) { denied = true; }
+    check(denied, 'foreign write accepted');
+    await api('/api/test-new-file', {});
+    await waitFor(() => !checkingReview);
+    await checkReview();
+    check(!$('publishrevision').hidden && $('reviewstatus').textContent.includes('new files'), 'new file notice missing');
+    check(state.data.scope.members.length === 1, 'membership changed before publication');
+    check(await act({}, '/api/scope-refresh'), 'review refresh failed');
+    check(state.data.scope.members.includes('new.md') && state.data.scope.new_files.length === 0, 'new file not published');
+    openDocument('new.md');
+    await waitFor(() => state.data.workspace.selected === 'new.md');
+    check(state.data.scope.id === scope && state.data.comments.length === 0, 'navigation lost scope');
+    check(await act({whole:true, body:'only Alpha'}, '/api/comment'), 'scoped comment failed');
+    check(state.data.comments.length === 1 && state.data.comments[0].body === 'only Alpha', 'wrong comment set');
+    check(roundAction(state.data).label.includes('review'), 'close control is not review-wide');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();</script>""".replace("FOREIGN_ID", foreign)
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    view = webview.WebView(store=a.store, path=root / "a.md", author="alice", port=0,
+                           review=a, workspace=Workspace(root, review=a), doc="a.md")
+    view.start()
+    try:
+        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking",
+                                 f"--user-data-dir={tmp_path / 'profile'}", "--dump-dom", "--virtual-time-budget=15000", view.url],
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2500:] + result.stderr[-1500:]
+        assert b.members() == ["a.md"]
+        assert list(b.store.fold().comments) == [foreign]
+        assert a.members() == ["a.md", "new.md"]
+    finally:
+        view.shutdown()

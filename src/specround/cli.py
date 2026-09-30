@@ -58,6 +58,7 @@ from specround.imports import BatchError, apply_plan, load_batch, parse_text, pl
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
 from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
+from specround.reviews import Review, PartialReviewError
 from specround.snapshots import digest_bytes
 from specround.viewtokens import ROTATED, STORED, token_for
 from specround.webview import (
@@ -196,10 +197,14 @@ class Target:
     store: ReviewStore
     path: Path
     key: str
+    review: Review | None = None
 
     def envelope(self) -> dict[str, Any]:
         """The fields every ``--json`` payload carries about its subject."""
-        return {"doc": self.key, "path": str(self.path), "store": str(self.store.root)}
+        payload = {"doc": self.key, "path": str(self.path), "store": str(self.store.root)}
+        if self.review:
+            payload["scope"] = self.review.describe()
+        return payload
 
 
 def _document(value: str, *, must_exist: bool = True) -> Path:
@@ -231,7 +236,32 @@ def _target(args: argparse.Namespace) -> Target:
     drifts — it did, and ``round close`` was the verb it drifted on.
     """
     reads = getattr(args, "verb_name", None) in READS_THE_DOCUMENT
+    if getattr(args, "review", None):
+        if args.store:
+            raise UsageError("--review selects its own store; do not combine it with --store")
+        if not args.doc:
+            raise UsageError("name a member file, or use comments --review ID to list the whole review")
+        try:
+            review = Review.load(args.review)
+            path = review.resolve_input(args.doc)
+        except SpecroundError as exc:
+            raise UsageError(str(exc)) from exc
+        if getattr(args, "verb_name", None) == "round.open":
+            raise UsageError("review members already have rounds; use review refresh or create a new review")
+        if getattr(args, "verb_name", None) == "round.close":
+            raise UsageError(f"close the whole review with: specround review close {review.id}")
+        if reads and not path.is_file():
+            raise UsageError(f"{path}: this operation requires the live file")
+        return Target(review.store, path, review.store.doc_key(path), review)
+    if not args.doc:
+        raise UsageError("name a document or provide --review ID")
     path = _document(args.doc, must_exist=reads)
+    if not args.store:
+        reviews = Review.containing(path)
+        if reviews:
+            raise UsageError("this file belongs to named reviews; specify --review " + " or ".join(r.id for r in reviews))
+    elif (Path(args.store).parent / "review.json").is_file():
+        raise UsageError("this is a named review store; select it with --review ID")
     store = ReviewStore.for_document(path, store=Path(args.store) if args.store else None)
     key = store.doc_key(path)
     if not reads and not path.is_file() and not _has_history(store, key):
@@ -696,7 +726,8 @@ def _round_close(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     lines = [f"closed {round_.id} on {target.key}"]
     if payload["unresolved_threads"]:
         lines.append("left unresolved: " + ", ".join(payload["unresolved_threads"]))
-        lines.append(f"Review remaining threads: specround comments {shlex.quote(str(target.path))} --json")
+        selector = f" --review {target.review.id}" if target.review else ""
+        lines.append(f"Review remaining threads: specround comments {shlex.quote(str(target.path))}{selector} --json")
     if closed.undisposed_at_close:
         lines.append(
             f"left undisposed ({len(closed.undisposed_at_close)}): "
@@ -786,7 +817,8 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         # zero and knowing which verb moves which.
         lines.append(
             f"{round_id} has nothing outstanding: every comment disposed, every thread "
-            f"resolved. Record it with 'specround round close {target.key}'"
+            f"resolved. Record it with 'specround "
+            + (f"review close {target.review.id}" if target.review else f"round close {target.key}") + "'"
         )
     if rounds:
         lines.append("")
@@ -904,6 +936,8 @@ def _reopen(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
 
 
 def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    if getattr(args, "review", None) and not args.doc:
+        return _review_comments(args)
     # A document that was renamed or deleted still has history, and the CLI is
     # the way to it (G12). _target refuses a path with nothing behind it.
     target = _target(args)
@@ -951,6 +985,70 @@ def _comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
                           + (" (matches file)" if context["matches_file"] else " (not the current file)"),
                           context["text"]])
     return payload, lines
+
+
+def _review_comments(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    if args.store or args.round:
+        raise UsageError("review-wide comments takes --review alone; name a file for --round")
+    review = Review.load(args.review)
+    state = review.store.fold()
+    documents = []
+    lines = [f"review {review.id} — {review.title} (comments from this review only)"]
+    for key in review.members(state):
+        path = review.resolve_key(key)
+        items = comments_on(state, key)
+        if args.undisposed:
+            items = [c for c in items if c.undisposed]
+        hidden = [] if args.all else [c.id for c in items if c.resolved]
+        items = [c for c in items if c.id not in hidden]
+        entry = {"doc": key, "path": str(path), "comments": [comment_json(c) for c in items],
+                 "next_actions": _next_actions(comments_on(state, key)),
+                 "hidden": hidden, "review": review.review_status(path, state=state)}
+        if args.context:
+            try:
+                live_ref = digest_bytes(path.read_bytes())
+            except OSError:
+                live_ref = None
+            entry["contexts"] = {c.id: _comment_context(review.store, state, c, live_ref) for c in items}
+        documents.append(entry)
+        lines.extend(["", key, *_comment_rows(items, hidden=hidden)])
+    return {"scope": review.describe(state), "documents": documents}, lines
+
+
+def _review_command(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    if args.store or args.review:
+        raise UsageError("review commands select their own store and review ID")
+    action = args.review_action
+    if action == "list":
+        scopes = [r.describe() for r in Review.all()]
+        return {"scopes": scopes}, [f"{s['id']}  {s['status']}  {s['title']}" for s in scopes] or ["no named reviews"]
+    if action == "open":
+        review = Review.create([Path(p).expanduser() for p in args.paths], title=args.title, author=_author(args))
+        results = []
+    else:
+        review = Review.load(args.scope_id)
+        if action == "refresh":
+            results = review.refresh(author=_author(args))
+        elif action == "close":
+            results = review.close(author=_author(args), allow_undisposed=args.allow_undisposed,
+                                   allow_unresolved=args.allow_unresolved)
+        else:
+            results = []
+    state = review.store.fold()
+    scope = review.describe(state)
+    documents = [{"doc": key, "path": str(review.root / key),
+                  "next_actions": _next_actions(comments_on(state, key)),
+                  "rounds": [round_json(state, r) for r in rounds_on(state, key)],
+                  "review": review.review_status(review.root / key, state=state)} for key in review.members(state)]
+    lines = [f"review {review.id} — {review.title} ({scope['status']}, {len(scope['members'])} files)",
+             "comment scope: this review only", "files: " + ", ".join(scope["members"]),
+             "agent: " + shlex.join(scope["commands"]["comments"])]
+    if scope["new_files"]:
+        lines.append("new files not yet included: " + ", ".join(scope["new_files"]) + " — run review refresh " + review.id)
+    if scope["missing_files"]:
+        lines.append("files missing on disk; history retained: " + ", ".join(scope["missing_files"]))
+    lines.extend(f"{r['doc']}: {r['status']}" for r in results)
+    return {"scope": scope, "documents": documents, "results": results}, lines
 
 
 def _comment_context(store: ReviewStore, state: State, comment: Comment, live_ref: str | None) -> dict[str, Any] | None:
@@ -1338,7 +1436,7 @@ def _dispose(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
         lines.append(
             "thread still open — when the conversation is complete: "
             f"specround resolve {shlex.quote(str(target.path))} --comment {disposed.id}"
-            f" --store {shlex.quote(str(target.store.root))}"
+            + (f" --review {target.review.id}" if target.review else f" --store {shlex.quote(str(target.store.root))}")
         )
     else:
         lines.append("deferred — still outstanding; decide its final verdict before resolving")
@@ -1366,6 +1464,12 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
 
     A directory is the same verb over a tree (H15) and takes the branch below.
     """
+    if args.review:
+        if args.store:
+            raise UsageError("--review selects its own store")
+        return _view_workspace(args, Review.load(args.review))
+    if not args.doc:
+        raise UsageError("view needs a document/directory or --review ID")
     if Path(args.doc).expanduser().is_dir():
         return _view_workspace(args)
     target = _target(args)
@@ -1423,7 +1527,7 @@ def _view(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable
     return payload, lines, _serving(view, args.open)
 
 
-def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str], Callable[[], None]]:
+def _view_workspace(args: argparse.Namespace, review: Review | None = None) -> tuple[dict[str, Any], list[str], Callable[[], None]]:
     """Serve a whole tree from one process — one server, a bar, three modes (H15).
 
     A spec is never one file. The workspace layer is navigation and nothing
@@ -1441,13 +1545,13 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
     which belongs to one document — honouring it here would mean picking a
     document for the caller and hiding that under a flag about rounds.
     """
-    root = canonical_path(Path(args.doc).expanduser())
+    root = review.root if review else canonical_path(Path(args.doc).expanduser())
     if args.round:
         raise UsageError(
             f"--round names a round, and a round belongs to one document — point view at "
             f"that file to use it, or drop the flag to serve {root}"
         )
-    space = Workspace(root=root, store=Path(args.store) if args.store else None)
+    space = Workspace(root=root, store=Path(args.store) if args.store else None, review=review)
     listing = space.list()
     if not listing.documents:
         suffixes = " or ".join(MARKDOWN_SUFFIXES)
@@ -1456,12 +1560,15 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
             "there is nothing to review here"
         )
     opening = listing.documents[0]
+    if review and args.doc:
+        selected = review.resolve_input(args.doc)
+        opening = next(d for d in listing.documents if d.path == selected)
     store = space.store_for(opening.path)
     # The tree, not the document it opens on — the same axis the port counts
     # from (``WebView.port_path``). Keying the token on the opening document
     # would give the workspace a URL whose halves disagree about what it is a
     # view of, and move one of them the day a file sorts before that one.
-    token, token_source = token_for(root, rotate=args.rotate_token)
+    token, token_source = token_for(review.directory if review else root, rotate=args.rotate_token)
     view = _bind(
         WebView(
             store=store,
@@ -1474,6 +1581,7 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
             share_scope=args.share or "",
             workspace=space,
             doc=opening.key,
+            review=review,
         )
     )
     counts = listing.to_json()["counts"]
@@ -1493,6 +1601,8 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         "share": _share_payload(view),
         "workspace": {**listing.to_json(), "selected": opening.key},
     }
+    if review:
+        payload["scope"] = review.describe()
     # The URL first and alone, exactly as the single-document view promises: a
     # consumer that places this view reads one line and does not learn a second
     # shape because the argument was a directory.
@@ -1502,6 +1612,8 @@ def _view_workspace(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]
         f"{counts['active']} with review activity, {counts['undisposed']} undisposed",
         f"open   {opening.key}",
     ]
+    if review:
+        lines.insert(1, f"review {review.id} — {review.title}; comments from this review only")
     stores = {document.store for document in listing.documents}
     if len(stores) == 1:
         lines.append(f"store  {stores.pop()}")
@@ -1669,6 +1781,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     writing = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--review", metavar="ID", help="use this named review's files and isolated comment history")
     writing.add_argument(
         "--author",
         metavar="NAME",
@@ -1683,6 +1796,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"specround {__version__}")
     verbs = parser.add_subparsers(dest="verb", required=True, metavar="VERB")
+
+    reviews = verbs.add_parser("review", help="open, inspect, refresh, or close an isolated review of files")
+    actions = reviews.add_subparsers(dest="review_action", required=True)
+    for action in ("open", "list", "status", "refresh", "close"):
+        p = actions.add_parser(action, parents=[common, writing])
+        if action == "open":
+            p.add_argument("paths", nargs="+", help="one directory or selected files")
+            p.add_argument("--title", default="", help="name of this review")
+        elif action != "list":
+            p.add_argument("scope_id", metavar="ID")
+        if action == "close":
+            p.add_argument("--allow-undisposed", action="store_true")
+            p.add_argument("--allow-unresolved", action="store_true")
+        p.set_defaults(handler=_review_command, verb_name="review." + action)
 
     rounds = verbs.add_parser("round", help="open, close, and inspect review rounds")
     round_verbs = rounds.add_subparsers(dest="round_verb", required=True, metavar="ACTION")
@@ -1781,7 +1908,7 @@ def build_parser() -> argparse.ArgumentParser:
     listing = verbs.add_parser(
         "comments", parents=[common], help="list threads with their replies and disposition"
     )
-    listing.add_argument("doc")
+    listing.add_argument("doc", nargs="?")
     listing.add_argument("--round", metavar="ID", help="only comments in this round")
     listing.add_argument(
         "--undisposed", action="store_true", help="only comments still owed a verdict"
@@ -1905,6 +2032,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     viewing.add_argument(
         "doc",
+        nargs="?",
         metavar="DOC|DIR",
         help=(
             "the document to serve, or a directory: one server for the tree, with a "
@@ -1993,19 +2121,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (SpecroundError, OSError) as exc:
         return _fail(args, verb, exc, FAILURE, "error")
 
-    if verb in {"comments", "comment", "reply", "dispose", "resolve", "reopen",
+    if "path" in payload and verb in {"comments", "comment", "reply", "dispose", "resolve", "reopen",
                 "round.status", "round.open", "round.close", "round.refresh"}:
         # A status lookup failing after a write must not report that write as failed.
         try:
             path = Path(payload["path"])
             store = ReviewStore.for_document(path, store=Path(payload["store"]))
-            review = store.review_status(path)
+            scope = Review.load(payload["scope"]["id"]) if payload.get("scope") else None
+            review = (scope or store).review_status(path)
             payload["review"] = review
             if review["unpublished_changes"]:
                 lines.append("review: " + review["message"])
                 if review["next_action"]:
                     command = review["next_action"]["verb"].replace(".", " ")
-                    lines.append(f"When ready: specround {command} {shlex.quote(str(path))} --store {shlex.quote(str(store.root))}")
+                    arguments = scope.id if scope else f"{shlex.quote(str(path))} --store {shlex.quote(str(store.root))}"
+                    lines.append(f"When ready: specround {command} {arguments}")
         except (SpecroundError, OSError) as exc:
             payload["review"] = {"available": False, "message": str(exc)}
             lines.append("command completed; review status could not be checked: " + str(exc))
@@ -2054,12 +2184,16 @@ def _refuse_argv(argv: Sequence[str] | None, exc: ArgvError) -> int:
 
 def _fail(args: argparse.Namespace, verb: str, exc: Exception, code: int, kind: str) -> int:
     """Report a failure on stderr and hand back the exit code that judges it."""
+    extra = {"report": exc.report} if isinstance(exc, PartialReviewError) else {}
+    if requested_review := getattr(args, "review", None) or getattr(args, "scope_id", None):
+        extra["requested_review"] = requested_review
     if getattr(args, "json", False):
         message = _dump(
             {
                 "schema": CLI_SCHEMA,
                 "verb": verb,
                 "error": {"kind": kind, "exit": code, "message": str(exc)},
+                **extra,
             }
         )
     else:
