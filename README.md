@@ -385,12 +385,29 @@ missing, outside, not a served type, over the size cap — instead of one silent
 404 for all four. The label becomes the `alt` text, so it is the raw mode where a
 comment on the picture itself anchors.
 
-**The page arranges to the pane it is in.** Drag either seam to resize the file
-bar or the thread column, double-click a seam for the width back, fold either
-side column away with `⇤` / `⇥` in the toolbar, and set the size the document and
-its threads are read at with `A−` / `A+`. In a narrow pane the two side columns
-**start** folded, so the document has the width; open one and that choice is the
-one that sticks from then on.
+**Choose how comments sit beside the text.** `placement` offers `auto` (sidebar
+on wide screens, inline below 1100px), `inline`, and `sidebar`. Inline threads
+open beneath the source block (the selected row in raw/diff); a collapsed count
+keeps long conversations out of the reading flow. Whole-document comments and
+anchors not shown in the current mode remain in the document/unplaced list.
+On narrow screens an explicitly chosen sidebar opens as a bottom panel instead
+of squeezing the document or disappearing below it. These are the same comments,
+not separate review histories.
+
+Drag either visible seam to resize the file bar or comment column; focused
+separators also accept arrow keys and Home (reset). Double-click resets too.
+`settings` holds wide-document/balanced/wide-comments presets, layout reset,
+document-only reading, `A−` / `A+`, and author settings. Saved widths are bounded
+to fit the current window. `files` and `comments` toggle the panels; starting a
+comment opens the necessary area automatically. Previous/next visits unresolved
+comments in document order. Review details holds the round lifecycle controls.
+
+Placement and window-size changes move existing editors rather than replacing
+them, preserving drafts. Starting a different action or changing documents is
+refused while a new comment has unsent text; reply drafts remain attached to
+their threads. A raw suggestion must be submitted or cancelled before leaving
+its mode. Reload/navigation warns about unsent work; drafts are kept in this
+tab's memory, not a durable offline store.
 
 Those settings live in the browser — one `localStorage` key, one JSON object,
 kept per origin, which survives a restart because the port is derived from the

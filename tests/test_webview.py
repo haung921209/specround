@@ -1037,7 +1037,7 @@ def test_both_surfaces_ask_the_same_function_which_reads_the_box_once():
     """
     html = page().decode("utf-8")
     assert html.count('$("showresolved").checked') == 1
-    threads = html[html.index("function drawThreads()") : html.index("function card(comment)")]
+    threads = html[html.index("function drawThreads()") : html.index("function inlineComments()")]
     assert "shownComments()" in threads
     # Including the count beside the heading: "hidden" is what the filter left
     # out, and counting it again here would be the same rule spelled twice.
@@ -1075,9 +1075,9 @@ def test_ticking_the_box_redraws_the_document_and_not_only_the_column():
     html = page().decode("utf-8")
     handler = html[html.index('$("showresolved").addEventListener') :]
     document_half = re.search(r"\bdraw\(\);", handler)
-    thread_half = re.search(r"\bdrawThreads\(\);", handler)
+    draw_function = html[html.index("function draw()") : html.index("function drawFiles()")]
+    thread_half = re.search(r"\bdrawThreads\(\);", draw_function[draw_function.index("paint(host,"):])
     assert document_half is not None and thread_half is not None
-    assert document_half.start() < thread_half.start()
 
 
 def test_every_draw_a_control_can_reach_first_does_nothing_without_a_state():
@@ -1284,7 +1284,7 @@ def test_opening_a_reply_box_does_not_take_the_page_where_it_was_reading():
     """
     html = page().decode("utf-8")
     assert "area.focus({ preventScroll: true })" in html
-    assert 'area.scrollIntoView({ block: "nearest" })' in html
+    assert '(box || area).scrollIntoView({block:"nearest"})' in html
 
 
 # -- how the page is arranged --------------------------------------------
@@ -1307,17 +1307,18 @@ def test_a_wide_viewport_gets_the_layout_the_page_has_always_had(tmp_path):
     """
     assert merged(None, WIDE, tmp_path) == {
         "nav": 260, "threads": 380, "font": 15, "navShut": False, "threadsShut": False,
+        "placement": "auto",
     }
 
 
-def test_a_narrow_viewport_starts_with_the_side_columns_folded(tmp_path):
+def test_a_narrow_viewport_hides_navigation_but_keeps_inline_comments_available(tmp_path):
     """The measured complaint, answered before the reviewer has to ask.
 
     260 and 380 of chrome in a pane that narrow leave a document no wider than the
     bar beside it. The only thing this does is choose where the page *starts*.
     """
     narrow = merged(None, NARROW, tmp_path)
-    assert (narrow["navShut"], narrow["threadsShut"]) == (True, True)
+    assert (narrow["navShut"], narrow["threadsShut"], narrow["placement"]) == (True, False, "auto")
     # And the widths are still there, so opening a column gives back a column
     # rather than a sliver.
     assert (narrow["nav"], narrow["threads"]) == (260, 380)
@@ -1366,6 +1367,7 @@ def test_an_unreadable_blob_draws_the_default_layout(tmp_path):
     for text in ["{not json", "", "null", "[1, 2]", '"a string"']:
         assert in_node("readView(input, 1600)", text, tmp_path) == {
             "nav": 260, "threads": 380, "font": 15, "navShut": False, "threadsShut": False,
+            "placement": "auto",
         }
 
 
@@ -1375,12 +1377,12 @@ def test_only_the_keys_this_page_writes_go_back_into_storage(tmp_path):
                       {"nav": 300, "threads": 400, "font": 17, "navShut": True,
                        "threadsShut": False, "somethingElse": "not ours"},
                       tmp_path)
-    assert set(written) == {"nav", "threads", "font", "navShut", "threadsShut"}
+    assert set(written) == {"nav", "threads", "font", "navShut", "threadsShut", "placement"}
 
 
 def test_the_arrangement_survives_a_round_trip_through_storage(tmp_path):
     """"It stays" is this, and a narrow viewport must not undo it on the way back."""
-    kept = {"nav": 180, "threads": 700, "font": 21, "navShut": True, "threadsShut": False}
+    kept = {"nav": 180, "threads": 700, "font": 21, "navShut": True, "threadsShut": False, "placement": "inline"}
     assert in_node("readView(writeView(input), 820)", kept, tmp_path) == kept
 
 

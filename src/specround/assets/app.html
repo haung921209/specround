@@ -23,7 +23,7 @@
        to hit on a trackpad, narrow enough that the seam still looks like a seam.
        Both are overwritten inline by `applyView`; these are what an unstyled
        first paint uses, and they are the layout as it always was. */
-    --read: 15px; --handle: 6px;
+    --read: 15px; --handle: 10px; --toolbar-h: 60px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -100,15 +100,16 @@
      the pointer so the seam says it can be moved. It is left in place when its
      column is folded, because dragging it out is the other way back. */
   .split {
-    position: sticky; top: 49px; height: calc(100vh - 49px);
-    cursor: col-resize; background: transparent; touch-action: none;
+    position: sticky; top: var(--toolbar-h); height: calc(100dvh - var(--toolbar-h));
+    cursor: col-resize; background: var(--panel); touch-action: none;
   }
-  .split:hover, .split.dragging { background: var(--accent); }
+  .split::after { content: "⋮"; position: absolute; top: 40%; width: 100%; text-align: center; color: var(--dim); }
+  .split:hover, .split.dragging, .split:focus-visible { background: var(--accent); }
   #splitnav { display: none; }
   main.tree #splitnav { display: block; }
   nav#files { display: none; }
   main.tree nav#files {
-    display: block; position: sticky; top: 49px; max-height: calc(100vh - 49px);
+    display: block; position: sticky; top: var(--toolbar-h); max-height: calc(100dvh - var(--toolbar-h));
     overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 12px;
   }
   /* Folded: gone, not squeezed. A zero-width track still holds a panel's border
@@ -117,6 +118,10 @@
      rules that show the panels so that a fold wins wherever it is set. */
   main.navshut nav#files { display: none; }
   main.thrshut aside { display: none; }
+  main.inline-comments { --thr-w: 0px; }
+  main.inline-comments aside, main.inline-comments #splitthreads { display: none; }
+  main.inline-comments { grid-template-columns: var(--nav-w) var(--nav-handle) minmax(0, 1fr) 0 0; }
+  main.thrshut .inline-thread, main.thrshut #inlinefallback { display: none; }
   /* Below this the columns cannot sit side by side at all, which is the layout this
      page has always fallen back to. The handles go with them — there is nothing
      horizontal left to divide — and folding is then the whole control, which is
@@ -131,6 +136,14 @@
        zero-width `col-resize` target sitting in a layout with no columns to
        resize, which is a handle that answers the mouse and moves nothing. */
     main.tree #splitnav, #splitthreads { display: none; }
+    main.inline-comments { grid-template-columns: minmax(0, 1fr); }
+    main.tree nav#files { position: static; max-height: 35dvh; }
+    aside {
+      position: fixed !important; z-index: 7; top: auto !important; bottom: 0;
+      left: 0; right: 0; max-height: calc(100dvh - var(--toolbar-h) - 12px) !important;
+      border-top: 2px solid var(--accent); box-shadow: 0 -4px 20px #0002;
+    }
+    #doc { padding-left: 12px !important; padding-right: 12px !important; }
   }
   nav#files h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; }
   nav#files .note { font-size: 12px; color: var(--dim); margin-top: 10px; line-height: 1.45; }
@@ -212,7 +225,7 @@
      other not is the pair being harder to read together, not easier. The file bar
      keeps its own size: it is a list of names to scan, not prose to read. */
   aside {
-    position: sticky; top: 49px; max-height: calc(100vh - 49px); overflow-y: auto;
+    position: sticky; top: var(--toolbar-h); max-height: calc(100dvh - var(--toolbar-h)); overflow-y: auto;
     border-left: 1px solid var(--line); background: var(--panel); padding: 12px;
     font-size: var(--read);
   }
@@ -257,6 +270,7 @@
   .acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
   textarea { width: 100%; min-height: 60px; resize: vertical; padding: 6px 8px;
     border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+  #composer textarea, .replybox textarea { max-height: 30dvh; }
   input[type=text] { padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
   #float {
     position: absolute; display: none; z-index: 9;
@@ -269,14 +283,39 @@
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
   label.check { font-size: .87em; color: var(--dim); display: flex; gap: 5px; align-items: center; }
   .empty { color: var(--dim); font-size: .93em; }
+  [hidden] { display: none !important; }
+  header .doc { min-width: 0; max-width: min(30ch, 50vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header { gap: 6px; padding: 6px 10px; }
+  #viewsettings { margin-left: auto; }
+  #viewsettings > summary { cursor: pointer; }
+  #settingspanel {
+    position: absolute; z-index: 10; right: 8px; top: 100%; width: min(360px, calc(100vw - 16px));
+    max-height: calc(100dvh - var(--toolbar-h)); overflow-y: auto;
+    padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 4px 18px #0002;
+  }
+  #settingspanel .row { margin: 8px 0; }
+  #reviewinfo { padding: 6px 14px; font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+  #reviewinfo span { display: block; }
+  #threadtools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+  #threadhead { font-size: 12px; color: var(--dim); }
+  #inlinefallback { margin: 12px; }
+  .inline-thread { margin: .6em 0 1em; font: var(--read)/1.6 system-ui, sans-serif; }
+  .inline-thread > summary, #inlinefallback > summary { cursor: pointer; color: var(--accent); font-size: .9em; }
+  .inline-thread .card { margin-top: 8px; }
+  #composer { font: var(--read)/1.6 system-ui, sans-serif; scroll-margin-top: calc(var(--toolbar-h) + 12px); }
+  #composer:empty { display: none; }
+  #composerhome > #composer { margin: 12px; }
+  .card { min-width: 0; overflow-wrap: anywhere; scroll-margin-top: calc(var(--toolbar-h) + 12px); }
+  .card .who { overflow-wrap: anywhere; }
+  #doc .card .quote { font-size: .8em; }
+  #doc .card pre.patch { font-size: .8em; }
+  button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>
 </head>
 <body>
 <header>
   <span class="doc" id="docname">…</span>
-  <span class="meta" id="scopename"></span>
-  <span class="meta" id="roundmeta"></span>
-  <span class="grow"></span>
   <div class="modes" id="modes" role="group" aria-label="view mode">
     <button data-mode="render" aria-pressed="true">render</button>
     <button data-mode="raw" aria-pressed="false">raw</button>
@@ -286,9 +325,22 @@
        column is showing", which is what the button is a switch for; the size pair
        are ordinary buttons because a step is not a state. -->
   <div class="modes" id="columns" role="group" aria-label="columns">
-    <button id="foldnav" aria-pressed="true">⇤</button>
-    <button id="foldthreads" aria-pressed="true">⇥</button>
+    <button id="foldnav" aria-pressed="true">files</button>
+    <button id="foldthreads" aria-pressed="true">comments</button>
   </div>
+  <label class="check">placement
+    <select id="commentlayout" aria-label="comment placement">
+      <option value="auto">auto</option><option value="inline">inline</option><option value="sidebar">sidebar</option>
+    </select>
+  </label>
+  <details id="viewsettings"><summary class="btn">settings</summary><div id="settingspanel">
+  <div class="row" aria-label="layout presets">
+    <button class="btn" data-preset="reading">wide document</button>
+    <button class="btn" data-preset="balanced">balanced</button>
+    <button class="btn" data-preset="review">wide comments</button>
+  </div>
+  <button class="btn" id="resetlayout">reset layout</button>
+  <button class="btn" id="documentonly">document only</button>
   <div class="modes" id="size" role="group" aria-label="reading size">
     <button id="fontdown">A−</button>
     <button id="fontup">A+</button>
@@ -298,8 +350,10 @@
     <select id="actor"><option value="human">human</option><option value="agent">agent</option></select>
   </label>
   <button class="btn" id="refresh" title="re-read the ledger and the document">reload</button>
+  </div></details>
 </header>
-<div id="notice"></div>
+<details id="reviewinfo"><summary id="reviewsummary">review details</summary><span class="meta" id="scopename"></span><span class="meta" id="roundmeta"></span><div id="reviewactions" class="row"></div></details>
+<div id="notice" role="status"></div>
 <div id="reviewnotice" hidden role="status">
   <span id="reviewstatus"></span>
   <button class="btn" id="loadrevision" hidden>view new review revision</button>
@@ -308,8 +362,16 @@
 <main id="layout">
   <nav id="files" aria-label="documents in this workspace"></nav>
   <div class="split" id="splitnav" role="separator" aria-orientation="vertical"
-       aria-label="width of the file bar"></div>
+       aria-label="width of the file bar" tabindex="0"></div>
   <div id="stage">
+    <div id="threadtools">
+      <button class="btn" id="prevthread" aria-label="previous unresolved comment">← previous</button>
+      <button class="btn" id="nextthread" aria-label="next unresolved comment">next →</button>
+      <label class="check"><input type="checkbox" id="showresolved"> show resolved</label>
+      <span id="threadhead"></span>
+    </div>
+    <div id="composerhome"></div>
+    <details id="inlinefallback" hidden><summary>document and unplaced comments</summary><div id="fallbackthreads"></div></details>
     <div id="doc"></div>
     <div id="editor">
       <textarea id="edittext" spellcheck="false"></textarea>
@@ -322,11 +384,9 @@
     </div>
   </div>
   <div class="split" id="splitthreads" role="separator" aria-orientation="vertical"
-       aria-label="width of the thread column"></div>
+       aria-label="width of the thread column" tabindex="0"></div>
   <aside>
-    <div id="composer"></div>
-    <h2 id="threadhead">threads</h2>
-    <label class="check"><input type="checkbox" id="showresolved"> show resolved</label>
+    <div id="sidebarhome"><div id="composer"></div></div>
     <div id="threads"></div>
   </aside>
 </main>
@@ -351,7 +411,7 @@ const $ = (id) => document.getElementById(id);
 // `loadView`).
 const state = {
   data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false,
-  reply: { open: null, drafts: {} }, view: null, editBasis: null,
+  reply: { open: null, drafts: {} }, view: null, editBasis: null, composerSpan: null,
 };
 
 // -- transport ------------------------------------------------------------
@@ -409,7 +469,7 @@ async function act(body, path) {
 
 function holderOf(node) {
   const element = node && node.nodeType === 3 ? node.parentElement : node;
-  if (element && element.closest && element.closest(".caret")) return null;
+  if (element && element.closest && element.closest(".caret, .inline-thread, #composer")) return null;
   return element && element.closest ? element.closest("[data-s]") : null;
 }
 
@@ -747,13 +807,8 @@ const VIEW_KEY = "specround.view";
 const VIEW_DEFAULTS = { nav: 260, threads: 380, font: 15 };
 const VIEW_BOUNDS = { nav: [140, 560], threads: [240, 760], font: [11, 26] };
 
-// Under this the three columns stop fitting: 260 and 380 of chrome leave a
-// document about as wide as the bar beside it, which is the complaint this was
-// built for (a browser pane in a terminal multiplexer, 2026-08-08). So a narrow
-// viewport *starts* folded — and starting is all this number does. It is a
-// default and never a clamp: a reviewer who opens a column at this width has
-// said what they want, and from then on the stored answer outranks the guess.
-// Everything else about a small screen is H16's.
+// Auto placement switches to inline below this width. Saved explicit placement
+// wins; panel widths are bounded again at display time to leave room for text.
 const VIEW_FOLD_UNDER = 1100;
 
 function clampView(field, value) {
@@ -771,7 +826,7 @@ function clampView(field, value) {
 
 function foldDefaults(viewport) {
   // What a viewport this wide starts as, before anything stored is consulted.
-  return { navShut: Number(viewport) < VIEW_FOLD_UNDER, threadsShut: Number(viewport) < VIEW_FOLD_UNDER };
+  return { navShut: Number(viewport) < VIEW_FOLD_UNDER, threadsShut: false };
 }
 
 function mergeView(stored, viewport) {
@@ -793,6 +848,7 @@ function mergeView(stored, viewport) {
     font: width("font"),
     navShut: typeof held.navShut === "boolean" ? held.navShut : folds.navShut,
     threadsShut: typeof held.threadsShut === "boolean" ? held.threadsShut : folds.threadsShut,
+    placement: ["auto", "inline", "sidebar"].includes(held.placement) ? held.placement : "auto",
   };
 }
 
@@ -807,12 +863,12 @@ function readView(text, viewport) {
 }
 
 function writeView(view) {
-  // The five keys and nothing else, so that a blob which arrived carrying
+  // The layout keys and nothing else, so that a blob which arrived carrying
   // something extra does not get handed its own additions back. This page is
   // the only writer of this key, and what it writes is what it reads.
   return JSON.stringify({
     nav: view.nav, threads: view.threads, font: view.font,
-    navShut: view.navShut, threadsShut: view.threadsShut,
+    navShut: view.navShut, threadsShut: view.threadsShut, placement: view.placement || "auto",
   });
 }
 
@@ -1250,6 +1306,8 @@ function draw() {
   // Same race `renderControls` names: a mode button is clickable before the first
   // state has arrived.
   if (!data) return;
+  // Keep the editor node when replacing source DOM; inline controls are not source text.
+  $("composerhome").appendChild($("composer"));
   clearPreviews();
   // Gated on having a text to show, not on having a round — see `readable`. With
   // no round there is nothing to write and still something to read, and this is
@@ -1257,6 +1315,7 @@ function draw() {
   if (!readable(data)) {
     host.className = "";
     host.innerHTML = '<p class="empty">' + escapeHtml(data.blocked || "nothing to show") + "</p>";
+    drawThreads();
     return;
   }
   if (state.mode === "raw") drawRaw(host, data);
@@ -1265,6 +1324,7 @@ function draw() {
   // The showing set and not every comment: a mark for a thread the column is
   // hiding has nothing behind it to open.
   paint(host, shownComments());
+  drawThreads();
   if (state.focused) markFocus();
 }
 
@@ -1341,13 +1401,13 @@ function fileRow(entry, selected) {
 }
 
 function openDocument(key) {
-  // Everything the old document put on screen goes with it. A composer left
-  // open would post its comment against whichever document answered next, and
-  // a focused thread id means nothing on a ledger that never saw it. Drafts go
-  // too, for the same reason and not as a tidy-up: they are addressed to
-  // comment ids this document does not have, so keeping them would only mean
-  // offering them back on whatever card happened to share an id.
+  // Do not retarget a draft to another file. Refuse navigation until it is sent
+  // or explicitly cancelled, then clear document-specific selection state.
   if (key === state.doc) return;
+  if (hasDrafts()) {
+    notice("Finish or cancel your draft before changing documents; your text has been kept.", "info");
+    return;
+  }
   state.doc = key;
   state.focused = null;
   state.reply = replyAfter(state.reply, { kind: "reset" });
@@ -1381,6 +1441,9 @@ function drawThreads() {
   // the first state has arrived, and reading the comments off nothing throws
   // inside the handler rather than drawing an empty column.
   if (!data) return;
+  $("composerhome").appendChild($("composer"));
+  document.querySelectorAll(".inline-thread").forEach(e => e.remove());
+  $("fallbackthreads").textContent = "";
   const shown = shownComments();
   // What the toggle left out, taken off the filter rather than counted again.
   // A second count of the same rule is a second rule, and this heading is where
@@ -1397,9 +1460,102 @@ function drawThreads() {
                 : "No comments yet. Select text in any mode, or click a line "
                   + "number in raw or diff, to leave one.")
       + "</p>";
+    arrangeComments();
     return;
   }
   shown.forEach((comment) => host.appendChild(card(comment)));
+  arrangeComments();
+}
+
+function inlineComments() {
+  return state.view.placement === "inline"
+    || (state.view.placement === "auto" && window.innerWidth < VIEW_FOLD_UNDER);
+}
+
+function sourceBlock(span) {
+  if (!span) return null;
+  const point = Math.max(span.start, span.end - 1);
+  const source = [...$("doc").querySelectorAll("[data-s]")].find(e => {
+    const start = Number(e.dataset.s);
+    const markers = [...e.querySelectorAll(".caret")].reduce((n, caret) => n + codepointLength(caret.textContent), 0);
+    const length = codepointLength(e.textContent) - markers;
+    return !e.closest(".inline-thread, #composer") && (e.dataset.space || "base") === (span.space || "base")
+      && start <= point && point <= start + length;
+  });
+  if (!source) return null;
+  let block = source;
+  // Insert outside source holders, tables and lists so controls never become source offsets.
+  while (block.parentElement && block.parentElement !== $("doc")) block = block.parentElement;
+  return block.parentElement === $("doc") ? block : null;
+}
+
+function arrangeComments() {
+  if (!state.data) return;
+  const active = document.activeElement;
+  const opened = new Set([...document.querySelectorAll(".inline-thread[open] .card")].map(e => e.dataset.comment));
+  const cards = [...document.querySelectorAll(".card[data-comment]")];
+  $("composerhome").appendChild($("composer"));
+  cards.forEach(e => $("threads").appendChild(e));
+  document.querySelectorAll(".inline-thread").forEach(e => e.remove());
+  const inline = inlineComments();
+  $("layout").classList.toggle("inline-comments", inline);
+  const groups = new Map();
+  let unplaced = 0;
+  if (inline) cards.forEach(element => {
+    const comment = state.data.comments.find(c => c.id === element.dataset.comment);
+    const block = !comment.orphaned && !comment.misplaced && sourceBlock(comment.current_anchor);
+    if (!block) {
+      $("fallbackthreads").appendChild(element); unplaced += 1; return;
+    }
+    let group = groups.get(block);
+    if (!group) {
+      group = document.createElement("details"); group.className = "inline-thread";
+      group.appendChild(document.createElement("summary"));
+      block.after(group); groups.set(block, group);
+    }
+    group.appendChild(element);
+    const count = group.querySelectorAll(".card").length;
+    group.firstElementChild.textContent = count + (count === 1 ? " comment" : " comments");
+    if (opened.has(comment.id) || state.focused === comment.id || state.reply.open === comment.id) group.open = true;
+  });
+  $("inlinefallback").hidden = !inline || !unplaced;
+  $("inlinefallback").firstElementChild.textContent = "document and unplaced comments (" + unplaced + ")";
+  if (inline) {
+    const block = sourceBlock(state.composerSpan);
+    if (block) block.after($("composer"));
+  } else $("sidebarhome").appendChild($("composer"));
+  if (active && active.isConnected && active.matches("textarea, input, select")) active.focus({preventScroll:true});
+  const unresolved = state.data.comments.filter(c => !c.resolved);
+  $("prevthread").disabled = $("nextthread").disabled = !unresolved.length;
+}
+
+function showComments() {
+  if (state.view.threadsShut) {
+    state.view.threadsShut = false;
+    applyView(); saveView();
+  }
+}
+
+function revealEditor(area) {
+  if (!area) return;
+  showComments();
+  area.closest("details")?.setAttribute("open", "");
+  area.focus({ preventScroll: true });
+  const box = area.closest(".replybox, #composer");
+  (box || area).scrollIntoView({block:"nearest"});
+  const top = area.getBoundingClientRect().top;
+  const header = document.querySelector("header").getBoundingClientRect().bottom;
+  if (top < header + 8) window.scrollBy(0, top - header - 8);
+}
+
+function nextThread(direction) {
+  const comments = state.data.comments.filter(c => !c.resolved).sort((a, b) =>
+    (a.current_anchor?.start ?? Infinity) - (b.current_anchor?.start ?? Infinity));
+  if (!comments.length) return;
+  const at = comments.findIndex(c => c.id === state.focused);
+  const next = at < 0 ? (direction > 0 ? 0 : comments.length - 1)
+    : (at + direction + comments.length) % comments.length;
+  focus(comments[next].id, inlineComments() ? "mark" : "card");
 }
 
 function card(comment) {
@@ -1481,14 +1637,20 @@ function button(label, onClick, primary) {
 
 function clearComposer() {
   $("composer").textContent = "";
+  state.composerSpan = null;
 }
 
 function roundBox(action) {
+  if (hasDrafts()) {
+    notice("Finish or cancel your draft before changing the review round.", "info");
+    return;
+  }
   if (action.body.open) return act(action.body, "/api/round");
   const round = state.data.scope ? {undisposed_count:state.data.scope.counts.undisposed,
                                     unresolved_thread_count:state.data.scope.counts.unresolved_threads} : state.data.round;
   if (!round.undisposed_count && !round.unresolved_thread_count) return act(action.body, "/api/round");
   const box = panel("finish the review before closing, or explicitly leave work for later");
+  if (!box) return;
   const body = { open: false, ...viewBasis() };
   for (const [count, key, label] of [
     [round.undisposed_count, "allow_undisposed", "leave undisposed comments"],
@@ -1507,9 +1669,11 @@ function roundBox(action) {
     if (await act(body, "/api/round")) clearComposer();
   }, true));
   box.appendChild(button("cancel", clearComposer));
+  box.querySelector("button")?.scrollIntoView({block:"nearest"});
 }
 
-function panel(title) {
+function panel(title, span = null) {
+  if (protectComposer()) return null;
   // The page has one cursor, and this is the other half of the rule `openReply`
   // keeps: a composer opening at the top stows whichever card was holding it.
   // The draft stays on its card — nothing here was a decision about that reply.
@@ -1519,6 +1683,7 @@ function panel(title) {
   }
   const host = $("composer");
   host.textContent = "";
+  state.composerSpan = span;
   const box = document.createElement("div");
   box.className = "card here";
   const head = document.createElement("div");
@@ -1526,17 +1691,29 @@ function panel(title) {
   head.textContent = title;
   box.appendChild(head);
   host.appendChild(box);
+  showComments();
+  arrangeComments();
   return box;
+}
+
+function protectComposer() {
+  const draft = [...$("composer").querySelectorAll("textarea")].find(e => e.value.trim());
+  if (!draft) return false;
+  notice("Your draft is still open. Send or cancel it before starting another comment or action.", "info");
+  revealEditor(draft);
+  return true;
 }
 
 function commentBox(span) {
   const basis = viewBasis();
-  const box = panel(span ? "comment on the selection" : "comment on the whole document");
+  const box = panel(span ? "comment on the selection" : "comment on the whole document", span);
+  if (!box) return;
   if (span) {
     const quote = document.createElement("div");
     quote.className = "quote";
     quote.textContent = span.quote;
     box.appendChild(quote);
+    box.appendChild(button("show source", () => sourceBlock(span)?.scrollIntoView({block:"center"})));
     if (span.space === "revision") {
       const note = document.createElement("div");
       note.className = "who";
@@ -1556,7 +1733,7 @@ function commentBox(span) {
   }, true));
   actions.appendChild(button("cancel", clearComposer));
   box.appendChild(actions);
-  area.focus();
+  revealEditor(area);
 }
 
 // -- replying, in the card ------------------------------------------------
@@ -1566,6 +1743,9 @@ function openReply(id) {
   // for, so it puts the cursor back rather than rebuilding the box — redrawing
   // would restore the text but not where the reviewer was in it.
   if (state.reply.open === id) return focusReply();
+  if (protectComposer()) return;
+  showComments();
+  state.focused = id;
   // The page has one cursor. A top composer standing open while a card takes it
   // is the same two-boxes confusion as two open cards.
   clearComposer();
@@ -1581,8 +1761,7 @@ function focusReply() {
   // move that puts the box on screen — the same `nearest` the thread column
   // uses, and for the same reason: a box already in view must not jump, and the
   // reviewer's place in whatever they were reading is not this click's to take.
-  area.focus({ preventScroll: true });
-  area.scrollIntoView({ block: "nearest" });
+  revealEditor(area);
 }
 
 function replyEditor(comment) {
@@ -1636,7 +1815,8 @@ function disposeBox(comment, finish = false) {
   // asking them to confirm what the button already said is a step to click
   // through rather than a gate to pass.
   const overturning = comment.settled;
-  const box = panel((overturning ? "supersede " : "dispose ") + comment.id);
+  const box = panel((overturning ? "supersede " : "dispose ") + comment.id, comment.current_anchor);
+  if (!box) return;
   if (overturning) {
     const note = document.createElement("div");
     note.className = "who";
@@ -1680,13 +1860,14 @@ function disposeBox(comment, finish = false) {
   }, true));
   actions.appendChild(button("cancel", clearComposer));
   box.appendChild(actions);
-  area.focus();
+  revealEditor(area);
 }
 
 function threadBox(comment) {
   const closing = !comment.resolved;
   if (closing && !comment.settled) return disposeBox(comment, true);
-  const box = panel((closing ? "resolve " : "reopen ") + comment.id);
+  const box = panel((closing ? "resolve " : "reopen ") + comment.id, comment.current_anchor);
+  if (!box) return;
   const area = document.createElement("textarea");
   area.placeholder = closing ? "a closing note (optional)" : "why it goes back — required";
   box.appendChild(area);
@@ -1701,7 +1882,7 @@ function threadBox(comment) {
   }, true));
   actions.appendChild(button("cancel", clearComposer));
   box.appendChild(actions);
-  area.focus();
+  revealEditor(area);
 }
 
 // -- focus ----------------------------------------------------------------
@@ -1717,9 +1898,11 @@ function focus(id, origin) {
   // document it belongs to has been drawn, because `load` draws the document and
   // then the threads, so switching files leaves nothing stale to scroll to.
   state.focused = id;
+  showComments();
   markFocus();
   const anchor = document.querySelector("mark.anch.here, .caret.here");
   const card = document.querySelector('.card[data-comment="' + id + '"]');
+  card?.closest("details")?.setAttribute("open", "");
   const comment = state.data ? state.data.comments.find((c) => c.id === id) : null;
   const where = focusScroll(origin, {
     mark: !!anchor, card: !!card, orphaned: !!(comment && comment.orphaned),
@@ -1767,6 +1950,7 @@ function markFocus() {
 // -- raw editing → suggestion (G8) ---------------------------------------
 
 function startEditing() {
+  if (hasDrafts()) { notice("Finish or cancel your draft before starting a suggestion.", "info"); return; }
   state.editBasis = viewBasis();
   state.editing = true;
   $("edittext").value = state.data.base || "";
@@ -1789,11 +1973,20 @@ function applyView() {
   // one per control, so that a fold restored on load and a fold set by a click
   // cannot arrive by two routes that disagree about what folded looks like.
   const layout = $("layout");
+  const reading = !document.querySelector("#composer textarea, .replybox textarea")
+    && [...$("doc").children].find(e => !e.matches(".inline-thread, #composer")
+      && e.getBoundingClientRect().bottom > document.querySelector("header").getBoundingClientRect().bottom);
+  const readingTop = reading ? reading.getBoundingClientRect().top : 0;
+  const inline = inlineComments();
+  const available = Math.max(0, window.innerWidth - 380);
+  const nav = state.view.navShut || !state.data?.workspace ? 0
+    : Math.min(state.view.nav, Math.max(140, available - (inline || state.view.threadsShut ? 0 : 260)));
+  const threads = Math.min(state.view.threads, Math.max(240, available - nav));
   // The fold is a zero-width track *and* a hidden panel. The width alone would
   // leave the panel's border and padding holding a stripe open; the class alone
   // would leave the track it used to fill as a gap.
-  layout.style.setProperty("--nav-width", (state.view.navShut ? 0 : state.view.nav) + "px");
-  layout.style.setProperty("--thr-width", (state.view.threadsShut ? 0 : state.view.threads) + "px");
+  layout.style.setProperty("--nav-width", nav + "px");
+  layout.style.setProperty("--thr-width", (state.view.threadsShut ? 0 : threads) + "px");
   layout.classList.toggle("navshut", state.view.navShut);
   layout.classList.toggle("thrshut", state.view.threadsShut);
   document.documentElement.style.setProperty("--read", state.view.font + "px");
@@ -1803,6 +1996,14 @@ function applyView() {
   // only matters while it is being changed does not need a place in the header.
   $("fontdown").title = "smaller — now " + state.view.font + "px";
   $("fontup").title = "larger — now " + state.view.font + "px";
+  $("commentlayout").value = state.view.placement;
+  for (const [id, field] of [["splitnav", "nav"], ["splitthreads", "threads"]]) {
+    $(id).setAttribute("aria-valuemin", VIEW_BOUNDS[field][0]);
+    $(id).setAttribute("aria-valuemax", VIEW_BOUNDS[field][1]);
+    $(id).setAttribute("aria-valuenow", field === "nav" ? nav : threads);
+  }
+  arrangeComments();
+  if (reading?.isConnected) window.scrollBy(0, reading.getBoundingClientRect().top - readingTop);
 }
 
 function foldButton(id, shut, what) {
@@ -1843,6 +2044,27 @@ function moveView(action) {
 function setView(action) {
   moveView(action);
   saveView();
+  revealEditor(document.querySelector("#composer textarea, .replybox textarea"));
+}
+
+function changePlacement() {
+  state.view.placement = $("commentlayout").value;
+  state.view.threadsShut = false;
+  applyView(); saveView();
+  revealEditor(document.querySelector("#composer textarea, .replybox textarea"));
+}
+
+function layoutPreset(name) {
+  const widths = {reading: [180, 280], balanced: [260, 380], review: [180, 520]};
+  if (name === "reset") state.view = mergeView(null, window.innerWidth);
+  else {
+    [state.view.nav, state.view.threads] = widths[name];
+    state.view.navShut = window.innerWidth < VIEW_FOLD_UNDER;
+    state.view.threadsShut = false;
+  }
+  $("viewsettings").open = false;
+  applyView(); saveView();
+  revealEditor(document.querySelector("#composer textarea, .replybox textarea"));
 }
 
 function dragHandle(id, field, sign) {
@@ -1850,6 +2072,13 @@ function dragHandle(id, field, sign) {
   // bar, so dragging right widens it; the thread column's handle is to its left,
   // where that same drag makes it narrower.
   const handle = $(id);
+  handle.title = "Drag or use arrow keys to resize; double-click or Home to reset";
+  handle.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) return;
+    event.preventDefault();
+    setView(event.key === "Home" ? {kind:"reset", field}
+      : {kind:"size", field, px: state.view[field] + sign * (event.key === "ArrowRight" ? 20 : -20)});
+  });
   handle.addEventListener("pointerdown", (event) => {
     // Pointer capture rather than listeners on the document: the pointer leaves a
     // handle this thin on the first frame, and every move after that still has to
@@ -1902,9 +2131,14 @@ function applyMode(mode) {
 }
 
 function setMode(mode) {
+  if (state.editing && mode !== "raw" && hasDrafts()) {
+    notice("Finish or cancel your suggestion before changing modes; your edit has been kept.", "info");
+    return;
+  }
   applyMode(mode);
   renderControls();
   draw();
+  revealEditor(document.querySelector("#composer textarea, .replybox textarea"));
 }
 
 function renderControls() {
@@ -1943,11 +2177,14 @@ function renderControls() {
   if (state.data.commentable) {
     bar.appendChild(button("comment on the document", () => commentBox(null)));
   }
-  // The review's own lifecycle, on the surface the rest of it happens on. It
-  // sits beside the commenting controls rather than in the header, because it
-  // is an act and the header states facts.
+  // Lifecycle actions remain available without competing with reading and
+  // commenting, especially when a narrow toolbar wraps.
   const round_act = roundAction(state.data);
-  if (round_act) bar.appendChild(button(round_act.label, () => roundBox(round_act)));
+  $("reviewactions").textContent = "";
+  if (round_act) $("reviewactions").appendChild(button(round_act.label, () => {
+    $("reviewinfo").open = false;
+    roundBox(round_act);
+  }));
   if (state.data.blocked) {
     const note = document.createElement("span");
     note.className = "meta";
@@ -2031,6 +2268,9 @@ async function load({ redrawDocument = true } = {}) {
   $("scopename").textContent = data.scope
     ? data.scope.title + " · " + data.scope.id + " · comments from this review only"
     : "document history · no named review";
+  $("reviewsummary").textContent = data.scope
+    ? data.scope.title + " · " + data.scope.id + " · " + data.scope.counts.documents + " files"
+    : "review details · " + (data.round?.status || "no round");
   // From here on the page names the document explicitly, including the first
   // load, where the server chose it. The header shows the workspace's name for
   // it rather than the store's: a central store keys `docs/sub/a.md` as `a.md`,
@@ -2062,8 +2302,8 @@ async function load({ redrawDocument = true } = {}) {
   renderControls();
   const host = $("doc");
   if (redrawDocument) draw();
-  else { paint(host, shownComments()); markFocus(); }
-  drawThreads();
+  else { paint(host, shownComments()); drawThreads(); markFocus(); }
+  applyView();
 }
 
 document.querySelectorAll("#modes button").forEach((element) => {
@@ -2075,6 +2315,27 @@ $("foldnav").addEventListener("click", () => setView({ kind: "fold", field: "nav
 $("foldthreads").addEventListener("click", () => setView({ kind: "fold", field: "threads" }));
 $("fontdown").addEventListener("click", () => setView({ kind: "font", step: -1 }));
 $("fontup").addEventListener("click", () => setView({ kind: "font", step: 1 }));
+$("commentlayout").addEventListener("change", changePlacement);
+$("prevthread").addEventListener("click", () => nextThread(-1));
+$("nextthread").addEventListener("click", () => nextThread(1));
+document.querySelectorAll("[data-preset]").forEach(e => e.addEventListener("click", () => layoutPreset(e.dataset.preset)));
+$("resetlayout").addEventListener("click", () => layoutPreset("reset"));
+$("documentonly").addEventListener("click", () => {
+  if (hasDrafts()) { notice("Finish or cancel your draft before hiding comments.", "info"); return; }
+  state.view.navShut = state.view.threadsShut = true;
+  $("viewsettings").open = false;
+  applyView(); saveView();
+});
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty("--toolbar-h", document.querySelector("header").offsetHeight + "px");
+}).observe(document.querySelector("header"));
+window.addEventListener("resize", () => {
+  applyView();
+  revealEditor(document.querySelector("#composer textarea, .replybox textarea"));
+});
+window.addEventListener("beforeunload", event => {
+  if (hasDrafts()) { event.preventDefault(); event.returnValue = ""; }
+});
 $("showresolved").addEventListener("change", () => {
   // Both halves, because the toggle governs both. Redrawing the column alone
   // left the marks as whatever the previous state of the box had drawn — hiding
@@ -2082,7 +2343,6 @@ $("showresolved").addEventListener("change", () => {
   // giving the marks back on the next. The order is `load`'s and for `load`'s
   // reason: a card is only clickable once the mark it scrolls to exists.
   draw();
-  drawThreads();
 });
 $("refresh").addEventListener("click", () => load().catch((e) => notice(String(e.message || e), "bad")));
 $("loadrevision").addEventListener("click", () => acceptReviewRevision().catch((e) => notice(e.message, "bad")));

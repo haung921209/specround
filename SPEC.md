@@ -153,14 +153,19 @@ target is spec and prose documents — PR tools already do code well).
   another machine, or a later reader has to agree with. How wide a column is on
   this screen is none of those. Recording it would put an entry in a history
   whose whole value is that everything in it is a claim about the document, and
-  it would travel to a teammate whose screen is a different size. The narrow
-  default is a **default and never a clamp**: under about 1100px the two side
-  columns start folded, because 260 and 380 of chrome leave a document no wider
-  than the bar beside it (measured in a terminal multiplexer's browser pane,
-  which is the first-class consumer) — and a reviewer who opens a column at that
-  width has said what they want, so the stored answer outranks the guess from
-  then on. That is the whole of the small-screen share here; the rest of mobile
-  is H16's.
+  it would travel to a teammate whose screen is a different size.
+  **Responsive comment placement (2026-09-30)** extends this: auto uses inline
+  threads below 1100px and a sidebar above; an explicit inline/sidebar choice
+  overrides auto. Sidebar on a narrow screen becomes a bottom panel. Inline
+  cards sit outside source-offset holders, below the source block or raw/diff
+  row, and are collapsed by default; whole-document and unplaced threads stay
+  accessible in a separate list. Placement never changes anchors or history.
+  Saved preferred widths remain intact but displayed widths are bounded to
+  leave document space. Visible seams support dragging, arrow keys and reset;
+  settings include presets and document-only reading. Editors move without
+  being recreated on layout changes. A new comment draft blocks replacement
+  and file navigation; raw suggestion drafts block leaving raw mode. Reply
+  drafts stay thread-addressed. None are promised to survive closing the tab.
   **⑦ A document's own files are served beside it (landed 2026-08-09)**. A spec
   with a screen capture in it is reviewable *against the thing it describes* — in
   a real round a capture caught a sentence of prose that was simply wrong about

@@ -12,6 +12,183 @@ from specround.reviews import Review
 from specround.workspace import Workspace
 
 
+@pytest.mark.parametrize("width,height", [(390, 600), (800, 900), (1000, 900), (1440, 900)])
+def test_responsive_comment_layout_keeps_editor_visible_and_drafts_intact(store, doc, monkeypatch, tmp_path, width, height):
+    """A hidden composer, remounted draft, or inline text counted as source fails this."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to a Chromium/headless-shell executable")
+    doc.write_text("# Review\n\nTarget 😀 sentence.\n\n[Diagram](diagram.html)\n\n" + "Long document paragraph.\n\n" * 70, encoding="utf-8")
+    (doc.parent / "diagram.html").write_text("<!doctype html><h1>Architecture preview</h1>", encoding="utf-8")
+    round_id = store.open_round(doc, author="test")
+    store.add_comment(round_id, author="test", body="Anchored feedback",
+                      anchor=store.anchor_in_round(round_id, "Target 😀 sentence."))
+    store.add_comment(round_id, author="test", body="Whole document feedback")
+    original = webview.page()
+    probe = r"""
+<script>
+(async () => {
+  if (new URLSearchParams(location.search).has('layout-child')) return;
+  const report = document.createElement('pre'); report.id = 'browser-result';
+  document.body.appendChild(report);
+  const check = (ok, message) => { if (!ok) throw Error(message); };
+  const waitFor = async predicate => {
+    for (let i = 0; i < 500; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw Error('timed out');
+  };
+  const visible = element => {
+    const r = element.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight
+      && r.left >= 0 && r.right <= innerWidth;
+  };
+  const selectTarget = () => {
+    const holder = [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'Target 😀 sentence.');
+    const range = document.createRange(); range.selectNodeContents(holder);
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+    return selectedSpan();
+  };
+  try {
+    await waitFor(() => state.data);
+    await waitFor(() => document.querySelector('.htmlpreview iframe'));
+    const preview = document.querySelector('.htmlpreview iframe');
+    check(document.getElementById('layout').classList.contains('inline-comments') === (innerWidth < 1100), 'automatic placement chose wrong layout');
+    const span = selectTarget();
+    setView({kind:'fold', field:'threads'});
+    commentBox(span);
+    const area = document.querySelector('#composer textarea');
+    check(visible(area), 'comment editor is hidden or outside the viewport');
+    check(visible(document.querySelector('#composer .primary')), 'submit button is off screen');
+    area.value = 'Keep my draft'; area.dispatchEvent(new Event('input'));
+    const mode = document.getElementById('commentlayout');
+    check(mode, 'comment placement control missing');
+    for (const value of ['inline', 'sidebar', 'auto', 'inline']) {
+      mode.value = value; mode.dispatchEvent(new Event('change'));
+      check(document.querySelector('#composer textarea') === area && area.value === 'Keep my draft', 'placement lost/remounted draft');
+      check(visible(area), 'placement hid editor');
+      check(document.querySelector('.htmlpreview iframe') === preview, 'placement remounted HTML preview');
+    }
+    check(document.querySelector('#doc #composer'), 'inline editor is not beside source');
+    const selectedAgain = selectTarget();
+    check(selectedAgain.start === 10 && selectedAgain.end === 28, 'inline comments changed Unicode source offsets');
+    const cid = state.data.comments.find(c => c.body === 'Anchored feedback').id;
+    openReply(cid);
+    check(document.querySelector('#composer textarea') === area && area.value === 'Keep my draft', 'reply erased new comment draft');
+    commentBox(null);
+    check(document.querySelector('#composer textarea') === area, 'second composer erased draft');
+    setMode('raw');
+    check(document.querySelector('#composer textarea') === area && area.value === 'Keep my draft', 'render mode erased draft');
+    setMode('render');
+    check(document.querySelector('#composer textarea') === area, 'return to render erased draft');
+    area.value = ''; clearComposer();
+    focus(cid, 'mark'); openReply(cid);
+    const reply = document.querySelector('.replybox textarea');
+    reply.value = 'Reply draft'; reply.dispatchEvent(new Event('input'));
+    for (const value of ['sidebar', 'inline']) {
+      mode.value = value; mode.dispatchEvent(new Event('change'));
+      check(document.querySelector('.replybox textarea') === reply && reply.value === 'Reply draft', 'placement lost reply draft');
+      check(visible(reply), 'placement hid reply editor');
+    }
+    check(document.querySelectorAll('.card[data-comment]').length === 2, 'threads duplicated or missing');
+    check(document.querySelector('#inlinefallback').textContent.includes('Whole document feedback'), 'document comment lost');
+    check(document.querySelector('#doc .inline-thread'), 'anchored comment not inline');
+    setMode('diff');
+    document.getElementById('changesonly').click();
+    check(document.querySelectorAll('.card[data-comment]').length === 2, 'diff filter removed inline threads');
+    check(document.querySelector('.replybox textarea')?.value === 'Reply draft', 'diff filter lost inline reply editor');
+    document.getElementById('changesonly').click();
+    setMode('render');
+    const attached = state.data.comments.find(c => c.id === cid);
+    await sendReply(attached, reply.value);
+    check(state.data.comments.find(c => c.id === cid).replies.at(-1).body === 'Reply draft', 'inline reply did not reach its thread');
+    commentBox(selectTarget());
+    document.querySelector('#composer textarea').value = 'Inline selection saved';
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => state.data.comments.some(c => c.body === 'Inline selection saved'));
+    const saved = state.data.comments.find(c => c.body === 'Inline selection saved');
+    check(saved.current_anchor.start === 10 && saved.current_anchor.end === 28, 'inline submission anchored incorrectly');
+    await waitFor(() => !document.querySelector('#composer textarea'));
+    state.focused = null;
+    document.getElementById('nextthread').click();
+    check(state.focused === cid, 'next unresolved comment did not follow document order');
+    const previousFocused = state.focused;
+    document.getElementById('nextthread').click();
+    check(state.focused !== previousFocused, 'next unresolved comment did not advance');
+    document.getElementById('prevthread').click();
+    check(state.focused === previousFocused, 'previous unresolved comment did not return');
+    for (const name of ['reading', 'balanced', 'review', 'reset']) {
+      layoutPreset(name);
+      check(document.documentElement.scrollWidth <= innerWidth, 'layout preset overflow');
+    }
+    mode.value = 'inline'; mode.dispatchEvent(new Event('change'));
+    const source = [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'Target 😀 sentence.');
+    check(!source.querySelector('.card, #composer'), 'inline controls entered source holder');
+    const previous = state.view.threads;
+    document.getElementById('splitthreads').dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowLeft'}));
+    check(state.view.threads > previous, 'keyboard resize did not adjust width');
+    check(JSON.parse(localStorage.getItem('specround.view')).placement === 'inline', 'placement not persisted');
+    check(document.documentElement.scrollWidth <= innerWidth, 'horizontal page overflow');
+    if (innerWidth > 1200) {
+      report.textContent = 'waiting for child view';
+      const frame = document.createElement('iframe');
+      frame.style.cssText = 'position:fixed;left:0;top:0;z-index:99;display:block;width:1300px;height:650px;border:0';
+      frame.src = location.href + '&layout-child=1'; document.body.appendChild(frame);
+      await waitFor(() => { try { return frame.contentWindow.eval('state.data'); } catch (_) { return false; } });
+      const win = frame.contentWindow;
+      const select = win.document.getElementById('commentlayout');
+      select.value = 'auto'; select.dispatchEvent(new win.Event('change'));
+      win.commentBox({space:'base',start:10,end:28,quote:'Target 😀 sentence.'});
+      const draft = win.document.querySelector('#composer textarea'); draft.value = 'resize draft';
+      for (const size of [600, 1200, 360]) {
+        report.textContent = 'resizing child to ' + size;
+        frame.style.width = size + 'px';
+        void frame.offsetWidth;
+        // Headless virtual time may exhaust its budget before a compositor
+        // frame. Exercise our resize handler against the real resized viewport.
+        win.dispatchEvent(new win.Event('resize'));
+        check(win.innerWidth === size && win.document.getElementById('layout').classList.contains('inline-comments') === (size < 1100), 'resize did not choose responsive placement');
+        check(win.document.querySelector('#composer textarea') === draft && draft.value === 'resize draft', 'viewport resize lost draft');
+        const r = draft.getBoundingClientRect();
+        check(r.width > 0 && r.top >= 0 && r.bottom <= win.innerHeight && r.right <= size, 'viewport resize hid editor');
+        check(win.document.documentElement.scrollWidth <= size, 'viewport resize overflow');
+      }
+      frame.remove();
+    }
+    setMode('raw');
+    check(await act({space:'base',start:9,end:9,body:'Boundary caret'}, '/api/comment'), 'insertion comment failed');
+    check(await act({space:'base',start:10,end:11,body:'First letter'}, '/api/comment'), 'following line comment failed');
+    const letter = state.data.comments.find(c => c.body === 'First letter');
+    const group = document.querySelector('.card[data-comment="' + letter.id + '"]').closest('.inline-thread');
+    check(group?.previousElementSibling?.querySelector('[data-s="10"]'), 'insertion caret moved next-line thread to wrong row');
+    startEditing();
+    document.getElementById('edittext').value += '\nUnsent suggestion';
+    setMode('render');
+    check(state.mode === 'raw' && document.getElementById('edittext').value.includes('Unsent suggestion'), 'mode switch discarded suggestion draft');
+    stopEditing(); setMode('render');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message + ' [' + report.textContent + ']'; }
+})();
+</script>
+"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="test", port=0)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu",
+                                 f"--window-size={width},{height}", f"--user-data-dir={tmp_path / 'browser'}",
+                                 f"--screenshot={tmp_path / 'layout.png'}",
+                                 "--dump-dom", "--virtual-time-budget=15000", served.url],
+                                capture_output=True, text=True, timeout=35)
+        assert result.returncode == 0, result.stderr
+        import re
+        outcome = re.search(r'<pre id="browser-result">(.*?)</pre>', result.stdout, re.S)
+        assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
+    finally:
+        served.shutdown()
+
+
 def test_html_preview_is_isolated_and_survives_commenting(store, doc, monkeypatch, tmp_path):
     browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
     if not browser:
@@ -253,6 +430,14 @@ def test_review_browser_shows_scope_and_explicitly_includes_new_files(monkeypatc
     check(state.data.scope.members.length === 1, 'membership changed before publication');
     check(await act({}, '/api/scope-refresh'), 'review refresh failed');
     check(state.data.scope.members.includes('new.md') && state.data.scope.new_files.length === 0, 'new file not published');
+    commentBox(null);
+    const draft = $('composer').querySelector('textarea'); draft.value = 'Keep this on a.md';
+    openDocument('new.md');
+    check(state.doc === 'a.md' && $('composer').querySelector('textarea') === draft, 'file navigation discarded or retargeted draft');
+    draft.value = ''; clearComposer();
+    setView({kind:'size', field:'nav', px:560});
+    setView({kind:'size', field:'threads', px:760});
+    check($('doc').getBoundingClientRect().width >= 300 && document.documentElement.scrollWidth <= innerWidth, 'wide saved panels squeezed the document');
     openDocument('new.md');
     await waitFor(() => state.data.workspace.selected === 'new.md');
     check(state.data.scope.id === scope && state.data.comments.length === 0, 'navigation lost scope');
@@ -267,7 +452,7 @@ def test_review_browser_shows_scope_and_explicitly_includes_new_files(monkeypatc
                            review=a, workspace=Workspace(root, review=a), doc="a.md")
     view.start()
     try:
-        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking",
+        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking", "--window-size=1200,900",
                                  f"--user-data-dir={tmp_path / 'profile'}", "--dump-dom", "--virtual-time-budget=15000", view.url],
                                 capture_output=True, text=True, timeout=60)
         assert result.returncode == 0, result.stderr[-2000:]
