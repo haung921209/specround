@@ -13,12 +13,12 @@ class Specround < Formula
   # The sdist built by `uv build` and attached to the release — not GitHub's
   # generated source archive, which carries the repository rather than the
   # package.
-  url "https://github.com/haung921209/specround/releases/download/v0.5.0/specround-0.5.0.tar.gz"
-  # PLACEHOLDER. Fill after the release is published:
+  url "https://github.com/haung921209/specround/releases/download/v0.6.0/specround-0.6.0.tar.gz"
+  # Verify against the published release:
   #   curl -sL <the url above> | shasum -a 256
   # or, equivalently, from the file the release was built from:
   #   shasum -a 256 dist/specround-0.1.0.tar.gz
-  sha256 "d2fda9efacf0c75cf10f86e765cd9c0cf03ffb6c77c01e8a12602caa4b1ef69d"
+  sha256 "98be766de952e973de32aaf4fcbef5c05463f95360889da27ba03e5a82a808e3"
   license "MIT"
 
   # The package needs >= 3.10; this pins which interpreter the virtualenv is
