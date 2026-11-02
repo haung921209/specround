@@ -97,7 +97,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlsplit
 
-from specround import __version__, assetfiles, markdown
+from specround import __version__, assetfiles, htmlview, markdown
 from specround.anchors import anchor_for
 from specround.assetfiles import AssetRefused
 from specround.diffs import changed_span, diff, unified_patch
@@ -746,7 +746,8 @@ class WebView:
             "base": base,
             "live": live,
             "live_digest": digest_text(live) if live is not None else None,
-            "render": markdown.render(shown) if shown is not None else "",
+            "format": "html" if htmlview.is_html(self.path) else "markdown",
+            "render": self._render(shown),
             "diff": self._diff_payload(base, live),
             "counts": {
                 "comments": len(comments),
@@ -758,6 +759,16 @@ class WebView:
             },
         }
         return payload
+
+    def _render(self, shown: str | None) -> str:
+        """The render mode's text: markdown rendered, or an HTML page with its runs marked.
+
+        Both carry ``data-s`` runs over the same text, so a selection in either
+        lands on the document anchor raw mode would give it.
+        """
+        if shown is None:
+            return ""
+        return htmlview.render(shown) if htmlview.is_html(self.path) else markdown.render(shown)
 
     def _reading(self, base: str | None, live: str | None) -> tuple[str | None, str | None]:
         """Which text the render and raw modes show, and which space that is.

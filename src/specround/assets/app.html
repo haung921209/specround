@@ -185,6 +185,9 @@
   }
   .htmlpreview.expanded iframe { height: 90vh; }
   .htmlpreview .previewnote { display: block; color: var(--dim); font-size: .85em; }
+  /* An .html document: the author's page in a sandboxed frame, sized to its content. */
+  #doc.htmldoc { padding: 0 0 60vh; }
+  #doc iframe.htmlpage { display: block; width: 100%; height: 70vh; min-height: 320px; border: 0; }
   #doc code { font-family: var(--mono); font-size: .9em; background: var(--panel); padding: 1px 4px; border-radius: 3px; }
   #doc pre code { background: none; padding: 0; }
   /* A ```mermaid fence is a picture its author drew in text. The picture is what
@@ -411,7 +414,7 @@ const $ = (id) => document.getElementById(id);
 // `loadView`).
 const state = {
   data: null, doc: null, mode: "render", focused: null, editing: false, activeOnly: false,
-  reply: { open: null, drafts: {} }, view: null, editBasis: null, composerSpan: null,
+  reply: { open: null, drafts: {} }, view: null, editBasis: null, composerSpan: null, frameSpan: null,
 };
 
 // -- transport ------------------------------------------------------------
@@ -970,6 +973,7 @@ function shownComments() {
 // -- painting anchors ------------------------------------------------------
 
 function paint(container, comments) {
+  framePaint(comments);
   // Repainting reuses text runs: generated insertion carets are not source text.
   container.querySelectorAll(".caret").forEach((element) => element.remove());
   const anchored = paintable(comments);
@@ -1030,6 +1034,7 @@ function caret(comment) {
 // -- the three modes ------------------------------------------------------
 
 function drawRender(host, data) {
+  if (data.format === "html") { drawHtml(host, data); return; }
   host.className = "";
   host.innerHTML = data.render;
   linkAssets(host, data);
@@ -1107,6 +1112,205 @@ function drawPreviews(host) {
       note.textContent = "HTML preview unavailable — " + error.message;
     }
   });
+}
+
+// -- HTML documents --------------------------------------------------------
+//
+// An .html document renders as the author's page, in the same sandbox the link
+// previews use: an opaque origin, no token, no network, no storage. The server
+// has wrapped each prose run in a `data-s` span (htmlview.py), so the frame can
+// measure a selection exactly as this page does and post the offsets out.
+//
+// The frame is untrusted: the document's own scripts run in it and can post
+// anything. So a message from it can only *propose* — open the comment float on
+// a span this page validates against the text it holds, focus a card that
+// exists, scroll, or size the frame. Every write still needs the reviewer to
+// type and submit here, behind the token the frame never sees.
+
+let htmlFrame = null;
+
+function drawHtml(host, data) {
+  host.className = "htmldoc";
+  host.textContent = "";
+  const frame = document.createElement("iframe");
+  frame.className = "htmlpage";
+  frame.title = data.doc;
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.referrerPolicy = "no-referrer";
+  const page = previewDocument(data.render) + "<script>(" + frameBridge + ")();<\/script>";
+  const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
+  previewUrls.add(url);
+  frame.src = url;
+  host.appendChild(frame);
+  htmlFrame = frame;
+}
+
+function frameSend(message) {
+  if (htmlFrame && htmlFrame.contentWindow) htmlFrame.contentWindow.postMessage({ specround: true, ...message }, "*");
+}
+
+function framePaint(comments) {
+  const anchors = paintable(comments).map((c) => ({
+    id: c.id, start: c.current_anchor.start, end: c.current_anchor.end, open: !c.settled,
+  }));
+  frameSend({ kind: "paint", anchors, focused: state.focused });
+}
+
+function frameMessage(event) {
+  if (!htmlFrame || event.source !== htmlFrame.contentWindow) return;
+  const message = event.data;
+  if (!message || message.specround !== true || !state.data) return;
+  if (message.kind === "ready") framePaint(shownComments());
+  else if (message.kind === "height") {
+    const height = Number(message.height);
+    // ponytail: capped rather than loop-detected; a page sized in vh can only grow to the cap.
+    if (Number.isFinite(height)) htmlFrame.style.height = Math.min(Math.max(height, 320), 200000) + "px";
+  } else if (message.kind === "scroll") {
+    const top = Number(message.top);
+    if (Number.isFinite(top)) window.scrollTo({ top: htmlFrame.getBoundingClientRect().top + window.scrollY + top - 96 });
+  } else if (message.kind === "focus") {
+    if (state.data.comments.some((c) => c.id === message.id)) focus(message.id, "mark");
+  } else if (message.kind === "select") frameSelect(message);
+}
+
+function frameSelect(message) {
+  const floater = $("float");
+  const span = message.span;
+  const text = textIn(state.data.reading);
+  state.frameSpan = null;
+  if (!state.data.commentable || !span || !Number.isInteger(span.start) || !Number.isInteger(span.end)
+      || span.start < 0 || span.end <= span.start || span.end > codepointLength(text)) {
+    floater.classList.remove("show");
+    return;
+  }
+  // The quote comes off this page's copy of the text, never off the frame.
+  state.frameSpan = { space: state.data.reading, start: span.start, end: span.end,
+                      quote: sliceText(text, span.start, span.end) };
+  const frame = htmlFrame.getBoundingClientRect();
+  const rect = message.rect || {};
+  floater.style.top = (window.scrollY + frame.top + (Number(rect.bottom) || 0) + 6) + "px";
+  floater.style.left = (window.scrollX + frame.left + (Number(rect.left) || 0)) + "px";
+  floater.classList.add("show");
+}
+
+// Runs inside the frame, serialised into it; it can use nothing from this page.
+function frameBridge() {
+  const post = (message) => parent.postMessage({ specround: true, ...message }, "*");
+  const length = (text) => Array.from(text).length;
+  const holders = () => [...document.querySelectorAll("[data-s]")];
+  const sourceLength = (holder) => length(holder.textContent)
+    - [...holder.querySelectorAll(".sr-caret")].reduce((n, c) => n + length(c.textContent), 0);
+  const holderOf = (node) => {
+    const element = node && node.nodeType === 3 ? node.parentElement : node;
+    return element && element.closest ? element.closest("[data-s]") : null;
+  };
+  const offsetIn = (holder, node, offset) => {
+    const range = document.createRange();
+    range.setStart(holder, 0);
+    range.setEnd(node, offset);
+    const prefix = range.cloneContents();
+    prefix.querySelectorAll(".sr-caret").forEach((c) => c.remove());
+    return length(prefix.textContent);
+  };
+  const report = () => {
+    const selection = getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) { post({ kind: "select", span: null }); return; }
+    const range = selection.getRangeAt(0);
+    const inside = holders().filter((h) => range.intersectsNode(h));
+    if (!inside.length) { post({ kind: "select", span: null }); return; }
+    // A triple click starts or ends on an element boundary, not in a run: then
+    // the first and last runs the range touches are the edges.
+    const head = holderOf(range.startContainer);
+    const tail = holderOf(range.endContainer);
+    const first = inside[0];
+    const last = inside[inside.length - 1];
+    const start = head ? Number(head.dataset.s) + offsetIn(head, range.startContainer, range.startOffset)
+      : Number(first.dataset.s);
+    const end = tail ? Number(tail.dataset.s) + offsetIn(tail, range.endContainer, range.endOffset)
+      : Number(last.dataset.s) + sourceLength(last);
+    const rect = range.getBoundingClientRect();
+    post({ kind: "select", span: end > start ? { start, end } : null, rect: { left: rect.left, bottom: rect.bottom } });
+  };
+  let pending = 0;
+  document.addEventListener("selectionchange", () => { clearTimeout(pending); pending = setTimeout(report, 120); });
+
+  const style = document.createElement("style");
+  style.textContent = "mark.sr-anch{background:rgba(250,200,40,.32);color:inherit;cursor:pointer;border-radius:2px}"
+    + "mark.sr-anch.open{background:rgba(250,170,30,.5)}mark.sr-anch.sr-here,.sr-caret.sr-here{outline:2px solid #e8590c}"
+    + ".sr-caret{color:#e8590c;cursor:pointer;font-weight:700}";
+  document.head.appendChild(style);
+
+  const originals = new Map();
+  const paint = (anchors, focused) => {
+    holders().forEach((holder) => {
+      if (!originals.has(holder)) originals.set(holder, holder.textContent);
+      const text = Array.from(originals.get(holder));
+      const start = Number(holder.dataset.s);
+      const end = start + text.length;
+      const spans = anchors.filter((a) => a.end > a.start && a.start < end && a.end > start);
+      const points = anchors.filter((a) => a.start === a.end && a.start >= start && a.start <= end);
+      holder.textContent = "";
+      if (!spans.length && !points.length) { holder.textContent = text.join(""); return; }
+      const clamp = (at) => Math.max(0, Math.min(text.length, at - start));
+      const cuts = [...new Set([0, text.length, ...spans.flatMap((a) => [clamp(a.start), clamp(a.end)]),
+                                ...points.map((a) => clamp(a.start))])].sort((a, b) => a - b);
+      cuts.forEach((at, index) => {
+        points.filter((a) => clamp(a.start) === at).forEach((a) => {
+          const caret = document.createElement("span");
+          caret.className = "sr-caret";
+          caret.dataset.comments = a.id;
+          caret.textContent = "‸";
+          holder.appendChild(caret);
+        });
+        const next = cuts[index + 1];
+        if (next === undefined) return;
+        const piece = text.slice(at, next).join("");
+        const covering = spans.filter((a) => clamp(a.start) <= at && clamp(a.end) >= next);
+        if (!covering.length) { holder.appendChild(document.createTextNode(piece)); return; }
+        const mark = document.createElement("mark");
+        mark.className = "sr-anch" + (covering.some((a) => a.open) ? " open" : "");
+        mark.dataset.comments = covering.map((a) => a.id).join(" ");
+        mark.textContent = piece;
+        holder.appendChild(mark);
+      });
+    });
+    focus(focused, false);
+  };
+  const focus = (id, scroll) => {
+    document.querySelectorAll(".sr-here").forEach((m) => m.classList.remove("sr-here"));
+    if (!id) return;
+    const marks = [...document.querySelectorAll("mark.sr-anch, .sr-caret")]
+      .filter((m) => m.dataset.comments.split(" ").includes(id));
+    marks.forEach((m) => m.classList.add("sr-here"));
+    if (scroll && marks.length) post({ kind: "scroll", top: marks[0].getBoundingClientRect().top + scrollY });
+  };
+
+  document.addEventListener("click", (event) => {
+    const mark = event.target.closest && event.target.closest("mark.sr-anch, .sr-caret");
+    if (mark) { post({ kind: "focus", id: mark.dataset.comments.split(" ")[0] }); return; }
+    // Links never navigate the frame away from the document under review; an
+    // in-page link scrolls the review page to its target instead.
+    const link = event.target.closest && event.target.closest("a[href]");
+    if (!link) return;
+    event.preventDefault();
+    const href = link.getAttribute("href");
+    if (!href.startsWith("#")) return;
+    let target = null;
+    try { target = document.getElementById(decodeURIComponent(href.slice(1))); } catch (_) { target = null; }
+    if (target) post({ kind: "scroll", top: target.getBoundingClientRect().top + scrollY });
+  }, true);
+
+  addEventListener("message", (event) => {
+    const message = event.data;
+    if (event.source !== parent || !message || message.specround !== true) return;
+    if (message.kind === "paint") paint(message.anchors || [], message.focused);
+    else if (message.kind === "focus") focus(message.id, message.scroll === true);
+  });
+  const size = () => post({ kind: "height", height: document.documentElement.scrollHeight });
+  new ResizeObserver(size).observe(document.body || document.documentElement);
+  addEventListener("load", size);
+  post({ kind: "ready" });
+  size();
 }
 
 // -- diagrams --------------------------------------------------------------
@@ -1309,6 +1513,8 @@ function draw() {
   // Keep the editor node when replacing source DOM; inline controls are not source text.
   $("composerhome").appendChild($("composer"));
   clearPreviews();
+  htmlFrame = null;
+  state.frameSpan = null;
   // Gated on having a text to show, not on having a round — see `readable`. With
   // no round there is nothing to write and still something to read, and this is
   // where the second half used to be thrown away.
@@ -1900,6 +2106,8 @@ function focus(id, origin) {
   state.focused = id;
   showComments();
   markFocus();
+  // A card clicked beside an HTML page: the mark is in the frame, which scrolls this page to it.
+  if (origin === "card" && htmlFrame) frameSend({ kind: "focus", id, scroll: true });
   const anchor = document.querySelector("mark.anch.here, .caret.here");
   const card = document.querySelector('.card[data-comment="' + id + '"]');
   card?.closest("details")?.setAttribute("open", "");
@@ -1939,6 +2147,7 @@ function markFocus() {
   // did not, or as the wrong place to scroll to for anything reading `here`.
   document.querySelectorAll("mark.anch.here, .caret.here").forEach((m) => m.classList.remove("here"));
   document.querySelectorAll(".card.here[data-comment]").forEach((c) => c.classList.remove("here"));
+  frameSend({ kind: "focus", id: state.focused, scroll: false });
   if (!state.focused) return;
   document.querySelectorAll("mark.anch, .caret").forEach((mark) => {
     if (mark.dataset.comments.split(" ").includes(state.focused)) mark.classList.add("here");
@@ -2197,6 +2406,9 @@ function renderControls() {
 function placeFloat() {
   const span = selectedSpan();
   const floater = $("float");
+  // A selection inside an HTML page frame is not this document's selection;
+  // its float was placed by `frameSelect` and stays until the frame says otherwise.
+  if (!span && state.frameSpan) return;
   if (!span || !state.data || !state.data.commentable) { floater.classList.remove("show"); return; }
   const rect = window.getSelection().getRangeAt(0).getBoundingClientRect();
   floater.style.top = (window.scrollY + rect.bottom + 6) + "px";
@@ -2356,10 +2568,12 @@ window.addEventListener("focus", checkReview);
 $("float").addEventListener("mousedown", (event) => {
   // mousedown, not click: clicking clears the selection before the handler runs.
   event.preventDefault();
-  const span = selectedSpan();
+  const span = selectedSpan() || state.frameSpan;
+  state.frameSpan = null;
   $("float").classList.remove("show");
   if (span) commentBox(span);
 });
+window.addEventListener("message", frameMessage);
 document.addEventListener("selectionchange", placeFloat);
 $("propose").addEventListener("click", async () => {
   const body = { ...state.editBasis, text: $("edittext").value, body: $("editwhy").value, author: $("author").value };

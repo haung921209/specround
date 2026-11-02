@@ -462,3 +462,115 @@ def test_review_browser_shows_scope_and_explicitly_includes_new_files(monkeypatc
         assert a.members() == ["a.md", "new.md"]
     finally:
         view.shutdown()
+
+
+def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, monkeypatch, tmp_path):
+    """An .html document under review: its page renders in a sandbox, its script
+    cannot reach the review UI, and a selection in the page anchors in the ledger."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to a Chromium/headless-shell executable")
+    page_doc = doc.parent / "share.html"
+    page_doc.write_text("""<!doctype html><html><head><title>t</title></head><body>
+<p>The proxy waits 30 seconds.</p>
+<table><tr><th>Item</th><td>cell value 45s</td></tr></table>
+<div class="quiz"><button id="q">Answer</button><p class="fb"></p></div>
+<script>
+(() => {
+  const result = {};
+  try { parent.document.body.innerHTML = 'hacked'; result.parentDom = 'reached'; } catch (_) { result.parentDom = 'blocked'; }
+  try { result.token = String(parent.TOKEN); } catch (_) { result.token = 'blocked'; }
+  try { localStorage.getItem('x'); result.storage = 'reached'; } catch (_) { result.storage = 'blocked'; }
+  try { top.location.href = 'about:blank'; } catch (_) {}
+  result.referrer = document.referrer; result.url = location.href;
+  parent.postMessage({ specround: true, kind: 'select', span: { start: 0, end: 5 }, rect: {} }, '*');
+  parent.postMessage({ specround: true, kind: 'focus', id: 'c-forged' }, '*');
+  document.getElementById('q').addEventListener('click', () => { document.querySelector('.fb').textContent = 'quiz ok'; });
+  document.getElementById('q').click();
+  result.quiz = document.querySelector('.fb').textContent;
+  addEventListener('message', (event) => {
+    if (event.data && event.data.probe === 'select-cell') {
+      const text = [...document.querySelectorAll('[data-s]')].find(e => e.textContent.includes('45s')).firstChild;
+      const range = document.createRange();
+      range.setStart(text, text.nodeValue.indexOf('45s')); range.setEnd(text, text.nodeValue.indexOf('45s') + 3);
+      getSelection().removeAllRanges(); getSelection().addRange(range);
+    }
+    if (event.data && event.data.probe === 'marks') {
+      parent.postMessage({ probe: 'marks', marks: [...document.querySelectorAll('mark.sr-anch')].map(m => m.textContent) }, '*');
+    }
+  });
+  parent.postMessage({ probe: 'child', ...result }, '*');
+})();
+</script>
+</body></html>""", encoding="utf-8")
+    from specround.store import ReviewStore
+    html_store = ReviewStore.for_document(page_doc, clock=clock)
+    html_store.open_round(page_doc, author="test")
+    original = webview.page()
+    probe = r"""
+<script>
+(async () => {
+  const check = (ok, message) => { if (!ok) throw Error(message); };
+  const waitFor = async (predicate) => {
+    for (let i = 0; i < 500; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw Error('timed out');
+  };
+  let child, marks;
+  window.addEventListener('message', event => {
+    if (event.data && event.data.probe === 'child') child = event.data;
+    if (event.data && event.data.probe === 'marks') marks = event.data.marks;
+  });
+  const report = document.createElement('pre');
+  report.id = 'browser-result';
+  document.body.appendChild(report);
+  try {
+    await waitFor(() => state.data);
+    check(state.data.format === 'html', 'not served as html');
+    await waitFor(() => child);
+    const frame = document.querySelector('#doc iframe.htmlpage');
+    check(frame && frame.getAttribute('sandbox') === 'allow-scripts', 'page frame is not sandboxed');
+    check(child.parentDom === 'blocked' && child.token === 'blocked' && child.storage === 'blocked', 'sandbox boundary');
+    check(child.referrer === '' && !child.url.includes(TOKEN), 'token exposed');
+    check(child.quiz === 'quiz ok', 'document script did not run');
+    check(document.getElementById('modes') && document.body.textContent !== 'hacked', 'review UI changed');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    check(!document.querySelector('#composer textarea'), 'forged message opened a composer');
+    check(state.data.comments.length === 0, 'forged message wrote');
+    frame.contentWindow.postMessage({ probe: 'select-cell' }, '*');
+    await waitFor(() => state.frameSpan && state.frameSpan.quote === '45s');
+    check(document.getElementById('float').classList.contains('show'), 'float not shown for page selection');
+    document.getElementById('float').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await waitFor(() => document.querySelector('#composer textarea'));
+    document.querySelector('#composer textarea').value = 'cell comment';
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => state.data.comments.some(c => c.body === 'cell comment'));
+    const saved = state.data.comments.find(c => c.body === 'cell comment');
+    check(sliceText(state.data.base, saved.current_anchor.start, saved.current_anchor.end) === '45s', 'anchored on wrong text');
+    check(document.querySelector('#doc iframe.htmlpage') === frame, 'commenting reloaded the page frame');
+    frame.contentWindow.postMessage({ probe: 'marks' }, '*');
+    await waitFor(() => marks);
+    check(marks.includes('45s'), 'comment not highlighted in the page');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>
+"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=html_store, path=page_doc, author="test", port=0)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu", "--window-size=1300,900",
+                                 f"--user-data-dir={tmp_path / 'browser'}",
+                                 "--dump-dom", "--virtual-time-budget=15000", served.url],
+                                capture_output=True, text=True, timeout=35)
+        assert result.returncode == 0, result.stderr
+        import re
+        outcome = re.search(r'<pre id="browser-result">(.*?)</pre>', result.stdout, re.S)
+        assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
+        comments = list(html_store.fold().comments.values())
+        assert [c.anchor.exact for c in comments] == ["45s"]
+    finally:
+        served.shutdown()
