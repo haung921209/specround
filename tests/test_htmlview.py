@@ -32,11 +32,13 @@ line one
 </body></html>
 """
 
-_RUN = re.compile(r'<span class="sr-t" data-s="(\d+)">(.*?)</span>', re.DOTALL)
+_RUN = re.compile(r'<span class="sr-t" data-s="(\d+)" data-n="(\d+)">(.*?)</span>', re.DOTALL)
 
 
 def runs(rendered):
-    return [(int(start), text) for start, text in _RUN.findall(rendered)]
+    found = [(int(start), int(n), text) for start, n, text in _RUN.findall(rendered)]
+    assert all(n == len(text) for _, n, text in found)
+    return [(start, text) for start, _, text in found]
 
 
 def test_every_run_is_a_slice_of_the_source():
@@ -80,6 +82,30 @@ def test_crlf_never_enters_a_run():
         assert text[start:start + len(run)] == run
 
 
+def test_a_nul_never_enters_a_run():
+    from specround import htmlview
+
+    text = "<p>a\0b</p>"
+    assert [t for _, t in runs(htmlview.render(text))] == ["a", "b"]
+
+
+@pytest.mark.parametrize("raw", [
+    "<xmp>x <b>y</b></xmp>", "<plaintext>x", "<noembed>x</noembed>", "<noframes>x</noframes>",
+    "<script/>var a = 1;</script>", "<textarea/>typed</textarea>", "<title/>t</title>",
+])
+def test_raw_text_elements_are_never_wrapped(raw):
+    from specround import htmlview
+
+    assert runs(htmlview.render(raw + "<p>after</p>")) in ([], [(len(raw) + 3, "after")])
+    assert "sr-t" not in htmlview.render(raw)
+
+
+def test_a_self_closed_svg_is_closed():
+    from specround import htmlview
+
+    assert [t for _, t in runs(htmlview.render("<svg/><p>after</p>"))] == ["after"]
+
+
 def test_is_html_names_the_suffixes():
     from specround import htmlview
 
@@ -91,7 +117,7 @@ def _strip(rendered):
     out, at = [], 0
     for match in _RUN.finditer(rendered):
         out.append(rendered[at:match.start()])
-        out.append(match.group(2))
+        out.append(match.group(3))
         at = match.end()
     out.append(rendered[at:])
     return "".join(out)

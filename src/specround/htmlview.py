@@ -11,13 +11,15 @@ The page keeps one property the markdown render keeps (see :mod:`markdown`):
     for every emitted run, ``source[start:start + len(text)] == text``
 
 Each run of prose the browser would show is wrapped in
-``<span class="sr-t" data-s="N">`` and nothing else in the document changes —
+``<span class="sr-t" data-s="N" data-n="LEN">`` and nothing else in the document changes —
 removing the spans gives the source back byte for byte. Text the browser parses
 differently from how it reads (scripts, styles, the head, SVG/MathML, form
 controls) is never wrapped, so a run never claims an offset it does not have.
 
 The result runs in a sandboxed frame (``app.html``), which is where a document's
-own ``<script>`` is kept away from the review page and its token.
+own ``<script>`` is kept away from the review page and its token. ``data-n`` is
+the run's length, so the frame can tell a run the page's scripts have rewritten
+(rendered math, say) and refuse to count offsets in it.
 """
 
 from __future__ import annotations
@@ -35,7 +37,10 @@ SUFFIXES = (".html", ".htm")
 _OPAQUE = frozenset({
     "head", "title", "script", "style", "template", "noscript", "textarea",
     "select", "option", "optgroup", "svg", "math", "iframe", "object", "canvas",
+    "xmp", "plaintext", "noembed", "noframes",
 })
+#: Foreign elements honour a self-closing ``/>``; every HTML element ignores it.
+_FOREIGN = frozenset({"svg", "math"})
 #: A newline straight after these start tags is dropped by the HTML parser.
 _LEADING_NEWLINE = frozenset({"pre", "listing", "textarea"})
 
@@ -68,6 +73,10 @@ class _Runs(HTMLParser):
         self.after = tag
 
     def handle_startendtag(self, tag: str, attrs: object) -> None:
+        # ``<script/>`` still opens a script in a browser, so its contents are
+        # not prose even though this parser closed it.
+        if tag in _OPAQUE and tag not in _FOREIGN:
+            self.open.append(tag)
         self.after = None
 
     def handle_endtag(self, tag: str) -> None:
@@ -86,12 +95,12 @@ class _Runs(HTMLParser):
             return
         if after in _LEADING_NEWLINE and data.startswith("\n"):
             start += 1
-        # A carriage return is folded away by the browser, so it may not sit
-        # inside a run: everything after it would count one character short.
+        # A carriage return is folded away by the browser and a NUL dropped, so
+        # neither may sit inside a run: everything after it would count short.
         at = start
         while at < end:
-            stop = self.text.find("\r", at, end)
-            stop = end if stop < 0 else stop
+            stops = [i for i in (self.text.find("\r", at, end), self.text.find("\0", at, end)) if i >= 0]
+            stop = min(stops) if stops else end
             if self.text[at:stop].strip():
                 self.runs.append((at, stop))
             at = stop + 1
@@ -111,7 +120,7 @@ def render(text: str) -> str:
     at = 0
     for start, end in parser.runs:
         out.append(text[at:start])
-        out.append(f'<span class="sr-t" data-s="{start}">{text[start:end]}</span>')
+        out.append(f'<span class="sr-t" data-s="{start}" data-n="{end - start}">{text[start:end]}</span>')
         at = end
     out.append(text[at:])
     return "".join(out)

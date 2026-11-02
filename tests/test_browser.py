@@ -474,9 +474,13 @@ def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, m
     page_doc.write_text("""<!doctype html><html><head><title>t</title></head><body>
 <p>The proxy waits 30 seconds.</p>
 <table><tr><th>Item</th><td>cell value 45s</td></tr></table>
+<div data-s="2"><h2>Author attr</h2><p>Hello world</p></div>
+<p id="math">mutated $x$ more text</p>
 <div class="quiz"><button id="q">Answer</button><p class="fb"></p></div>
 <script>
 (() => {
+  const math = document.getElementById('math').firstChild;
+  math.innerHTML = math.textContent.replace('$x$', '<b>x</b>');
   const result = {};
   try { parent.document.body.innerHTML = 'hacked'; result.parentDom = 'reached'; } catch (_) { result.parentDom = 'blocked'; }
   try { result.token = String(parent.TOKEN); } catch (_) { result.token = 'blocked'; }
@@ -489,11 +493,17 @@ def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, m
   document.getElementById('q').click();
   result.quiz = document.querySelector('.fb').textContent;
   addEventListener('message', (event) => {
-    if (event.data && event.data.probe === 'select-cell') {
-      const text = [...document.querySelectorAll('[data-s]')].find(e => e.textContent.includes('45s')).firstChild;
+    if (event.data && event.data.probe === 'select') {
+      const needle = event.data.needle;
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let text;
+      while ((text = walker.nextNode()) && !text.nodeValue.includes(needle)) {}
       const range = document.createRange();
-      range.setStart(text, text.nodeValue.indexOf('45s')); range.setEnd(text, text.nodeValue.indexOf('45s') + 3);
+      range.setStart(text, text.nodeValue.indexOf(needle)); range.setEnd(text, text.nodeValue.indexOf(needle) + needle.length);
       getSelection().removeAllRanges(); getSelection().addRange(range);
+    }
+    if (event.data && event.data.probe === 'math') {
+      parent.postMessage({ probe: 'math', kept: !!document.querySelector('#math b') && !!document.querySelector('div[data-s="2"] h2') }, '*');
     }
     if (event.data && event.data.probe === 'marks') {
       parent.postMessage({ probe: 'marks', marks: [...document.querySelectorAll('mark.sr-anch')].map(m => m.textContent) }, '*');
@@ -518,10 +528,11 @@ def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, m
     }
     throw Error('timed out');
   };
-  let child, marks;
+  let child, marks, mathKept;
   window.addEventListener('message', event => {
     if (event.data && event.data.probe === 'child') child = event.data;
     if (event.data && event.data.probe === 'marks') marks = event.data.marks;
+    if (event.data && event.data.probe === 'math') mathKept = event.data.kept;
   });
   const report = document.createElement('pre');
   report.id = 'browser-result';
@@ -539,8 +550,17 @@ def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, m
     await new Promise(resolve => setTimeout(resolve, 300));
     check(!document.querySelector('#composer textarea'), 'forged message opened a composer');
     check(state.data.comments.length === 0, 'forged message wrote');
-    frame.contentWindow.postMessage({ probe: 'select-cell' }, '*');
-    await waitFor(() => state.frameSpan && state.frameSpan.quote === '45s');
+    const select = async (needle) => {
+      state.frameSpan = 'pending';
+      frame.contentWindow.postMessage({ probe: 'select', needle }, '*');
+      await waitFor(() => state.frameSpan !== 'pending');
+      return state.frameSpan;
+    };
+    const world = await select('world');
+    check(world && world.quote === 'world', 'author data-s shifted the anchor: ' + JSON.stringify(world));
+    check(await select('more text') === null, 'a run rewritten by the page was counted');
+    await select('45s');
+    check(state.frameSpan && state.frameSpan.quote === '45s', 'cell selection');
     check(document.getElementById('float').classList.contains('show'), 'float not shown for page selection');
     document.getElementById('float').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     await waitFor(() => document.querySelector('#composer textarea'));
@@ -553,6 +573,9 @@ def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, m
     frame.contentWindow.postMessage({ probe: 'marks' }, '*');
     await waitFor(() => marks);
     check(marks.includes('45s'), 'comment not highlighted in the page');
+    frame.contentWindow.postMessage({ probe: 'math' }, '*');
+    await waitFor(() => mathKept !== undefined);
+    check(mathKept, 'painting undid the page script\'s rewrite');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();

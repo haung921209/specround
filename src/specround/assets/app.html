@@ -1197,12 +1197,18 @@ function frameSelect(message) {
 function frameBridge() {
   const post = (message) => parent.postMessage({ specround: true, ...message }, "*");
   const length = (text) => Array.from(text).length;
-  const holders = () => [...document.querySelectorAll("[data-s]")];
+  // Only the server's runs, and only while they still hold the text they were
+  // cut from: the document may carry its own data-s, and its scripts may
+  // rewrite a run (math rendering, say). Such a run is not counted or repainted.
   const sourceLength = (holder) => length(holder.textContent)
     - [...holder.querySelectorAll(".sr-caret")].reduce((n, c) => n + length(c.textContent), 0);
+  const intact = (holder) => sourceLength(holder) === Number(holder.dataset.n)
+    && [...holder.children].every((child) => child.matches("mark.sr-anch, .sr-caret"));
+  const holders = () => [...document.querySelectorAll("span.sr-t[data-s]")].filter(intact);
   const holderOf = (node) => {
     const element = node && node.nodeType === 3 ? node.parentElement : node;
-    return element && element.closest ? element.closest("[data-s]") : null;
+    const holder = element && element.closest ? element.closest("span.sr-t[data-s]") : null;
+    return holder && intact(holder) ? holder : null;
   };
   const offsetIn = (holder, node, offset) => {
     const range = document.createRange();
@@ -1218,6 +1224,16 @@ function frameBridge() {
     const range = selection.getRangeAt(0);
     const inside = holders().filter((h) => range.intersectsNode(h));
     if (!inside.length) { post({ kind: "select", span: null }); return; }
+    // An end inside a rewritten run cannot be counted: refuse rather than guess.
+    const touched = (node) => {
+      const element = node && node.nodeType === 3 ? node.parentElement : node;
+      return element && element.closest ? element.closest("span.sr-t[data-s]") : null;
+    };
+    if ((touched(range.startContainer) && !holderOf(range.startContainer))
+        || (touched(range.endContainer) && !holderOf(range.endContainer))) {
+      post({ kind: "select", span: null });
+      return;
+    }
     // A triple click starts or ends on an element boundary, not in a run: then
     // the first and last runs the range touches are the edges.
     const head = holderOf(range.startContainer);
@@ -1674,6 +1690,8 @@ function drawThreads() {
 }
 
 function inlineComments() {
+  // An HTML page lives in a frame, where no thread can sit beside its block.
+  if (state.data && state.data.format === "html") return false;
   return state.view.placement === "inline"
     || (state.view.placement === "auto" && window.innerWidth < VIEW_FOLD_UNDER);
 }
