@@ -277,6 +277,15 @@ not enabled. HTML files are read from disk, not frozen into a round's base;
 version the filename if a review needs a fixed diagram. Raw HTML in Markdown
 and HTML code fences remain source text.
 
+**An `.html` document is reviewed as it renders.** `specround view page.html`
+shows the page itself in the same sandboxed frame, and selecting text in it — a
+paragraph, a table cell — comments on that text. Anchors are offsets into the
+HTML source, so `comment --quote`, raw mode, `round refresh` and the diff work on
+the source text exactly as for markdown. The page's own scripts run (quiz
+buttons work) but stay in the frame: they can at most propose a selection, and
+nothing is recorded until the reviewer submits in the review page. Links in the
+page do not navigate the frame; in-page `#` links scroll to their target.
+
 The optional real-browser regression check runs with
 `SPECROUND_TEST_BROWSER=/path/to/chromium pytest tests/test_browser.py`.
 Set `SPECROUND_TEST_HTML=/path/to/diagram.html` to exercise a local export too.
