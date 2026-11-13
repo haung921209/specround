@@ -29,7 +29,9 @@ __all__ = [
     "comments_on",
     "disposition_json",
     "document_summary",
+    "lost_quote",
     "orphaned",
+    "placement",
     "reply_json",
     "resolution_json",
     "round_json",
@@ -72,8 +74,35 @@ def orphaned(comment: Comment) -> bool:
     is read here, beside the first, so a card, a count and a navigation bar
     cannot disagree about the same comment.
     """
-    view = (comment.ext or {}).get("view")
-    return comment.orphaned or (isinstance(view, dict) and view.get("orphaned") is True)
+    return comment.orphaned or _view(comment).get("orphaned") is True
+
+
+def placement(comment: Comment) -> tuple[str | None, bool]:
+    """Which rung placed this comment where it is, and whether that was a tie.
+
+    The latest re-anchoring that placed it, or — for a comment carried when it
+    was written (a diff selection, or one made on an earlier revision's page),
+    which has no re-anchoring of its own — the rung ``ext.view`` recorded. One
+    answer for the card, ``--json`` and the CLI's "worth a look" footer.
+    """
+    placed = comment.current_anchoring
+    if placed is not None:
+        return placed.strategy, placed.ambiguous
+    view = _view(comment)
+    strategy = view.get("strategy")
+    return (strategy if isinstance(strategy, str) else None), view.get("ambiguous") is True
+
+
+def lost_quote(comment: Comment) -> str | None:
+    """The text an orphan-on-arrival comment was about, or ``None``."""
+    quote = _view(comment).get("quote")
+    return quote if comment.anchor is None and orphaned(comment) and isinstance(quote, str) else None
+
+
+def _view(comment: Comment) -> dict[str, Any]:
+    ext = comment.ext if isinstance(comment.ext, dict) else {}
+    view = ext.get("view")
+    return view if isinstance(view, dict) else {}
 
 
 def document_summary(state: State, key: str) -> dict[str, Any]:
@@ -240,7 +269,6 @@ def comment_json(comment: Comment) -> dict[str, Any]:
     ``unresolved`` was: a missing key is a bug a consumer can see, where a
     redefined one is a value that quietly changed which question it answers.
     """
-    placed = comment.current_anchoring
     return {
         "id": comment.id,
         "round": comment.round,
@@ -259,8 +287,8 @@ def comment_json(comment: Comment) -> dict[str, Any]:
         "misplaced": comment.misplaced,
         "anchoring": anchoring_json(comment.anchoring),
         "ext": comment.ext,
-        "strategy": placed.strategy if placed else None,
-        "ambiguous": placed.ambiguous if placed else False,
+        "strategy": placement(comment)[0],
+        "ambiguous": placement(comment)[1],
         "resolved": comment.resolved,
         "replies": [reply_json(r) for r in comment.replies],
         "dispositions": [disposition_json(d) for d in comment.dispositions],

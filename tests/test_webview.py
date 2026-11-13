@@ -2218,6 +2218,8 @@ def test_refresh_changes_revision_without_closing_the_round(opened, store, doc, 
     assert status == 200, result
     comment = store.fold().comments[result["comment"]["id"]]
     assert comment.body == "stale draft" and comment.anchor is None
+    # No selection, so nothing was cut anywhere: no provenance claiming one was.
+    assert comment.ext is None
     assert comment.revision == store.fold().rounds[round_id].revision
 
 
@@ -2290,6 +2292,8 @@ def test_selection_whose_text_a_later_revision_removed_is_kept_as_an_orphan(open
     from specround.wire import document_summary
     assert comment_json(comment)["orphaned"] is True
     assert document_summary(store.fold(), state(opened)["doc"])["orphans"] == 1
+    from specround.cli import _anchor_cell
+    assert _anchor_cell(comment) == "30 seconds (lost)"
 
 
 def test_page_reads_ext_view_defensively(tmp_path):
@@ -2297,10 +2301,22 @@ def test_page_reads_ext_view_defensively(tmp_path):
     odd = {"ext": {"view": {"orphaned": True, "quote": {"toString": None}}}}
     assert in_node("carriedNote(input)", odd, tmp_path)["quote"] == ""
     assert in_node("carriedNote(input)", {"ext": {"view": None}}, tmp_path)["quote"] == ""
-    assert in_node("carriedNote(input)", {}, tmp_path) == {"strategy": None, "ambiguous": False, "quote": ""}
-    carried = {"strategy": None, "ambiguous": False,
-               "ext": {"view": {"strategy": "fuzzy", "ambiguous": True, "quote": "q"}}}
-    assert in_node("carriedNote(input)", carried, tmp_path) == {"strategy": "fuzzy", "ambiguous": True, "quote": "q"}
+    assert in_node("carriedNote(input)", {}, tmp_path) == {"space": "", "quote": ""}
+    odd_space = {"ext": {"view": {"space": {"toString": None}, "quote": "q"}}}
+    assert in_node("carriedNote(input)", odd_space, tmp_path) == {"space": "", "quote": "q"}
+    assert in_node("carriedNote(input)", {"ext": "x"}, tmp_path) == {"space": "", "quote": ""}
+
+
+def test_write_time_carry_reports_its_rung_on_every_surface():
+    # A comment carried when it was written has no re-anchoring of its own; the
+    # rung ext.view recorded is the one comment_json and the CLI footer report.
+    from specround.cli import _moved_marks
+    carried = Comment(id="c-1", round="r-1", kind="comment", author="a", ts="t",
+                      ext={"view": {"space": "base", "strategy": "fuzzy", "ambiguous": True}})
+    assert (comment_json(carried)["strategy"], comment_json(carried)["ambiguous"]) == ("fuzzy", True)
+    assert _moved_marks(carried) == ["fuzzy", "ambiguous"]
+    odd = Comment(id="c-2", round="r-1", kind="comment", author="a", ts="t", ext={"view": {"strategy": 3}})
+    assert (comment_json(odd)["strategy"], comment_json(odd)["ambiguous"]) == (None, False)
 
 
 def test_stale_selection_must_still_match_the_revision_it_was_made_on(opened, store, doc, round_id, doc_text):

@@ -367,12 +367,13 @@ def test_same_round_update_notifies_without_replacing_an_active_draft(store, doc
     check(state.data.round.revision === revision && $('doc').textContent === text, 'poll replaced text');
     await acceptReviewRevision();
     check(state.data.round.revision === revision && draft.value === 'keep my draft', 'draft not protected');
+    // Sending the draft written on the earlier revision saves it, carried into the
+    // current one, and the page catches up so the saved card is on screen.
     document.querySelector('#composer .primary').click();
-    await waitFor(() => $('notice').textContent.includes('reload'));
-    check(document.querySelector('#composer textarea') === draft && draft.value === 'keep my draft', 'refusal erased draft');
-    clearComposer();
-    await acceptReviewRevision();
-    check(state.data.round.id === round && state.data.round.revision !== revision, 'wrong round/revision');
+    await waitFor(() => state.data.round.revision !== revision);
+    check(state.data.round.id === round, 'wrong round');
+    check(![...document.querySelectorAll('#composer textarea')].some(a => a.value.trim()), 'saved draft left in the composer');
+    check([...document.querySelectorAll('.body')].some(e => e.textContent === 'keep my draft'), 'saved comment not drawn');
     check($('doc').textContent.includes('Published introduction.'), 'published text missing');
     check(document.querySelector('mark.anch')?.textContent === '30 seconds', 'anchor lost');
     check($('reviewnotice').hidden, 'accepted update still pending');
@@ -390,7 +391,8 @@ def test_same_round_update_notifies_without_replacing_an_active_draft(store, doc
         assert result.returncode == 0, result.stderr[-2500:]
         assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
         state = store.fold()
-        assert list(state.comments) == [cid] and state.rounds[round_id].open
+        assert list(state.comments)[0] == cid and state.rounds[round_id].open
+        assert [c.body for c in state.comments.values()][1:] == ["keep my draft"]
     finally:
         served.shutdown()
 

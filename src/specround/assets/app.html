@@ -449,9 +449,13 @@ function notice(message, kind) {
   box.className = message ? "show " + (kind || "info") : "";
 }
 
-async function act(body, path) {
+async function act(body, path, sent) {
+  // `sent` runs once the server has the text and before the reload, so a draft
+  // that is now saved no longer counts as one: otherwise `load` would keep the
+  // old revision on screen "to protect" it and the new card would never draw.
   try {
     const result = await api(path, body);
+    if (sent) sent();
     const refocus = actionFocus(path, result);
     notice("");
     await load({ redrawDocument: actionRedraw(path) });
@@ -960,16 +964,15 @@ function previewDocument(html) {
 }
 
 function carriedNote(comment) {
-  // How a comment reached the base, and the text it was about when it did not.
-  // A comment carried at write time (a diff selection, or one made on an earlier
-  // revision's page) has no re-anchoring of its own, so its rung is in
-  // `ext.view` — and ext is any JSON a ledger line carried, so nothing is
-  // trusted to have the shape this page's server writes.
+  // What `ext.view` says about where a comment was made: the space it was
+  // selected in, and the text it was about when the revision lost it. ext is any
+  // JSON a ledger line carried, so nothing is trusted to have the shape this
+  // page's server writes. (The rung it came through is not read here: the server
+  // folds it into `strategy`/`ambiguous`, one definition for every surface.)
   const view = comment && comment.ext && comment.ext.view;
   const own = view && typeof view === "object" ? view : {};
   return {
-    strategy: (comment && comment.strategy) || (typeof own.strategy === "string" ? own.strategy : null),
-    ambiguous: !!((comment && comment.ambiguous) || own.ambiguous === true),
+    space: typeof own.space === "string" ? own.space : "",
     quote: typeof own.quote === "string" ? own.quote : "",
   };
 }
@@ -1825,10 +1828,10 @@ function card(comment) {
   // from one that is simply scrolled out of view, which would leave the reviewer
   // to discover by absence that the tool is withholding a placement.
   if (comment.misplaced) tags.push(tag("misplaced", "bad orphan"));
-  const carried = carriedNote(comment);
-  if (carried.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
-  if (carried.ambiguous) tags.push(tag("ambiguous", "warn"));
-  if (comment.ext && comment.ext.view) tags.push(tag("from " + comment.ext.view.space));
+  if (comment.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
+  if (comment.ambiguous) tags.push(tag("ambiguous", "warn"));
+  const from = carriedNote(comment).space;
+  if (from) tags.push(tag("from " + from));
   element.innerHTML =
     '<div class="who">' + escapeHtml(comment.id) + " · " + escapeHtml(comment.author)
       + " · " + escapeHtml(comment.ts) + "</div>"
@@ -1971,7 +1974,7 @@ function commentBox(span) {
   actions.appendChild(button("add comment", async () => {
     const body = { ...basis, body: area.value, author: $("author").value, whole: !span };
     if (span) Object.assign(body, { space: span.space, start: span.start, end: span.end, quote: span.quote });
-    if (await act(body, "/api/comment")) clearComposer();
+    await act(body, "/api/comment", clearComposer);
   }, true));
   actions.appendChild(button("cancel", clearComposer));
   box.appendChild(actions);

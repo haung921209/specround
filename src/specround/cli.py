@@ -76,7 +76,9 @@ from specround.wire import (
     comment_json,
     comments_on,
     disposition_json,
+    lost_quote,
     orphaned,
+    placement,
     reply_json,
     round_json,
     rounds_on,
@@ -515,6 +517,9 @@ def _table(
 
 def _anchor_cell(comment: Comment) -> str:
     anchor = comment.current_anchor
+    lost = lost_quote(comment)
+    if anchor is None and lost is not None:
+        return _clip(lost, _QUOTE_WIDTH) + " (lost)"
     if anchor is None:
         return "(document)"
     return _clip(anchor.exact, _QUOTE_WIDTH)
@@ -530,13 +535,11 @@ def _moved_marks(comment: Comment) -> list[str]:
     equally well and the old position broke the tie. Those two, and only those,
     are news a week later.
     """
-    placed = comment.current_anchoring
-    if placed is None:
-        return []
+    strategy, ambiguous = placement(comment)
     marks = []
-    if placed.strategy == FUZZY:
+    if strategy == FUZZY:
         marks.append(FUZZY)
-    if placed.ambiguous:
+    if ambiguous:
         marks.append("ambiguous")
     return marks
 

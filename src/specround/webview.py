@@ -868,7 +868,7 @@ class WebView:
         text = _text(body, "body")
         anchor = None
         carried: dict[str, Any] | None = None
-        ext: dict[str, Any] | None = {"view": stale} if stale else None
+        ext: dict[str, Any] | None = None
         if not body.get("whole"):
             space = str(body.get("space", BASE))
             if space not in SPACES:
