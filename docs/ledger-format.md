@@ -162,6 +162,13 @@ recorded.
 |---|---|---|---|
 | `ext.view` | the web view's diff mode | `revision` | the document on disk (the revision) |
 | `ext.harvest` | the inline-annotation harvester (`harvest`) | `clean` | the document **with the annotation syntax removed** |
+| `ext.view` | the web view, on a page drawn on an earlier revision of the same round | `base` | that earlier revision's snapshot, named by `base` and `revision` inside `ext.view` |
+
+The third row is always recorded, `position` included, because the anchor was
+cut from a snapshot other than the one the comment names. When the ladder finds
+no place in the current revision, the comment is kept on the whole document and
+`ext.view` carries `orphaned: true`, `reason`, and `quote`, so it is not lost and
+not guessed onto a line. The view counts it with the orphans.
 
 ```json
 {"strategy":"quote","ambiguous":false,"space":"clean"}

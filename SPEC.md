@@ -294,6 +294,9 @@ target is spec and prose documents — PR tools already do code well).
   CLI comment/completion commands report unpublished file changes and a conditional
   publication action. The browser checks for revision updates and offers to load
   one, protecting drafts instead of automatically switching the displayed text.
+  A comment made on that still-displayed earlier revision is accepted: cut there,
+  carried into the current revision by the same ladder, recorded against it, and
+  kept as a marked orphan on the whole document when the text is gone (2026-11-13).
   New writes and CLI output use v1 formats; v0 ledger records remain readable
   unchanged. All binaries sharing a store must be upgraded before v1 writes.
 - **Overturning a settled verdict = `supersede`, and deferring never needed it**

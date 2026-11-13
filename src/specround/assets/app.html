@@ -1651,6 +1651,8 @@ function escapeHtml(text) {
 
 function anchorLabel(comment) {
   const anchor = comment.current_anchor;
+  const lost = comment.ext && comment.ext.view && comment.ext.view.orphaned;
+  if (!anchor && lost) return comment.ext.view.quote + " (not in this revision)";
   if (!anchor) return "(the whole document)";
   if (anchor.start === anchor.end) return "(insertion point at " + anchor.start + ")";
   return anchor.exact;
@@ -1811,6 +1813,7 @@ function card(comment) {
   if (comment.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
   if (comment.ambiguous) tags.push(tag("ambiguous", "warn"));
   if (comment.ext && comment.ext.view) tags.push(tag("from " + comment.ext.view.space));
+  if (comment.ext && comment.ext.view && comment.ext.view.orphaned) tags.push(tag("orphaned", "bad orphan"));
   element.innerHTML =
     '<div class="who">' + escapeHtml(comment.id) + " · " + escapeHtml(comment.author)
       + " · " + escapeHtml(comment.ts) + "</div>"

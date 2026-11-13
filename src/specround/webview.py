@@ -752,7 +752,7 @@ class WebView:
             "counts": {
                 "comments": len(comments),
                 "undisposed": sum(1 for c in comments if c.undisposed),
-                "orphans": sum(1 for c in comments if c.orphaned),
+                "orphans": sum(1 for c in comments if c.orphaned or _lost_on_arrival(c)),
                 "misplaced": sum(1 for c in comments if c.misplaced),
                 "resolved": sum(1 for c in comments if c.resolved),
                 "events": state.count,
@@ -835,24 +835,66 @@ class WebView:
         if any(key not in body or body[key] != value for key, value in expected.items()):
             raise _state("the displayed round changed or this page is outdated — reload and reselect; your draft has not been submitted")
 
+    def _drawn_base(self, body: Mapping[str, Any], round_: Round) -> str:
+        """The base the page was drawn on — this revision, or an earlier one of the same round.
+
+        The page keeps its text while a reviewer drafts (it offers a new revision
+        rather than switching to it), so the next comment of a run can arrive
+        after the author published another revision. Refusing it lost the
+        draft. The round must still be this one, and base and revision must be
+        a pair this round published, so a crossed or forged basis is refused.
+        """
+        if body.get("expected_round") == round_.id:
+            for published in round_.revisions:
+                if (body.get("expected_review") == published["id"]
+                        and body.get("expected_base") == published["base"]):
+                    return published["base"]
+        raise _state("the displayed round changed or this page is outdated — reload and reselect; your draft has not been submitted")
+
     def add_comment(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        """Record a comment made in any of the three modes (G6)."""
+        """Record a comment made in any of the three modes (G6).
+
+        A comment from a page drawn on an earlier revision of this round is cut
+        on that revision and carried into the current one by the same ladder a
+        refresh uses, then recorded against the current revision — the only one
+        the format lets a comment name. If the ladder finds no place for it,
+        the comment is kept on the whole document and ``ext.view`` says what it
+        was about and that it was orphaned, rather than being refused and lost.
+        """
         state = self.store.fold()
         round_ = self._writable(state)
-        self._check_basis(body, round_)
+        drawn = self._drawn_base(body, round_)
+        stale = {"space": BASE, "revision": body["expected_review"], "base": drawn} if drawn != round_.base else None
         text = _text(body, "body")
         anchor = None
         carried: dict[str, Any] | None = None
-        ext: dict[str, Any] | None = None
+        ext: dict[str, Any] | None = {"view": stale} if stale else None
         if not body.get("whole"):
             space = str(body.get("space", BASE))
             if space not in SPACES:
                 raise _usage(f"unknown space {space!r}: use {' or '.join(SPACES)}")
             start, end = _span(body)
-            if space == BASE:
+            if space == BASE and stale:
+                anchor = self._cut(round_, start, end, base=drawn)
+                if "quote" in body and body["quote"] != anchor.exact:
+                    raise _state("selection text does not match this base — reload and reselect")
+                rebind = self.store.carry_span_into_round(
+                    round_.id, self.store.snapshots.get_text(drawn), start, end)
+                if rebind.orphaned:
+                    carried = {"orphaned": True, "reason": rebind.reason}
+                    ext = {"view": {**stale, **carried, "quote": anchor.exact}}
+                    anchor = None
+                else:
+                    carried = {"strategy": rebind.strategy, "ambiguous": rebind.ambiguous}
+                    ext = {"view": {**stale, **carried}}
+                    anchor = rebind.anchor
+            elif space == BASE:
                 anchor = self._cut(round_, start, end)
             else:
+                # A revision selection is checked against the live file (its own
+                # digest), not the drawn base, so a stale round adds nothing here.
                 anchor, carried = self._carry(round_, start, end, body.get("expected_revision"))
+                ext = None
                 if carried["strategy"] != POSITION:
                     # Where a comment came from is provenance the closed field
                     # set has no room for, and it is exactly the kind of thing
@@ -861,7 +903,7 @@ class WebView:
                     # indistinguishable from one selected on the base itself —
                     # and §4 is explicit that the first is worth a look.
                     ext = {"view": {"space": space, **carried}}
-            if space == BASE and "quote" in body and body["quote"] != anchor.exact:
+            if space == BASE and not stale and "quote" in body and body["quote"] != anchor.exact:
                 raise _state("selection text does not match this base — reload and reselect")
         comment_id = self.store.add_comment(
             round_.id, author=_author(body, self.author), body=text, anchor=anchor, ext=ext,
@@ -1057,9 +1099,9 @@ class WebView:
 
     # -- anchoring -------------------------------------------------------
 
-    def _cut(self, round_: Round, start: int, end: int) -> Any:
+    def _cut(self, round_: Round, start: int, end: int, *, base: str | None = None) -> Any:
         try:
-            return anchor_for(self.store.snapshots.get_text(round_.base), start, end)
+            return anchor_for(self.store.snapshots.get_text(base or round_.base), start, end)
         except AnchorError as exc:
             raise _usage(f"that span is not in the base round {round_.id} froze: {exc}") from exc
 
@@ -1082,6 +1124,16 @@ class WebView:
                 "new round on the revised document to review it as it is now"
             )
         return rebind.anchor, {"strategy": rebind.strategy, "ambiguous": rebind.ambiguous}
+
+
+def _lost_on_arrival(comment: Any) -> bool:
+    """A comment from an earlier revision's page whose text the current one no longer has.
+
+    It is kept on the whole document (see :meth:`WebView.add_comment`), so the
+    fold cannot call it orphaned; the view counts it beside the ones that are.
+    """
+    view = (comment.ext or {}).get("view")
+    return isinstance(view, dict) and view.get("orphaned") is True
 
 
 def _author(body: Mapping[str, Any], fallback: str) -> str:

@@ -2211,11 +2211,14 @@ def test_refresh_changes_revision_without_closing_the_round(opened, store, doc, 
     assert status == 200 and result["round"]["id"] == round_id
     assert result["round"]["revision"] != before["round"]["revision"]
     assert state(opened)["base"].startswith("New material.")
-    status, _ = call(opened, "/api/comment", {
+    status, result = call(opened, "/api/comment", {
         "whole": True, "body": "stale draft", "expected_round": round_id,
         "expected_base": before["round"]["base"], "expected_review": before["round"]["revision"],
     })
-    assert status == 409 and not store.fold().comments
+    assert status == 200, result
+    comment = store.fold().comments[result["comment"]["id"]]
+    assert comment.body == "stale draft" and comment.anchor is None
+    assert comment.revision == store.fold().rounds[round_id].revision
 
 
 def test_refresh_identity_changes_even_when_a_later_revision_restores_the_bytes(opened, store, doc, round_id, doc_text):
@@ -2225,7 +2228,75 @@ def test_refresh_identity_changes_even_when_a_later_revision_restores_the_bytes(
     doc.write_text(doc_text, encoding="utf-8")
     store.refresh_round(round_id, doc, author="alice")
     assert store.round_base(round_id) == before["round"]["base"]
-    status, _ = call(opened, "/api/comment", {"whole": True, "body": "old draft", "expected_review": before["round"]["revision"]})
+    status, result = call(opened, "/api/comment", {"whole": True, "body": "old draft", "expected_review": before["round"]["revision"]})
+    # Same bytes, older identity: the draft is kept, and it lands on the
+    # revision that is current now rather than the one the page was drawn from.
+    assert status == 200, result
+    current = store.fold().rounds[round_id].revision
+    assert current != before["round"]["revision"]
+    assert store.fold().comments[result["comment"]["id"]].revision == current
+
+
+def _basis_of(shown):
+    """The basis a page drawn as ``shown`` sends, frozen at the moment it drew."""
+    round_ = shown["round"]
+    return {"expected_round": round_["id"], "expected_base": round_["base"],
+            "expected_review": round_["revision"], "expected_revision": shown["live_digest"]}
+
+
+def test_selection_on_an_earlier_revision_page_is_carried_to_the_current_one(opened, store, doc, round_id, doc_text):
+    # A reviewer is mid-way through several comments when the author publishes
+    # a revision. The page still shows revision 1; the next comment made on it
+    # has to land, carried into the revision that is current now.
+    before = state(opened)
+    start = doc_text.index("30 seconds")
+    doc.write_text("New introduction.\n\n" + doc_text, encoding="utf-8")
+    store.refresh_round(round_id, doc, author="alice")
+    doc.write_text("Another line.\n" + doc.read_text(encoding="utf-8"), encoding="utf-8")
+    store.refresh_round(round_id, doc, author="alice")
+    status, result = call(opened, "/api/comment", {
+        **_basis_of(before), "space": "base", "start": start, "end": start + 10,
+        "quote": "30 seconds", "body": "still too short",
+    }, with_basis=False)
+    assert status == 200, result
+    folded = store.fold()
+    comment = folded.comments[result["comment"]["id"]]
+    assert comment.base == folded.rounds[round_id].base
+    assert comment.revision == folded.rounds[round_id].revision
+    assert comment.anchor.exact == "30 seconds"
+    assert comment.anchor.start == start + len("Another line.\nNew introduction.\n\n")
+    assert comment.ext["view"]["revision"] == before["round"]["revision"]
+    assert not comment.misplaced and not comment.orphaned
+
+
+def test_selection_whose_text_a_later_revision_removed_is_kept_as_an_orphan(opened, store, doc, round_id, doc_text):
+    before = state(opened)
+    start = doc_text.index("30 seconds")
+    doc.write_text("Entirely different material.\n", encoding="utf-8")
+    store.refresh_round(round_id, doc, author="alice")
+    status, result = call(opened, "/api/comment", {
+        **_basis_of(before), "space": "base", "start": start, "end": start + 10,
+        "quote": "30 seconds", "body": "still too short",
+    }, with_basis=False)
+    assert status == 200, result
+    comment = store.fold().comments[result["comment"]["id"]]
+    assert comment.body == "still too short" and comment.anchor is None
+    lost = comment.ext["view"]
+    assert lost["orphaned"] and lost["quote"] == "30 seconds"
+    assert lost["base"] == before["round"]["base"] and lost["revision"] == before["round"]["revision"]
+    assert state(opened)["counts"]["orphans"] == 1
+
+
+def test_stale_selection_must_still_match_the_revision_it_was_made_on(opened, store, doc, round_id, doc_text):
+    before = state(opened)
+    doc.write_text("New introduction.\n\n" + doc_text, encoding="utf-8")
+    store.refresh_round(round_id, doc, author="alice")
+    status, result = call(opened, "/api/comment", {
+        **_basis_of(before), "space": "base", "start": 0, "end": 5, "quote": "wrong", "body": "x",
+    }, with_basis=False)
+    assert status == 409 and not store.fold().comments
+    forged = {**_basis_of(before), "expected_base": store.round_base(round_id)}
+    status, _ = call(opened, "/api/comment", {**forged, "whole": True, "body": "x"}, with_basis=False)
     assert status == 409 and not store.fold().comments
 
 
