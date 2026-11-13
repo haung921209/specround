@@ -94,9 +94,13 @@ def placement(comment: Comment) -> tuple[str | None, bool]:
 
 
 def lost_quote(comment: Comment) -> str | None:
-    """The text an orphan-on-arrival comment was about, or ``None``."""
+    """The text an orphan-on-arrival comment was about, or ``None``.
+
+    ``None`` for an empty quote too (an insertion point the revision lost): with
+    nothing to quote, every surface labels it as the page does, the whole document.
+    """
     quote = _view(comment).get("quote")
-    return quote if comment.anchor is None and orphaned(comment) and isinstance(quote, str) else None
+    return quote if comment.anchor is None and orphaned(comment) and isinstance(quote, str) and quote else None
 
 
 def _view(comment: Comment) -> dict[str, Any]:

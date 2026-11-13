@@ -460,6 +460,13 @@ async function act(body, path, sent) {
     notice("");
     await load({ redrawDocument: actionRedraw(path) });
     if (refocus) focus(refocus, "card");
+    // Another open draft can still hold the page on the revision it was drawn
+    // on, and then the saved card is not on screen: say it was saved, or the
+    // reviewer sees the text vanish and types it again.
+    const saved = result && result.comment && result.comment.id;
+    if (saved && !(state.data.comments || []).some((c) => c.id === saved)) {
+      notice("Saved as " + saved + " on the current review revision — load it to see the comment. Your other drafts are kept.", "info");
+    }
     return true;
   } catch (error) {
     notice(String(error.message || error), "bad");

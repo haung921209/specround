@@ -2316,6 +2316,10 @@ def test_write_time_carry_reports_its_rung_on_every_surface():
     assert (comment_json(carried)["strategy"], comment_json(carried)["ambiguous"]) == ("fuzzy", True)
     assert _moved_marks(carried) == ["fuzzy", "ambiguous"]
     odd = Comment(id="c-2", round="r-1", kind="comment", author="a", ts="t", ext={"view": {"strategy": 3}})
+    lost_point = Comment(id="c-3", round="r-1", kind="comment", author="a", ts="t",
+                         ext={"view": {"space": "base", "orphaned": True, "quote": ""}})
+    from specround.cli import _anchor_cell
+    assert _anchor_cell(lost_point) == "(document)"
     assert (comment_json(odd)["strategy"], comment_json(odd)["ambiguous"]) == (None, False)
 
 

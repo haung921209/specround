@@ -397,6 +397,64 @@ def test_same_round_update_notifies_without_replacing_an_active_draft(store, doc
         served.shutdown()
 
 
+def test_stale_send_with_another_draft_open_says_it_was_saved(store, doc, doc_text, monkeypatch, tmp_path):
+    # A reply draft keeps the page on the revision it was drawn on, so the
+    # saved card cannot be drawn yet; the page has to say the comment was saved.
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to Chromium")
+    round_id = store.open_round(doc, author="test")
+    cid = store.add_comment(round_id, author="test", body="existing",
+                            anchor=store.anchor_in_round(round_id, "30 seconds"))
+    original = webview.page()
+    def publish(handler):
+        handler._body()
+        doc.write_text("Published introduction.\n\n" + doc_text, encoding="utf-8")
+        store.refresh_round(round_id, doc, author="agent")
+        handler._json({"ok": True})
+    monkeypatch.setitem(webview._POSTS, "/api/test-publish", publish)
+    probe = r"""<script>
+(async () => {
+  const report = document.createElement('pre');
+  report.id = 'browser-result'; document.body.appendChild(report);
+  const check = (ok, reason) => { if (!ok) throw Error(reason); };
+  const waitFor = async (test) => {
+    for (let i = 0; i < 500; i++) { if (test()) return; await new Promise(r => setTimeout(r, 20)); }
+    throw Error('timed out');
+  };
+  try {
+    await waitFor(() => state.data);
+    const revision = state.data.round.revision;
+    openReply(state.data.comments[0].id);
+    const reply = document.querySelector('.card .replybox textarea');
+    reply.value = 'half a reply';
+    reply.dispatchEvent(new Event('input'));
+    commentBox(null);
+    document.querySelector('#composer textarea').value = 'sent from the old page';
+    await api('/api/test-publish', {});
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => $('notice').textContent.includes('Saved as'));
+    check(state.data.round.revision === revision, 'reply draft did not hold the page');
+    check(state.reply.drafts[state.data.comments[0].id] === 'half a reply', 'reply draft lost');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="test", port=0)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking",
+                                 f"--user-data-dir={tmp_path / 'profile'}", "--dump-dom", "--virtual-time-budget=15000", served.url],
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr[-2500:]
+        assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
+        bodies = [c.body for c in store.fold().comments.values()]
+        assert bodies == ["existing", "sent from the old page"]
+    finally:
+        served.shutdown()
+
+
 def test_review_browser_shows_scope_and_explicitly_includes_new_files(monkeypatch, tmp_path):
     browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
     if not browser:
