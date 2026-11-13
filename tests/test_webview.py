@@ -2285,6 +2285,22 @@ def test_selection_whose_text_a_later_revision_removed_is_kept_as_an_orphan(open
     assert lost["orphaned"] and lost["quote"] == "30 seconds"
     assert lost["base"] == before["round"]["base"] and lost["revision"] == before["round"]["revision"]
     assert state(opened)["counts"]["orphans"] == 1
+    # One definition of orphan on every surface that reads the fold: the card,
+    # the navigation bar's summary, and the per-document counts above.
+    from specround.wire import document_summary
+    assert comment_json(comment)["orphaned"] is True
+    assert document_summary(store.fold(), state(opened)["doc"])["orphans"] == 1
+
+
+def test_page_reads_ext_view_defensively(tmp_path):
+    # ext is whatever a ledger line carried, not only what this server wrote.
+    odd = {"ext": {"view": {"orphaned": True, "quote": {"toString": None}}}}
+    assert in_node("carriedNote(input)", odd, tmp_path)["quote"] == ""
+    assert in_node("carriedNote(input)", {"ext": {"view": None}}, tmp_path)["quote"] == ""
+    assert in_node("carriedNote(input)", {}, tmp_path) == {"strategy": None, "ambiguous": False, "quote": ""}
+    carried = {"strategy": None, "ambiguous": False,
+               "ext": {"view": {"strategy": "fuzzy", "ambiguous": True, "quote": "q"}}}
+    assert in_node("carriedNote(input)", carried, tmp_path) == {"strategy": "fuzzy", "ambiguous": True, "quote": "q"}
 
 
 def test_stale_selection_must_still_match_the_revision_it_was_made_on(opened, store, doc, round_id, doc_text):

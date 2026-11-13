@@ -168,7 +168,8 @@ The third row is always recorded, `position` included, because the anchor was
 cut from a snapshot other than the one the comment names. When the ladder finds
 no place in the current revision, the comment is kept on the whole document and
 `ext.view` carries `orphaned: true`, `reason`, and `quote`, so it is not lost and
-not guessed onto a line. The view counts it with the orphans.
+not guessed onto a line. The wire shapes (`specround.wire.orphaned`) count it as
+orphaned beside the fold's own orphans, so the view, `--json`, and the CLI agree.
 
 ```json
 {"strategy":"quote","ambiguous":false,"space":"clean"}

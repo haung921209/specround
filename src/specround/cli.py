@@ -76,6 +76,7 @@ from specround.wire import (
     comment_json,
     comments_on,
     disposition_json,
+    orphaned,
     reply_json,
     round_json,
     rounds_on,
@@ -595,7 +596,7 @@ def _comment_rows(comments: Sequence[Comment], *, hidden: Sequence[str] = ()) ->
         resolved = [c.id for c in comments if c.resolved]
         if resolved:
             footers.append(f"{len(resolved)} resolved: {', '.join(resolved)}")
-    orphans = [c.id for c in comments if c.orphaned]
+    orphans = [c.id for c in comments if orphaned(c)]
     if orphans:
         footers.append(f"{len(orphans)} orphaned: {', '.join(orphans)}")
     misplaced = [c.id for c in comments if c.misplaced]
@@ -755,7 +756,7 @@ def _round_status(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     undisposed = [c.id for c in comments if c.undisposed]
     unresolved_threads = [c.id for c in comments if not c.resolved]
     incomplete_resolutions = [c.id for c in comments if c.resolved and not c.settled]
-    orphans = [c.id for c in comments if c.orphaned]
+    orphans = [c.id for c in comments if orphaned(c)]
     # I12, and a different question from the three above it: not "was it
     # answered", "can it be placed", or "is the talk over", but "do the offsets
     # we would draw belong to the text we would draw them on". It is a repair

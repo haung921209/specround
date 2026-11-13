@@ -29,6 +29,7 @@ __all__ = [
     "comments_on",
     "disposition_json",
     "document_summary",
+    "orphaned",
     "reply_json",
     "resolution_json",
     "round_json",
@@ -59,6 +60,20 @@ def rounds_on(state: State, key: str) -> list[Round]:
 def comments_on(state: State, key: str) -> list[Comment]:
     """Every comment on one document, across all its rounds."""
     return [c for c in state.comments.values() if state.rounds[c.round].doc == key]
+
+
+def orphaned(comment: Comment) -> bool:
+    """Whether the document lost this comment's place — the one definition surfaces read.
+
+    The fold's answer (an ``anchor.orphan`` was the last attempt), or a comment
+    made on a page drawn on an earlier revision whose text the current one no
+    longer had. The format lets a new comment name only the current revision, so
+    the second kind is kept on the whole document and ``ext.view`` says so; it
+    is read here, beside the first, so a card, a count and a navigation bar
+    cannot disagree about the same comment.
+    """
+    view = (comment.ext or {}).get("view")
+    return comment.orphaned or (isinstance(view, dict) and view.get("orphaned") is True)
 
 
 def document_summary(state: State, key: str) -> dict[str, Any]:
@@ -95,7 +110,7 @@ def document_summary(state: State, key: str) -> dict[str, Any]:
         "open_rounds": sum(1 for r in rounds if r.open),
         "comments": len(comments),
         "undisposed": sum(1 for c in comments if c.undisposed),
-        "orphans": sum(1 for c in comments if c.orphaned),
+        "orphans": sum(1 for c in comments if orphaned(c)),
         # Beside ``orphans`` because a reader scanning the bar would otherwise
         # read "0 orphaned" as "every comment can be shown". I12 is the other
         # way a comment ends up undrawable, and it is the one nobody expects.
@@ -240,7 +255,7 @@ def comment_json(comment: Comment) -> dict[str, Any]:
         "current_anchor": anchor_json(comment.current_anchor),
         "verdict": comment.verdict,
         "settled": comment.settled,
-        "orphaned": comment.orphaned,
+        "orphaned": orphaned(comment),
         "misplaced": comment.misplaced,
         "anchoring": anchoring_json(comment.anchoring),
         "ext": comment.ext,

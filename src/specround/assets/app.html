@@ -959,6 +959,21 @@ function previewDocument(html) {
     + policy + '"><meta name="referrer" content="no-referrer">' + html;
 }
 
+function carriedNote(comment) {
+  // How a comment reached the base, and the text it was about when it did not.
+  // A comment carried at write time (a diff selection, or one made on an earlier
+  // revision's page) has no re-anchoring of its own, so its rung is in
+  // `ext.view` — and ext is any JSON a ledger line carried, so nothing is
+  // trusted to have the shape this page's server writes.
+  const view = comment && comment.ext && comment.ext.view;
+  const own = view && typeof view === "object" ? view : {};
+  return {
+    strategy: (comment && comment.strategy) || (typeof own.strategy === "string" ? own.strategy : null),
+    ambiguous: !!((comment && comment.ambiguous) || own.ambiguous === true),
+    quote: typeof own.quote === "string" ? own.quote : "",
+  };
+}
+
 // -- end of the pure part -------------------------------------------------
 
 function shownComments() {
@@ -1651,8 +1666,8 @@ function escapeHtml(text) {
 
 function anchorLabel(comment) {
   const anchor = comment.current_anchor;
-  const lost = comment.ext && comment.ext.view && comment.ext.view.orphaned;
-  if (!anchor && lost) return comment.ext.view.quote + " (not in this revision)";
+  const quote = carriedNote(comment).quote;
+  if (!anchor && comment.orphaned && quote) return quote + " (not in this revision)";
   if (!anchor) return "(the whole document)";
   if (anchor.start === anchor.end) return "(insertion point at " + anchor.start + ")";
   return anchor.exact;
@@ -1810,10 +1825,10 @@ function card(comment) {
   // from one that is simply scrolled out of view, which would leave the reviewer
   // to discover by absence that the tool is withholding a placement.
   if (comment.misplaced) tags.push(tag("misplaced", "bad orphan"));
-  if (comment.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
-  if (comment.ambiguous) tags.push(tag("ambiguous", "warn"));
+  const carried = carriedNote(comment);
+  if (carried.strategy === "fuzzy") tags.push(tag("fuzzy", "warn"));
+  if (carried.ambiguous) tags.push(tag("ambiguous", "warn"));
   if (comment.ext && comment.ext.view) tags.push(tag("from " + comment.ext.view.space));
-  if (comment.ext && comment.ext.view && comment.ext.view.orphaned) tags.push(tag("orphaned", "bad orphan"));
   element.innerHTML =
     '<div class="who">' + escapeHtml(comment.id) + " · " + escapeHtml(comment.author)
       + " · " + escapeHtml(comment.ts) + "</div>"

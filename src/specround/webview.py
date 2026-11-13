@@ -108,7 +108,7 @@ from specround.locations import path_key
 from specround.reanchor import POSITION
 from specround.store import ReviewStore
 from specround.snapshots import digest_text
-from specround.wire import carry_json, comment_json, comments_on, round_json, rounds_on
+from specround.wire import carry_json, comment_json, comments_on, orphaned, round_json, rounds_on
 from specround.workspace import Workspace
 from specround.reviews import Review, PartialReviewError
 
@@ -752,7 +752,7 @@ class WebView:
             "counts": {
                 "comments": len(comments),
                 "undisposed": sum(1 for c in comments if c.undisposed),
-                "orphans": sum(1 for c in comments if c.orphaned or _lost_on_arrival(c)),
+                "orphans": sum(1 for c in comments if orphaned(c)),
                 "misplaced": sum(1 for c in comments if c.misplaced),
                 "resolved": sum(1 for c in comments if c.resolved),
                 "events": state.count,
@@ -1124,16 +1124,6 @@ class WebView:
                 "new round on the revised document to review it as it is now"
             )
         return rebind.anchor, {"strategy": rebind.strategy, "ambiguous": rebind.ambiguous}
-
-
-def _lost_on_arrival(comment: Any) -> bool:
-    """A comment from an earlier revision's page whose text the current one no longer has.
-
-    It is kept on the whole document (see :meth:`WebView.add_comment`), so the
-    fold cannot call it orphaned; the view counts it beside the ones that are.
-    """
-    view = (comment.ext or {}).get("view")
-    return isinstance(view, dict) and view.get("orphaned") is True
 
 
 def _author(body: Mapping[str, Any], fallback: str) -> str:
