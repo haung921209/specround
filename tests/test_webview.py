@@ -381,7 +381,8 @@ def test_a_span_selected_on_the_base_becomes_the_anchor(opened, store, doc_text)
     assert payload["comment"]["anchor"]["exact"] == "30 seconds"
     comment = anchored(store, doc_text, "30 seconds")
     assert comment.body == "too short for the proxy"
-    assert comment.ext is None
+    # Only the surface it came in through: the page is where a person writes.
+    assert comment.ext == {"via": "view"}
 
 
 def test_a_run_from_the_render_anchors_the_text_it_shows(opened, store, doc_text):
@@ -447,7 +448,7 @@ def test_a_selection_on_an_unrevised_revision_needs_no_carrying(opened, store, d
     comment = anchored(store, doc_text, "30 seconds")
     # Nothing to report, so nothing is recorded: rung 1 means the text did not
     # move, and provenance for a non-event is noise.
-    assert comment.ext is None
+    assert comment.ext == {"via": "view"}
 
 
 def test_a_reworded_line_is_carried_back_into_the_base_and_says_how(opened, store, doc, doc_text):
@@ -1608,6 +1609,20 @@ def test_a_reply_carries_the_viewer_name_it_was_sent_with(opened, comment_id):
     assert payload["comment"]["replies"][0]["author"] == "agent:reviewer"
 
 
+def test_a_write_from_the_page_names_the_view_as_its_surface(opened, store, comment_id):
+    """``ext.via`` tells a page write from a verb run under the same name.
+
+    The page and the command line default to the same login name, so the
+    author cannot say whether a person typed this; the surface can.
+    """
+    call(opened, "/api/reply", {"target": comment_id, "body": "seen", "author": "alice"})
+    written = [r for r in store.ledger.read() if r["type"] in ("comment.add", "reply")]
+    assert [r["ext"]["via"] for r in written] == ["view", "view"]
+    # The mark ends with the request: a later library write names no surface.
+    store.reply(comment_id, author="alice", body="from the library")
+    assert "ext" not in store.ledger.read()[-1]
+
+
 def test_a_reply_to_an_unknown_comment_is_the_ledgers_refusal(opened):
     status, payload = call(opened, "/api/reply", {"target": "c-000000000000", "body": "x"})
     assert status == 409
@@ -2219,7 +2234,7 @@ def test_refresh_changes_revision_without_closing_the_round(opened, store, doc, 
     comment = store.fold().comments[result["comment"]["id"]]
     assert comment.body == "stale draft" and comment.anchor is None
     # No selection, so nothing was cut anywhere: no provenance claiming one was.
-    assert comment.ext is None
+    assert comment.ext == {"via": "view"}
     assert comment.revision == store.fold().rounds[round_id].revision
 
 

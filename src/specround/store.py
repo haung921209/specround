@@ -17,9 +17,11 @@ that is untracked, or that lives outside any repository, gets the full loop.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from specround.anchors import Anchor, anchor_for, anchor_for_quote
 from specround.critic import COMMENT, Annotation, Skipped, parse
@@ -68,6 +70,25 @@ CLEAN = "clean"
 #: Suffix of the temporary file a harvest writes before replacing the document.
 _HARVEST_TEMP = ".specround-harvest"
 
+#: Which surface a write came in through, recorded as ``ext.via``. The web view
+#: and the command line can both write as the same author (the login name is the
+#: default of each), so the author cannot say whether a person typed a comment
+#: in the page or an agent ran a verb. A watcher that tells a session "a person
+#: commented" needs exactly that, and only the entry point knows it.
+VIA_VIEW = "view"
+VIA_CLI = "cli"
+_VIA: ContextVar[str | None] = ContextVar("specround_write_via", default=None)
+
+
+@contextmanager
+def writing_via(surface: str) -> Iterator[None]:
+    """Record every ledger write inside the block as coming through ``surface``."""
+    token = _VIA.set(surface)
+    try:
+        yield
+    finally:
+        _VIA.reset(token)
+
 __all__ = [
     "CLEAN",
     "LEDGER_FILENAME",
@@ -76,6 +97,9 @@ __all__ = [
     "Placement",
     "ReanchorReport",
     "ReviewStore",
+    "VIA_CLI",
+    "VIA_VIEW",
+    "writing_via",
 ]
 
 
@@ -475,6 +499,9 @@ class ReviewStore:
 
     def _append(self, record: Mapping[str, Any], *, expected_seq: int | None = None) -> str:
         write_origin(self.root, self.origin)
+        via = _VIA.get()
+        if via:
+            record = {**record, "ext": {**(record.get("ext") or {}), "via": via}}
         return self.ledger.append(record, expected_seq=expected_seq)["id"]
 
     def open_round(
