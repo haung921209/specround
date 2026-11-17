@@ -501,7 +501,7 @@ class ReviewStore:
         write_origin(self.root, self.origin)
         via = _VIA.get()
         if via:
-            record = {**record, "ext": {**record.get("ext", {}), "via": via}}
+            record = {**record, "ext": {**(record.get("ext") or {}), "via": via}}
         return self.ledger.append(record, expected_seq=expected_seq)["id"]
 
     def open_round(
