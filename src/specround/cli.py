@@ -57,7 +57,7 @@ from specround.fold import OPEN, Comment, Round, State
 from specround.imports import BatchError, apply_plan, load_batch, parse_text, plan_import
 from specround.locations import canonical_path
 from specround.reanchor import FUZZY
-from specround.store import HarvestReport, Placement, ReanchorReport, ReviewStore
+from specround.store import VIA_CLI, HarvestReport, Placement, ReanchorReport, ReviewStore, writing_via
 from specround.reviews import Review, PartialReviewError
 from specround.snapshots import digest_bytes
 from specround.viewtokens import ROTATED, STORED, token_for
@@ -2113,7 +2113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     verb = getattr(args, "verb_name", args.verb)
     try:
-        payload, lines, *rest = args.handler(args)
+        with writing_via(VIA_CLI):
+            payload, lines, *rest = args.handler(args)
     except (UsageError, BatchError) as exc:
         # A malformed import file is the caller's to fix, like a malformed
         # command line — the history has not been consulted yet and refuses

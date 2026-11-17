@@ -106,7 +106,7 @@ from specround.events import ACTORS, HUMAN, SUPERSEDE, VERDICTS
 from specround.fold import Round, State
 from specround.locations import path_key
 from specround.reanchor import POSITION
-from specround.store import ReviewStore
+from specround.store import VIA_VIEW, ReviewStore, writing_via
 from specround.snapshots import digest_text
 from specround.wire import carry_json, comment_json, comments_on, orphaned, round_json, rounds_on
 from specround.workspace import Workspace
@@ -1369,7 +1369,8 @@ class _Handler(BaseHTTPRequestHandler):
         selected = self.view.select(named or self.named_doc)
         if selected.review and body.get("review_id", selected.review.id) != selected.review.id:
             raise _usage("request review ID does not match this view")
-        payload = method(selected, body)
+        with writing_via(VIA_VIEW):
+            payload = method(selected, body)
         self._json({"schema": VIEW_SCHEMA, **payload})
 
 

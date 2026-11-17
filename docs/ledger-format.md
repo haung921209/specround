@@ -214,6 +214,15 @@ ledger sequence under the append lock; a concurrent change asks the caller to
 read status again. Replay does not impose the new completion policy on old
 round-close events. It continues to preserve `ext` without interpreting it.
 
+Writes made through the shipped surfaces also record which one they came in
+through: `ext.via = "view"` for the web view's write endpoints and
+`ext.via = "cli"` for a command-line verb. The page and the command line
+default to the same author (the login name), so the author alone cannot say
+whether a person typed a comment in the page or an agent ran a verb; a watcher
+that tells an agent "a person commented" reads `via` for that. A record written
+through the library directly, or before this note existed, has no `via`, and the
+reader treats that as "unknown", not as either surface.
+
 These extensions are promotion candidates, and candidates is all they are — promotion
 bumps major.
 

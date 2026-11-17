@@ -409,7 +409,8 @@ def test_import_records_the_comments_and_where_they_came_from(run, doc, opened, 
     assert listed[0]["author"] == "bob"
     assert listed[0]["anchor"]["exact"] == "30 seconds"
     assert listed[0]["ext"] == {
-        "import": {"source": "cmux", "id": "ext-1", "ts": "2026-08-06T06:07:16Z"}
+        "import": {"source": "cmux", "id": "ext-1", "ts": "2026-08-06T06:07:16Z"},
+        "via": "cli",
     }
 
 
@@ -752,6 +753,14 @@ def test_a_person_and_an_agent_answer_through_the_same_verb(run, doc, opened):
         "bob",
     ]
     assert second.json["reply"]["body"] == "then say 60 in the spec"
+
+
+def test_a_verb_names_the_command_line_as_its_surface(run, doc, opened):
+    """The same author a page would write under, told apart by ``ext.via``."""
+    comment = a_comment(run, doc)
+    assert run("reply", doc, "--comment", comment, "--author", "alice", "--body", "on it").code == 0
+    written = [r for r in ReviewStore.for_document(doc).ledger.read() if r["type"] in ("comment.add", "reply")]
+    assert [r["ext"]["via"] for r in written] == ["cli", "cli"]
 
 
 def test_a_reply_can_be_addressed_by_an_id_prefix(run, doc, opened):
@@ -1752,9 +1761,11 @@ def test_ext_written_by_an_agent_can_be_read_back(run, doc):
 
 
 def test_a_record_without_ext_says_so_rather_than_omitting_the_key(run, doc, opened):
-    a_comment(run, doc)
+    # Written through the library, not a verb, so nothing names a surface either.
+    store = ReviewStore.for_document(doc)
+    store.add_comment(next(iter(store.fold().rounds)), author="bob", body="no ext here")
     assert run("comments", doc, "--json").json["comments"][0]["ext"] is None
-    assert run("round", "status", doc, "--json").json["rounds"][0]["ext"] is None
+    assert run("round", "status", doc, "--json").json["rounds"][0]["ext"] == {"via": "cli"}
 
 
 def test_the_listing_carries_the_re_anchoring_that_moved_a_comment(run, doc, opened):
