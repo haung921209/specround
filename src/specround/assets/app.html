@@ -1042,6 +1042,8 @@ function paint(container, comments) {
   container.querySelectorAll("mark.anch, .caret").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
+      // A mark in a <summary> is a way to the comment, not a toggle for the fold.
+      if (mark.closest("summary")) event.preventDefault();
       focus(mark.dataset.comments.split(" ")[0], "mark");
     });
   });

@@ -69,10 +69,10 @@ _REFERENCE_DEFINITION = re.compile(
 #: The one HTML block the renderer draws instead of escaping. A whole line each,
 #: so the rule is one a reader can apply by eye.
 _DETAILS_OPEN = re.compile(
-    r"^ {0,3}<details([ \t]+open)?[ \t]*>[ \t]*(?:<summary>(.*?)</summary>[ \t]*)?$", re.IGNORECASE
+    r"^ {0,3}<details([ \t]+open)?[ \t]*>[ \t]*(?:<summary>(.*?)</summary>[ \t]*)?$", re.IGNORECASE | re.ASCII
 )
-_SUMMARY = re.compile(r"^ {0,3}<summary>(.*?)</summary>[ \t]*$", re.IGNORECASE)
-_DETAILS_CLOSE = re.compile(r"^ {0,3}</details>[ \t]*$", re.IGNORECASE)
+_SUMMARY = re.compile(r"^ {0,3}<summary>(.*?)</summary>[ \t]*$", re.IGNORECASE | re.ASCII)
+_DETAILS_CLOSE = re.compile(r"^ {0,3}</details>[ \t]*$", re.IGNORECASE | re.ASCII)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -332,7 +332,6 @@ class _Renderer:
         self.references: dict[str, str] = {}
         self.definitions: set[int] = set()
         self.heading_ids: set[str] = set()
-        self.pairs: dict[int, tuple[Sequence[Piece], dict[int, int]]] = {}
 
     # -- text ------------------------------------------------------------
 
@@ -345,16 +344,30 @@ class _Renderer:
     # -- blocks ----------------------------------------------------------
 
     def blocks(self, lines: Sequence[Piece]) -> None:
+        """Render ``lines`` as blocks.
+
+        A ``<details>`` block opens and closes in this same loop rather than by
+        searching ahead for its closer. Whatever this loop treats as code — a
+        fence, a fence inside a list item, a table row — has already been taken
+        by the construct that owns it before a ``</details>`` line could be seen,
+        so the pairing and the rendering cannot disagree about where code is.
+        It also keeps nesting flat (no recursion per level) and the pass linear.
+        """
         index = 0
         total = len(lines)
+        folds: list[tuple[int, int, list[Piece]]] = []
         while index < total:
             line = lines[index].text
             if not line.strip() or lines[index].start in self.definitions:
                 index += 1
             elif _FENCE.match(line):
                 index = self._fence(lines, index)
-            elif (close := self._details_close(lines, index)) is not None:
-                index = self._details(lines, index, close)
+            elif _DETAILS_OPEN.match(line):
+                index = self._open_details(lines, index, folds)
+            elif folds and _DETAILS_CLOSE.match(line):
+                folds.pop()
+                self.out.append("</details>")
+                index += 1
             elif _HEADING.match(line):
                 index = self._heading(lines, index)
             elif _RULE.match(line):
@@ -368,6 +381,11 @@ class _Renderer:
                 index = self._list(lines, index)
             else:
                 index = self._paragraph(lines, index)
+        # An opener nothing closed in this block stays text — the rest of the
+        # document is not folded away behind a typo. Innermost first, so a
+        # splice never moves the markup of a fold opened before it.
+        for start, end, consumed in reversed(folds):
+            self.out[start:end] = [self._plain(consumed)]
 
     def _fence(self, lines: Sequence[Piece], index: int) -> int:
         match = _FENCE.match(lines[index].text)
@@ -390,64 +408,37 @@ class _Renderer:
         self.out.append("</code></pre>")
         return index
 
-    def _details_close(self, lines: Sequence[Piece], index: int) -> int | None:
-        """Index of the ``</details>`` closing the block opened at ``index``.
-
-        ``None`` when the line opens no block or nothing closes it — an unclosed
-        tag stays text rather than swallowing the rest of the document.
-        """
-        if not _DETAILS_OPEN.match(lines[index].text):
-            return None
-        return self._details_pairs(lines).get(index)
-
-    def _details_pairs(self, lines: Sequence[Piece]) -> dict[int, int]:
-        """Every opener in ``lines`` that has a closer, mapped to it — one pass.
-
-        Scanning forward from each opener instead is quadratic in a document of
-        unclosed tags. Nested blocks pair inside out. A closer inside a code fence
-        is a specimen, and so is one inside a fence opened on a list item's first
-        line, which the renderer will see once the item is dedented. Fences end by
-        the rule :meth:`_fence` uses, so the two agree about where code stops.
-        Cached per sequence, held so its ``id`` cannot be reused while cached.
-        """
-        cached = self.pairs.get(id(lines))
-        if cached is not None and cached[0] is lines:
-            return cached[1]
-        pairs: dict[int, int] = {}
-        open_at: list[int] = []
-        fence = ""
-        for at, piece in enumerate(lines):
-            line = piece.text
-            if fence:
-                candidate = line.strip()
-                if candidate.startswith(fence) and set(candidate) == {fence[0]}:
-                    fence = ""
-                continue
-            item = _ITEM.match(line)
-            marker = _FENCE.match(item.group(4) if item else line)
-            if marker:
-                fence = marker.group(1)
-            elif _DETAILS_OPEN.match(line):
-                open_at.append(at)
-            elif _DETAILS_CLOSE.match(line) and open_at:
-                pairs[open_at.pop()] = at
-        self.pairs[id(lines)] = (lines, pairs)
-        return pairs
-
-    def _details(self, lines: Sequence[Piece], index: int, close: int) -> int:
+    def _open_details(
+        self,
+        lines: Sequence[Piece],
+        index: int,
+        folds: list[tuple[int, int, list[Piece]]],
+    ) -> int:
         piece = lines[index]
         match = _DETAILS_OPEN.match(piece.text)
         assert match is not None
+        start = len(self.out)
+        consumed = [piece]
         self.out.append("<details open>" if match.group(1) else "<details>")
-        inner = list(lines[index + 1 : close])
+        index += 1
         if match.group(2) is not None:
             self._summary(piece.cut(match.start(2), match.end(2)))
-        elif inner and (own := _SUMMARY.match(inner[0].text)):
-            self._summary(inner[0].cut(own.start(1), own.end(1)))
-            inner = inner[1:]
-        self.blocks(inner)
-        self.out.append("</details>")
-        return close + 1
+        elif index < len(lines) and (own := _SUMMARY.match(lines[index].text)):
+            self._summary(lines[index].cut(own.start(1), own.end(1)))
+            consumed.append(lines[index])
+            index += 1
+        folds.append((start, len(self.out), consumed))
+        return index
+
+    def _plain(self, pieces: Sequence[Piece]) -> str:
+        """``pieces`` as the paragraph they would have been, as markup."""
+        saved, self.out = self.out, []
+        chunk = Chunk(pieces)
+        self.out.append("<p>")
+        self._inline(chunk, 0, len(chunk))
+        self.out.append("</p>")
+        html, self.out = "".join(self.out), saved
+        return html
 
     def _summary(self, piece: Piece) -> None:
         chunk = Chunk([piece])
@@ -515,7 +506,8 @@ class _Renderer:
         return bool(
             lines[index].start in self.definitions
             or _FENCE.match(line)
-            or self._details_close(lines, index) is not None
+            or _DETAILS_OPEN.match(line)
+            or _DETAILS_CLOSE.match(line)
             or _HEADING.match(line)
             or _RULE.match(line)
             or _QUOTE.match(line)
@@ -591,7 +583,7 @@ class _Renderer:
         loose = any(not piece.text.strip() for piece in body[1:]) or any(
             _ITEM.match(piece.text) or _FENCE.match(piece.text) or _QUOTE.match(piece.text)
             for piece in body[1:]
-        ) or any(self._details_close(body, at) is not None for at in range(1, len(body)))
+        ) or any(_DETAILS_OPEN.match(piece.text) or _DETAILS_CLOSE.match(piece.text) for piece in body[1:])
         if loose:
             self.blocks(body)
             return

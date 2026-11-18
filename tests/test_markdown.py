@@ -617,3 +617,39 @@ def test_many_unclosed_openers_render_in_linear_time():
     html = render("<details>\n\n" * 20000)
     assert time.perf_counter() - began < 2.0
     assert "<details>" not in html
+
+
+def test_a_closer_in_a_deeply_indented_fence_in_a_list_item_is_a_specimen():
+    """The fence is only a fence once the item is dedented; pairing has to see it there."""
+    text = (
+        "<details><summary>s</summary>\n\n- item\n\n     ```\n  </details>\n     ```\n\n"
+        "after\n\n</details>\n"
+    )
+    html = render(text)
+    assert html.count("<details>") == 1 and html.endswith("</details>")
+    assert "&lt;/details&gt;</span></code></pre>" in html
+    assert html.index("after") < html.rindex("</details>")
+    assert exactness(text)
+
+
+def test_a_table_row_that_looks_like_a_fence_does_not_hide_the_closer():
+    text = "<details><summary>s</summary>\n\n| a | b |\n|---|---|\n```|\n\n</details>\n"
+    html = render(text)
+    assert html.endswith("</details>") and "<table>" in html
+    assert exactness(text)
+
+
+def test_deeply_nested_details_render_without_recursion():
+    depth = 600
+    text = "<details>\n" * depth + "x\n" + "</details>\n" * depth
+    html = render(text)
+    assert html.count("<details>") == depth and html.count("</details>") == depth
+    assert exactness(text)
+
+
+def test_only_ascii_spellings_of_the_tag_count():
+    """Unicode case folding would let ``<detailſ>`` through and drop the ``ſ`` from the page."""
+    for text in ("<detailſ>\nb\n</detailſ>\n", "<DETAİLS>\nb\n</details>\n"):
+        html = render(text)
+        assert "<details>" not in html
+        assert exactness(text)

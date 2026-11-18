@@ -669,6 +669,8 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
     round_id = store.open_round(doc, author="test")
     cid = store.add_comment(round_id, author="test", body="here",
                             anchor=store.anchor_in_round(round_id, "Inside sentence."))
+    store.add_comment(round_id, author="test", body="on the title",
+                      anchor=store.anchor_in_round(round_id, "talked about"))
     original = webview.page()
     probe = r"""<script>
 (async () => {
@@ -688,6 +690,8 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
     talked.open = false;
     focus('CID', 'card');
     check(talked.open, 'focusing the comment did not open its fold');
+    talked.querySelector('summary mark.anch').click();
+    check(talked.open, 'clicking a mark in the summary folded the block');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();
