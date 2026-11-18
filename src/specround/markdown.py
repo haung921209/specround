@@ -332,6 +332,7 @@ class _Renderer:
         self.references: dict[str, str] = {}
         self.definitions: set[int] = set()
         self.heading_ids: set[str] = set()
+        self.pairs: dict[int, tuple[Sequence[Piece], dict[int, int]]] = {}
 
     # -- text ------------------------------------------------------------
 
@@ -393,32 +394,45 @@ class _Renderer:
         """Index of the ``</details>`` closing the block opened at ``index``.
 
         ``None`` when the line opens no block or nothing closes it — an unclosed
-        tag stays text rather than swallowing the rest of the document. Nested
-        blocks count, and a closer inside a code fence is a specimen: the fence
-        is skipped by the same rule :meth:`_fence` ends it with, so the two
-        never disagree about where code stops.
+        tag stays text rather than swallowing the rest of the document.
         """
         if not _DETAILS_OPEN.match(lines[index].text):
             return None
-        depth = 1
+        return self._details_pairs(lines).get(index)
+
+    def _details_pairs(self, lines: Sequence[Piece]) -> dict[int, int]:
+        """Every opener in ``lines`` that has a closer, mapped to it — one pass.
+
+        Scanning forward from each opener instead is quadratic in a document of
+        unclosed tags. Nested blocks pair inside out. A closer inside a code fence
+        is a specimen, and so is one inside a fence opened on a list item's first
+        line, which the renderer will see once the item is dedented. Fences end by
+        the rule :meth:`_fence` uses, so the two agree about where code stops.
+        Cached per sequence, held so its ``id`` cannot be reused while cached.
+        """
+        cached = self.pairs.get(id(lines))
+        if cached is not None and cached[0] is lines:
+            return cached[1]
+        pairs: dict[int, int] = {}
+        open_at: list[int] = []
         fence = ""
-        for at in range(index + 1, len(lines)):
-            line = lines[at].text
+        for at, piece in enumerate(lines):
+            line = piece.text
             if fence:
                 candidate = line.strip()
                 if candidate.startswith(fence) and set(candidate) == {fence[0]}:
                     fence = ""
                 continue
-            marker = _FENCE.match(line)
+            item = _ITEM.match(line)
+            marker = _FENCE.match(item.group(4) if item else line)
             if marker:
                 fence = marker.group(1)
             elif _DETAILS_OPEN.match(line):
-                depth += 1
-            elif _DETAILS_CLOSE.match(line):
-                depth -= 1
-                if depth == 0:
-                    return at
-        return None
+                open_at.append(at)
+            elif _DETAILS_CLOSE.match(line) and open_at:
+                pairs[open_at.pop()] = at
+        self.pairs[id(lines)] = (lines, pairs)
+        return pairs
 
     def _details(self, lines: Sequence[Piece], index: int, close: int) -> int:
         piece = lines[index]
@@ -577,7 +591,7 @@ class _Renderer:
         loose = any(not piece.text.strip() for piece in body[1:]) or any(
             _ITEM.match(piece.text) or _FENCE.match(piece.text) or _QUOTE.match(piece.text)
             for piece in body[1:]
-        )
+        ) or any(self._details_close(body, at) is not None for at in range(1, len(body)))
         if loose:
             self.blocks(body)
             return

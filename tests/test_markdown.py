@@ -585,3 +585,35 @@ def test_details_interrupts_a_paragraph():
     html = render(text)
     assert "<details>" in html
     assert [run.text for run in exactness(text)] == ["para line", "s", "body"]
+
+
+def test_a_closer_in_a_fence_inside_a_list_item_is_a_specimen():
+    """The pairing scan has to see the fences the renderer will see, list items included."""
+    for marker in ("-", "1."):
+        pad = " " * (len(marker) + 1)
+        text = (
+            f"<details><summary>outer</summary>\n\n{marker} ```\n{pad}</details>\n{pad}```\n\n"
+            "after code\n\n</details>\n"
+        )
+        html = render(text)
+        assert html.count("<details>") == 1 and html.endswith("</details>")
+        assert "&lt;/details&gt;" in html
+        assert html.index("after code") > html.index("</pre>")
+        assert exactness(text)
+
+
+def test_details_inside_a_tight_list_item_renders():
+    text = "- item\n  <details><summary>s</summary>\n  body\n  </details>\n"
+    html = render(text)
+    assert "<details>" in html and "&lt;details" not in html
+    assert [run.text for run in exactness(text)] == ["item", "s", "body"]
+
+
+def test_many_unclosed_openers_render_in_linear_time():
+    """Each opener used to rescan to the end of the document — quadratic in the input."""
+    import time
+
+    began = time.perf_counter()
+    html = render("<details>\n\n" * 20000)
+    assert time.perf_counter() - began < 2.0
+    assert "<details>" not in html
