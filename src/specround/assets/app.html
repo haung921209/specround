@@ -1571,8 +1571,16 @@ function draw() {
   // The showing set and not every comment: a mark for a thread the column is
   // hiding has nothing behind it to open.
   paint(host, shownComments());
+  // A folded block someone commented in opens itself, as a diagram's source does.
+  host.querySelectorAll("details mark.anch, details .caret").forEach(reveal);
   drawThreads();
   if (state.focused) markFocus();
+}
+
+// Open every <details> around `element`: an anchor inside a closed one has no
+// box, so scrolling to it would move nothing.
+function reveal(element) {
+  for (let fold = element?.closest("details"); fold; fold = fold.parentElement?.closest("details")) fold.open = true;
 }
 
 // -- the workspace bar ----------------------------------------------------
@@ -2157,6 +2165,7 @@ function focus(id, origin) {
   const anchor = document.querySelector("mark.anch.here, .caret.here");
   const card = document.querySelector('.card[data-comment="' + id + '"]');
   card?.closest("details")?.setAttribute("open", "");
+  reveal(anchor);
   const comment = state.data ? state.data.comments.find((c) => c.id === id) : null;
   const where = focusScroll(origin, {
     mark: !!anchor, card: !!card, orphaned: !!(comment && comment.orphaned),

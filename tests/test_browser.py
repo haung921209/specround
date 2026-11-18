@@ -657,3 +657,49 @@ def test_html_document_renders_isolated_and_comments_from_the_page(doc, clock, m
         assert [c.anchor.exact for c in comments] == ["45s"]
     finally:
         served.shutdown()
+
+
+def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_path):
+    """A closed <details> hides its anchors; scrolling to one there would move nothing."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to Chromium")
+    doc.write_text("# Fold\n\n<details><summary>talked about</summary>\n\nInside sentence.\n\n</details>\n\n"
+                   "<details><summary>quiet</summary>\n\nUntouched.\n\n</details>\n", encoding="utf-8")
+    round_id = store.open_round(doc, author="test")
+    cid = store.add_comment(round_id, author="test", body="here",
+                            anchor=store.anchor_in_round(round_id, "Inside sentence."))
+    original = webview.page()
+    probe = r"""<script>
+(async () => {
+  const report = document.createElement('pre');
+  report.id = 'browser-result'; document.body.appendChild(report);
+  const check = (ok, reason) => { if (!ok) throw Error(reason); };
+  const waitFor = async (test) => {
+    for (let i = 0; i < 500; i++) { if (test()) return; await new Promise(r => setTimeout(r, 20)); }
+    throw Error('timed out');
+  };
+  try {
+    await waitFor(() => document.querySelector('#doc mark.anch'));
+    const [talked, quiet] = document.querySelectorAll('#doc details');
+    check(talked.querySelector('summary').textContent === 'talked about', 'summary not drawn');
+    check(talked.open, 'commented fold stayed closed');
+    check(!quiet.open, 'uncommented fold opened');
+    talked.open = false;
+    focus('CID', 'card');
+    check(talked.open, 'focusing the comment did not open its fold');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>""".replace("CID", cid)
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="test", port=0)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking",
+                                 f"--user-data-dir={tmp_path / 'profile'}", "--dump-dom", "--virtual-time-budget=15000", served.url],
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr[-2500:]
+        assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
+    finally:
+        served.shutdown()

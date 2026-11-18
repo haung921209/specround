@@ -22,6 +22,13 @@ Markers markdown consumes — ``**``, a heading's ``#``, a table's pipes — are
 runs and are not selectable. There is nothing in the document a reviewer means
 by them, and inventing an anchor for them would put comments on syntax.
 
+Raw HTML is escaped, with one exception: a bare ``<details>`` block and its
+``<summary>`` line. A long spec folds its per-engine asides that way, and
+escaping the tags left the reader looking at markup. The tags themselves are
+markers in the sense above; the summary's text and everything inside the block
+are runs like any other. Only the bare tags (``open`` allowed) count — an
+attribute is where script would go, and a tag anywhere else stays text.
+
 Scope is prose: the blocks these spec documents are written in. This is not a
 CommonMark implementation and does not try to be. An unsupported construct
 degrades to the paragraph it sits in, which still anchors correctly — the
@@ -59,6 +66,13 @@ _SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*):")
 _REFERENCE_DEFINITION = re.compile(
     r'''^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^<>\n]+)>|(\S+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$'''
 )
+#: The one HTML block the renderer draws instead of escaping. A whole line each,
+#: so the rule is one a reader can apply by eye.
+_DETAILS_OPEN = re.compile(
+    r"^ {0,3}<details([ \t]+open)?[ \t]*>[ \t]*(?:<summary>(.*?)</summary>[ \t]*)?$", re.IGNORECASE
+)
+_SUMMARY = re.compile(r"^ {0,3}<summary>(.*?)</summary>[ \t]*$", re.IGNORECASE)
+_DETAILS_CLOSE = re.compile(r"^ {0,3}</details>[ \t]*$", re.IGNORECASE)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -338,6 +352,8 @@ class _Renderer:
                 index += 1
             elif _FENCE.match(line):
                 index = self._fence(lines, index)
+            elif (close := self._details_close(lines, index)) is not None:
+                index = self._details(lines, index, close)
             elif _HEADING.match(line):
                 index = self._heading(lines, index)
             elif _RULE.match(line):
@@ -372,6 +388,58 @@ class _Renderer:
             self.text(chunk, 0, len(chunk))
         self.out.append("</code></pre>")
         return index
+
+    def _details_close(self, lines: Sequence[Piece], index: int) -> int | None:
+        """Index of the ``</details>`` closing the block opened at ``index``.
+
+        ``None`` when the line opens no block or nothing closes it — an unclosed
+        tag stays text rather than swallowing the rest of the document. Nested
+        blocks count, and a closer inside a code fence is a specimen: the fence
+        is skipped by the same rule :meth:`_fence` ends it with, so the two
+        never disagree about where code stops.
+        """
+        if not _DETAILS_OPEN.match(lines[index].text):
+            return None
+        depth = 1
+        fence = ""
+        for at in range(index + 1, len(lines)):
+            line = lines[at].text
+            if fence:
+                candidate = line.strip()
+                if candidate.startswith(fence) and set(candidate) == {fence[0]}:
+                    fence = ""
+                continue
+            marker = _FENCE.match(line)
+            if marker:
+                fence = marker.group(1)
+            elif _DETAILS_OPEN.match(line):
+                depth += 1
+            elif _DETAILS_CLOSE.match(line):
+                depth -= 1
+                if depth == 0:
+                    return at
+        return None
+
+    def _details(self, lines: Sequence[Piece], index: int, close: int) -> int:
+        piece = lines[index]
+        match = _DETAILS_OPEN.match(piece.text)
+        assert match is not None
+        self.out.append("<details open>" if match.group(1) else "<details>")
+        inner = list(lines[index + 1 : close])
+        if match.group(2) is not None:
+            self._summary(piece.cut(match.start(2), match.end(2)))
+        elif inner and (own := _SUMMARY.match(inner[0].text)):
+            self._summary(inner[0].cut(own.start(1), own.end(1)))
+            inner = inner[1:]
+        self.blocks(inner)
+        self.out.append("</details>")
+        return close + 1
+
+    def _summary(self, piece: Piece) -> None:
+        chunk = Chunk([piece])
+        self.out.append("<summary>")
+        self._inline(chunk, 0, len(chunk))
+        self.out.append("</summary>")
 
     def _heading(self, lines: Sequence[Piece], index: int) -> int:
         piece = lines[index]
@@ -433,6 +501,7 @@ class _Renderer:
         return bool(
             lines[index].start in self.definitions
             or _FENCE.match(line)
+            or self._details_close(lines, index) is not None
             or _HEADING.match(line)
             or _RULE.match(line)
             or _QUOTE.match(line)

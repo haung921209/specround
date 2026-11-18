@@ -503,3 +503,85 @@ def test_every_marker_in_this_repo_is_inside_code(name):
                 f"{name}: {opener} at offset {at} is in prose — the harvester would eat it"
             )
             at = text.find(opener, at + 1)
+
+
+DETAILS = """Intro line.
+
+<details><summary>Per engine</summary>
+
+- first engine: pulls the log
+- second engine: pulls the WAL
+
+</details>
+
+After.
+"""
+
+
+def test_details_and_summary_render_as_elements():
+    """A collapsible block is structure, not text a reviewer has to read around."""
+    html = render(DETAILS)
+    assert "&lt;details" not in html and "&lt;summary" not in html
+    assert "<details>" in html and "</details>" in html
+    assert html.index("<details>") < html.index("<ul>") < html.index("</details>")
+
+
+def test_summary_text_is_a_run_at_its_own_offset():
+    """A comment on the summary lands on the summary's characters, not the tag's."""
+    found = exactness(DETAILS)
+    summary = next(run for run in found if run.text == "Per engine")
+    assert summary.start == DETAILS.index("Per engine")
+    assert "<summary>" not in "".join(run.text for run in found)
+
+
+def test_runs_inside_details_keep_their_offsets():
+    found = exactness(DETAILS)
+    texts = [run.text for run in found]
+    assert "first engine: pulls the log" in texts
+    assert "After." in texts
+
+
+def test_summary_may_sit_on_its_own_line_and_details_may_start_open():
+    text = "<details open>\n<summary>More</summary>\n\nBody text.\n</details>\n"
+    html = render(text)
+    assert "<details open>" in html and "<summary>" in html
+    assert "&lt;" not in html
+    assert [run.text for run in exactness(text)] == ["More", "Body text."]
+
+
+def test_nested_details_close_in_order_and_fenced_closers_do_not_count():
+    text = (
+        "<details><summary>outer</summary>\n\n"
+        "```\n</details>\n```\n\n"
+        "<details><summary>inner</summary>\n\nx\n\n</details>\n\n"
+        "y\n\n"
+        "</details>\n"
+    )
+    html = render(text)
+    assert html.count("<details>") == 2 and html.count("</details>") == 2
+    assert "&lt;/details&gt;" in html  # the fenced one is a specimen
+    assert html.rindex("y</span>") < html.rindex("</details>")
+    assert exactness(text)
+
+
+def test_an_unclosed_details_stays_text():
+    text = "<details><summary>never closed</summary>\n\nbody\n"
+    html = render(text)
+    assert "<details>" not in html and "&lt;details&gt;" in html
+    assert exactness(text)
+
+
+def test_details_with_other_attributes_and_other_tags_stay_text():
+    """Only the bare block is structure — attributes are where script would go."""
+    text = '<details onclick="x()"><summary>s</summary>\n\nbody\n\n</details>\n\n<div>d</div>\n'
+    html = render(text)
+    assert "<details" not in html.replace("&lt;details", "")
+    assert "<div>" not in html
+    assert exactness(text)
+
+
+def test_details_interrupts_a_paragraph():
+    text = "para line\n<details><summary>s</summary>\nbody\n</details>\n"
+    html = render(text)
+    assert "<details>" in html
+    assert [run.text for run in exactness(text)] == ["para line", "s", "body"]
