@@ -696,10 +696,9 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
     check(talked.open, 'focusing the comment did not open its fold');
     talked.querySelector('summary mark.anch').click();
     check(talked.open, 'clicking a mark in the summary folded the block');
-    talked.open = false; quiet.open = true;
+    talked.open = false;
     draw();
-    const [talked2, quiet2] = document.querySelectorAll('#doc details.docfold');
-    check(!talked2.open && quiet2.open, 'a redraw lost the folds the reader set');
+    check(document.querySelector('#doc details.docfold').open, 'a redraw left a commented fold shut');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();

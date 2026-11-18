@@ -1570,34 +1570,23 @@ function draw() {
     drawThreads();
     return;
   }
-  const foldKey = data.workspace ? data.workspace.selected : data.doc;
-  if (folds.key !== foldKey) folds = { key: foldKey, open: null };
-  const before = foldsOf(host);
-  if (before.length) folds.open = before.map((fold) => fold.open);
   if (state.mode === "raw") drawRaw(host, data);
   else if (state.mode === "diff") drawDiff(host, data);
   else drawRender(host, data);
   // The showing set and not every comment: a mark for a thread the column is
   // hiding has nothing behind it to open.
   paint(host, shownComments());
-  // A redraw of the same document keeps the folds the reader opened or closed.
-  // The first draw, or one whose folds no longer line up, opens each folded
-  // block someone commented in, as a diagram's source does.
-  const after = foldsOf(host);
-  if (folds.open && folds.open.length === after.length) after.forEach((fold, i) => { fold.open = folds.open[i]; });
-  else host.querySelectorAll("details mark.anch, details .caret").forEach((mark) => {
+  // A folded block someone commented in opens itself, as a diagram's source
+  // does — on every draw, which is also what a redraw does to the reader's own
+  // folding: keeping it would mean tracking which fold is which across
+  // revisions and documents, and a stale guess hides a comment.
+  host.querySelectorAll("details mark.anch, details .caret").forEach((mark) => {
     // A summary shows while its fold is shut: only the folds around that one need opening.
     const title = mark.closest("summary");
     reveal(title ? title.parentElement.parentElement : mark);
   });
   drawThreads();
   if (state.focused) markFocus();
-}
-
-// The document's own folds, in order, and what the reader left them as.
-let folds = { key: null, open: null };
-function foldsOf(host) {
-  return [...host.querySelectorAll("details.docfold")];
 }
 
 // Open every <details> around `element`: an anchor inside a closed one has no
