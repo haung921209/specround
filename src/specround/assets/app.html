@@ -1042,6 +1042,8 @@ function paint(container, comments) {
   container.querySelectorAll("mark.anch, .caret").forEach((mark) => {
     mark.addEventListener("click", (event) => {
       event.stopPropagation();
+      // A mark in a <summary> is a way to the comment, not a toggle for the fold.
+      if (mark.closest("summary")) event.preventDefault();
       focus(mark.dataset.comments.split(" ")[0], "mark");
     });
   });
@@ -1062,6 +1064,9 @@ function drawRender(host, data) {
   if (data.format === "html") { drawHtml(host, data); return; }
   host.className = "";
   host.innerHTML = data.render;
+  // Tagged before anything else adds a <details> here (outline, diagram source,
+  // inline threads): these are the document's own folds.
+  host.querySelectorAll("details").forEach((fold) => fold.classList.add("docfold"));
   linkAssets(host, data);
   drawDiagrams(host);
   drawPreviews(host);
@@ -1571,8 +1576,23 @@ function draw() {
   // The showing set and not every comment: a mark for a thread the column is
   // hiding has nothing behind it to open.
   paint(host, shownComments());
+  // A folded block someone commented in opens itself, as a diagram's source
+  // does — on every draw, which is also what a redraw does to the reader's own
+  // folding: keeping it would mean tracking which fold is which across
+  // revisions and documents, and a stale guess hides a comment.
+  host.querySelectorAll("details mark.anch, details .caret").forEach((mark) => {
+    // A summary shows while its fold is shut: only the folds around that one need opening.
+    const title = mark.closest("summary");
+    reveal(title ? title.parentElement.parentElement : mark);
+  });
   drawThreads();
   if (state.focused) markFocus();
+}
+
+// Open every <details> around `element`: an anchor inside a closed one has no
+// box, so scrolling to it would move nothing.
+function reveal(element) {
+  for (let fold = element?.closest("details"); fold; fold = fold.parentElement?.closest("details")) fold.open = true;
 }
 
 // -- the workspace bar ----------------------------------------------------
@@ -2157,6 +2177,7 @@ function focus(id, origin) {
   const anchor = document.querySelector("mark.anch.here, .caret.here");
   const card = document.querySelector('.card[data-comment="' + id + '"]');
   card?.closest("details")?.setAttribute("open", "");
+  reveal(anchor);
   const comment = state.data ? state.data.comments.find((c) => c.id === id) : null;
   const where = focusScroll(origin, {
     mark: !!anchor, card: !!card, orphaned: !!(comment && comment.orphaned),
