@@ -355,7 +355,7 @@ class _Renderer:
         """
         index = 0
         total = len(lines)
-        folds: list[tuple[int, int, list[Piece]]] = []
+        folds: list[tuple[int, list[Piece]]] = []
         while index < total:
             line = lines[index].text
             if not line.strip() or lines[index].start in self.definitions:
@@ -382,10 +382,9 @@ class _Renderer:
             else:
                 index = self._paragraph(lines, index)
         # An opener nothing closed in this block stays text — the rest of the
-        # document is not folded away behind a typo. Innermost first, so a
-        # splice never moves the markup of a fold opened before it.
-        for start, end, consumed in reversed(folds):
-            self.out[start:end] = [self._plain(consumed)]
+        # document is not folded away behind a typo.
+        for at, consumed in folds:
+            self.out[at] = self._plain(consumed)
 
     def _fence(self, lines: Sequence[Piece], index: int) -> int:
         match = _FENCE.match(lines[index].text)
@@ -412,14 +411,16 @@ class _Renderer:
         self,
         lines: Sequence[Piece],
         index: int,
-        folds: list[tuple[int, int, list[Piece]]],
+        folds: list[tuple[int, list[Piece]]],
     ) -> int:
         piece = lines[index]
         match = _DETAILS_OPEN.match(piece.text)
         assert match is not None
-        start = len(self.out)
         consumed = [piece]
-        self.out.append("<details open>" if match.group(1) else "<details>")
+        # The opener's markup is one item of ``out``, so putting an unclosed one
+        # back is an assignment in place rather than a splice that shifts
+        # everything drawn after it.
+        saved, self.out = self.out, ["<details open>" if match.group(1) else "<details>"]
         index += 1
         if match.group(2) is not None:
             self._summary(piece.cut(match.start(2), match.end(2)))
@@ -427,7 +428,9 @@ class _Renderer:
             self._summary(lines[index].cut(own.start(1), own.end(1)))
             consumed.append(lines[index])
             index += 1
-        folds.append((start, len(self.out), consumed))
+        markup, self.out = "".join(self.out), saved
+        folds.append((len(self.out), consumed))
+        self.out.append(markup)
         return index
 
     def _plain(self, pieces: Sequence[Piece]) -> str:

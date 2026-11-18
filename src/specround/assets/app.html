@@ -1064,6 +1064,9 @@ function drawRender(host, data) {
   if (data.format === "html") { drawHtml(host, data); return; }
   host.className = "";
   host.innerHTML = data.render;
+  // Tagged before anything else adds a <details> here (outline, diagram source,
+  // inline threads): these are the document's own folds.
+  host.querySelectorAll("details").forEach((fold) => fold.classList.add("docfold"));
   linkAssets(host, data);
   drawDiagrams(host);
   drawPreviews(host);
@@ -1567,16 +1570,30 @@ function draw() {
     drawThreads();
     return;
   }
+  const foldKey = data.workspace ? data.workspace.selected : data.doc;
+  if (folds.key !== foldKey) folds = { key: foldKey, open: null };
+  const before = foldsOf(host);
+  if (before.length) folds.open = before.map((fold) => fold.open);
   if (state.mode === "raw") drawRaw(host, data);
   else if (state.mode === "diff") drawDiff(host, data);
   else drawRender(host, data);
   // The showing set and not every comment: a mark for a thread the column is
   // hiding has nothing behind it to open.
   paint(host, shownComments());
-  // A folded block someone commented in opens itself, as a diagram's source does.
-  host.querySelectorAll("details mark.anch, details .caret").forEach(reveal);
+  // A redraw of the same document keeps the folds the reader opened or closed.
+  // The first draw, or one whose folds no longer line up, opens each folded
+  // block someone commented in, as a diagram's source does.
+  const after = foldsOf(host);
+  if (folds.open && folds.open.length === after.length) after.forEach((fold, i) => { fold.open = folds.open[i]; });
+  else host.querySelectorAll("details mark.anch, details .caret").forEach(reveal);
   drawThreads();
   if (state.focused) markFocus();
+}
+
+// The document's own folds, in order, and what the reader left them as.
+let folds = { key: null, open: null };
+function foldsOf(host) {
+  return [...host.querySelectorAll("details.docfold")];
 }
 
 // Open every <details> around `element`: an anchor inside a closed one has no

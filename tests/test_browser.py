@@ -683,7 +683,7 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
   };
   try {
     await waitFor(() => document.querySelector('#doc mark.anch'));
-    const [talked, quiet] = document.querySelectorAll('#doc details');
+    const [talked, quiet] = document.querySelectorAll('#doc details.docfold');
     check(talked.querySelector('summary').textContent === 'talked about', 'summary not drawn');
     check(talked.open, 'commented fold stayed closed');
     check(!quiet.open, 'uncommented fold opened');
@@ -692,6 +692,10 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
     check(talked.open, 'focusing the comment did not open its fold');
     talked.querySelector('summary mark.anch').click();
     check(talked.open, 'clicking a mark in the summary folded the block');
+    talked.open = false; quiet.open = true;
+    draw();
+    const [talked2, quiet2] = document.querySelectorAll('#doc details.docfold');
+    check(!talked2.open && quiet2.open, 'a redraw lost the folds the reader set');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();
