@@ -665,12 +665,15 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
     if not browser:
         pytest.skip("set SPECROUND_TEST_BROWSER to Chromium")
     doc.write_text("# Fold\n\n<details><summary>talked about</summary>\n\nInside sentence.\n\n</details>\n\n"
-                   "<details><summary>quiet</summary>\n\nUntouched.\n\n</details>\n", encoding="utf-8")
+                   "<details><summary>quiet</summary>\n\nUntouched.\n\n</details>\n\n"
+                   "<details><summary>titled</summary>\n\nBody unseen.\n\n</details>\n", encoding="utf-8")
     round_id = store.open_round(doc, author="test")
     cid = store.add_comment(round_id, author="test", body="here",
                             anchor=store.anchor_in_round(round_id, "Inside sentence."))
     store.add_comment(round_id, author="test", body="on the title",
                       anchor=store.anchor_in_round(round_id, "talked about"))
+    store.add_comment(round_id, author="test", body="only the title",
+                      anchor=store.anchor_in_round(round_id, "titled"))
     original = webview.page()
     probe = r"""<script>
 (async () => {
@@ -683,7 +686,8 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
   };
   try {
     await waitFor(() => document.querySelector('#doc mark.anch'));
-    const [talked, quiet] = document.querySelectorAll('#doc details.docfold');
+    const [talked, quiet, titled] = document.querySelectorAll('#doc details.docfold');
+    check(!titled.open, 'a comment on a visible summary opened its fold');
     check(talked.querySelector('summary').textContent === 'talked about', 'summary not drawn');
     check(talked.open, 'commented fold stayed closed');
     check(!quiet.open, 'uncommented fold opened');

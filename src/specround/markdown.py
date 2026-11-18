@@ -72,7 +72,7 @@ _DETAILS_OPEN = re.compile(
     r"^ {0,3}<details([ \t]+open)?[ \t]*>[ \t]*(?:<summary>(.*?)</summary>[ \t]*)?$", re.IGNORECASE | re.ASCII
 )
 _SUMMARY = re.compile(r"^ {0,3}<summary>(.*?)</summary>[ \t]*$", re.IGNORECASE | re.ASCII)
-_DETAILS_CLOSE = re.compile(r"^ {0,3}</details>[ \t]*$", re.IGNORECASE | re.ASCII)
+_DETAILS_CLOSE = re.compile(r"^ {0,3}</details[ \t]*>[ \t]*$", re.IGNORECASE | re.ASCII)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from

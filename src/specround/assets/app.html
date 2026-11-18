@@ -1585,7 +1585,11 @@ function draw() {
   // block someone commented in, as a diagram's source does.
   const after = foldsOf(host);
   if (folds.open && folds.open.length === after.length) after.forEach((fold, i) => { fold.open = folds.open[i]; });
-  else host.querySelectorAll("details mark.anch, details .caret").forEach(reveal);
+  else host.querySelectorAll("details mark.anch, details .caret").forEach((mark) => {
+    // A summary shows while its fold is shut: only the folds around that one need opening.
+    const title = mark.closest("summary");
+    reveal(title ? title.parentElement.parentElement : mark);
+  });
   drawThreads();
   if (state.focused) markFocus();
 }

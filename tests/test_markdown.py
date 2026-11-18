@@ -653,3 +653,10 @@ def test_only_ascii_spellings_of_the_tag_count():
         html = render(text)
         assert "<details>" not in html
         assert exactness(text)
+
+
+def test_a_closer_may_carry_the_same_whitespace_an_opener_may():
+    text = "<details >\nb\n</details >\n"
+    html = render(text)
+    assert "<details>" in html and html.endswith("</details>")
+    assert exactness(text)
