@@ -880,6 +880,8 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     window.scrollTo(0, 0);
     [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'Paragraph 40.').scrollIntoView();
     const top = anchorTop();
+    const sourceText = () => [...document.querySelectorAll('#doc [data-s]')].map(e => e.textContent).join('');
+    const shownText = sourceText();
     aside.scrollTop = 120;
     const asideTop = aside.scrollTop;
     await api('/api/test-other', {});
@@ -888,6 +890,7 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     check(document.querySelector('#composer textarea') === draft && draft.value === 'my unsent comment', 'composer draft lost');
     check(document.activeElement === draft && draft.selectionStart === 3 && draft.selectionEnd === 9, 'composer cursor lost');
     check(!document.getElementById('reviewnotice').hidden, 'test needs the notice bar to appear in this poll');
+    check(sourceText() === shownText && !sourceText().includes('An unpublished line.'), 'the poll swapped in unpublished text');
     check(Math.abs(anchorTop() - top) < 2, 'reading place moved: ' + top + ' -> ' + anchorTop());
     if (!inline) {
       check(asideTop > 0 && Math.abs(aside.scrollTop - asideTop) < 2, 'thread column scrolled: ' + asideTop + ' -> ' + aside.scrollTop);
@@ -1101,13 +1104,20 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     await waitFor(() => state.data.comments.filter(c => c.body === 'anchored elsewhere').length === 2, 'drawn under a diff selection');
     check(getSelection().toString() === text, 'a diff selection across spaces was lost');
     getSelection().removeAllRanges();
+    // A rebuilt control with its own id (the diff filter) keeps focus.
+    document.getElementById('changesonly').focus();
+    const r1 = replies();
+    await api('/api/test-other', {});
+    await waitFor(() => replies() === r1 + 1, 'drawn with the diff filter focused');
+    check(document.activeElement.id === 'changesonly', 'focus lost from a rebuilt control with an id');
     setMode('render');
     // A focused card button keeps focus when its card is rebuilt.
     const button = [...document.querySelector('.card[data-comment="' + first + '"]').querySelectorAll('button')].find(b => b.textContent.startsWith('reply'));
     const label = button.textContent;
     button.focus();
+    const r2 = replies();
     await api('/api/test-other', {});
-    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'reply drawn');
+    await waitFor(() => replies() === r2 + 1, 'reply drawn');
     const now = document.activeElement;
     check(now !== button && now.tagName === 'BUTTON' && now.textContent === label
       && now.closest('.card')?.dataset.comment === first, 'the poll dropped focus from a card button');

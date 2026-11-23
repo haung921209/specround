@@ -2606,6 +2606,7 @@ async function acceptReviewRevision() {
 // nearest element with an id), its tag and label, and which of its look-alikes.
 const FOCUSABLE = "button, input, select, textarea, summary, a[href]";
 function focusKey(element) {
+  if (element.id) return { self: element.id };
   const card = element.closest(".card[data-comment]");
   const box = card || element.closest("[id]");
   if (!box) return null;
@@ -2615,6 +2616,7 @@ function focusKey(element) {
            nth: like.indexOf(element), pos: same.indexOf(element) };
 }
 function focusFind(key) {
+  if (key.self) return document.getElementById(key.self);
   const box = key.card ? document.querySelector('.card[data-comment="' + key.card + '"]') : document.getElementById(key.id);
   if (!box) return null;
   const same = [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === key.tag);
