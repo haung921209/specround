@@ -900,6 +900,9 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     await waitFor(() => drawn('second reply while typing'), 'second reply drawn');
     const after = document.querySelector('.replybox textarea');
     check(after && after.value === 'my unsent reply', 'reply draft lost');
+    const box = after.getBoundingClientRect();
+    check(box.top >= document.querySelector('header').getBoundingClientRect().bottom && box.bottom <= innerHeight,
+      'the reply box left the screen: ' + box.top + '..' + box.bottom);
     check(document.activeElement === after && after.selectionStart === 2 && after.selectionEnd === 6
       && after.selectionDirection === 'backward', 'reply selection lost');
     // Mid-composition (an IME), the box is not rebuilt; the poll catches up after.
@@ -1038,8 +1041,9 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     const realApi = api;
     let states = 0;
     const held = [];
-    let hold = false, refuse = false;
+    let hold = false, refuse = false, failing = false;
     window.api = (path, body, params) => {
+      if (failing && (path === '/api/review' || path === '/api/state')) return Promise.reject(Error('server down for the test'));
       if (path === '/api/state') states += 1;
       if (path === '/api/reply' && refuse) return (async () => {
         await realApi('/api/test-other', {});
@@ -1101,6 +1105,51 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 2, 'reply drawn');
     check(document.activeElement === verdict, 'the poll took focus from the verdict select');
     clearComposer();
+    const replies = () => state.data.comments.find(c => c.id === first).replies.length;
+    // A disposition box keeps its verdict, reason and checkbox through a poll.
+    disposeBox(state.data.comments.find(c => c.id === first));
+    const choice = document.querySelector('#composer select');
+    const why = document.querySelector('#composer textarea');
+    const tick = document.querySelector('#composer input[type=checkbox]');
+    choice.value = 'rejected'; choice.dispatchEvent(new Event('change'));
+    why.value = 'my unsent reason'; why.dispatchEvent(new Event('input'));
+    tick.checked = !tick.checked;
+    const ticked = tick.checked;
+    let count = replies();
+    await api('/api/test-other', {});
+    await waitFor(() => replies() === count + 1, 'drawn with a disposition box open');
+    check(document.querySelector('#composer select') === choice && choice.value === 'rejected'
+      && why.value === 'my unsent reason' && tick.checked === ticked, 'the disposition box lost input');
+    clearComposer();
+    // A message the reader has not read yet stays.
+    notice('a message for the reader', 'bad');
+    count = replies();
+    await api('/api/test-other', {});
+    await waitFor(() => replies() === count + 1, 'drawn with a notice up');
+    check(document.getElementById('notice').textContent === 'a message for the reader', 'the poll wiped the notice');
+    notice('');
+    // A server that fails mid-poll changes nothing on the page.
+    commentBox(null);
+    const kept = document.querySelector('#composer textarea');
+    kept.value = 'kept through an outage'; kept.dispatchEvent(new Event('input'));
+    const drawnBefore = state.data;
+    failing = true;
+    await api('/api/test-other', {});
+    await checkReview();
+    await load({ live: true }).catch(() => {});
+    failing = false;
+    check(state.data === drawnBefore && kept.value === 'kept through an outage'
+      && !document.getElementById('notice').textContent, 'a failed poll changed the page');
+    kept.value = ''; clearComposer();
+    await waitFor(() => replies() === count + 2, 'caught up after the outage');
+    // The reader's own comment lands while an older poll answer is in flight.
+    hold = true;
+    const stale = load({ live: true });
+    hold = false;
+    check(await act({ whole: true, body: 'my own comment' }, '/api/comment'), 'own comment refused');
+    held.shift()();
+    await stale;
+    check(state.data.comments.some(c => c.body === 'my own comment'), 'an older poll answer hid the reader\'s own comment');
     // A reply refused while a poll redrew the threads keeps its box and text.
     openReply(first);
     const box = document.querySelector('.replybox textarea');
