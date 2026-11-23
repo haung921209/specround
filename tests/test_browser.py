@@ -9,6 +9,7 @@ import pytest
 
 from specround import webview
 from specround.reviews import Review
+from specround.store import ReviewStore
 from specround.workspace import Workspace
 
 
@@ -958,11 +959,18 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     (doc.parent / "other.md").write_text("# Other\n\nAnother document.\n", encoding="utf-8")
     round_id = store.open_round(doc, author="test")
     first = store.add_comment(round_id, author="test", body="first thread")
+    ReviewStore.for_document(doc.parent / "other.md").open_round(doc.parent / "other.md", author="test")
     def other_client(handler):
         handler._body()
         store.reply(first, author="other", body="a reply from elsewhere")
         handler._json({"ok": True})
+    def other_document(handler):
+        handler._body()
+        other = ReviewStore.for_document(doc.parent / "other.md")
+        other.add_comment(other.latest_round(doc.parent / "other.md").id, author="other", body="on the other document")
+        handler._json({"ok": True})
     monkeypatch.setitem(webview._POSTS, "/api/test-other", other_client)
+    monkeypatch.setitem(webview._POSTS, "/api/test-other-doc", other_document)
     original = webview.page()
     probe = r"""
 <script>
@@ -1034,6 +1042,28 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     held.shift()();
     await waitFor(() => state.data.doc === 'other.md', 'other document drawn');
     check(start !== 'other.md', 'test started on the wrong document');
+    // A count carried over from the document left behind does not mute this one.
+    polledEvents = 1000000;
+    openDocument(start);
+    await waitFor(() => state.data.doc === start, 'back on the first document');
+    openDocument('other.md');
+    await waitFor(() => state.data.doc === 'other.md', 'other document again');
+    await api('/api/test-other-doc', {});
+    await waitFor(() => state.data.comments.some(c => c.body === 'on the other document'), 'comment on the other document drawn');
+    // A poll whose answer arrives after an IME composition began does not redraw.
+    const reply = state.data.comments.find(c => c.body === 'on the other document').id;
+    openReply(reply);
+    const typing = document.querySelector('.replybox textarea');
+    hold = true;
+    const late = load({ live: true });
+    hold = false;
+    typing.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+    await api('/api/test-other-doc', {});
+    held.shift()();
+    check(await late === false, 'a late answer applied mid-composition');
+    check(document.querySelector('.replybox textarea') === typing, 'the box was rebuilt mid-composition');
+    typing.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true}));
+    await waitFor(() => state.data.comments.filter(c => c.body === 'on the other document').length === 2, 'drawn after composition');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();

@@ -2546,15 +2546,17 @@ function showReviewUpdate(review) {
 
 let checkingReview = false;
 // An IME composition is cut short by any redraw of the box it is in, so a poll
-// waits until the reader has finished the character.
+// answer is set aside until the reader has finished the character (see `load`).
 let composing = false;
 document.addEventListener("compositionstart", () => { composing = true; });
 document.addEventListener("compositionend", () => { composing = false; });
 // The record count the threads on screen were last brought up to, by a load or
 // by a poll whose answer was set aside for the notice; once per count either way.
+// Reset by every other load: another document may live in another store, with
+// a count of its own.
 let polledEvents = 0;
 async function checkReview() {
-  if (checkingReview || document.hidden || !state.data || composing) return;
+  if (checkingReview || document.hidden || !state.data) return;
   const doc = state.doc;
   const revision = state.data.round?.revision;
   checkingReview = true;
@@ -2566,8 +2568,7 @@ async function checkReview() {
     // A new revision is still the reader's call, through the notice above.
     const seen = Math.max(state.data.counts?.events ?? 0, polledEvents);
     if (review.revision === revision && review.events > seen) {
-      await load({ live: true });
-      polledEvents = review.events;
+      if (await load({ live: true }) !== false) polledEvents = review.events;
     }
   } catch (error) {
     // A stopped/restarting local server must not erase a draft or interrupt reading.
@@ -2620,8 +2621,9 @@ async function load({ redrawDocument = true, live = false } = {}) {
   const previous = state.data;
   let keep = null;
   if (live) {
-    // The reader moved to another document while this was in flight; that load draws.
-    if (state.doc !== asked) return;
+    // The reader moved to another document while this was in flight (that load
+    // draws), or started an IME composition (the next poll tries again).
+    if (state.doc !== asked || composing) return false;
     // A poll brings the conversation up to date and nothing else. The text on
     // screen stays exactly as drawn (unpublished file edits included), and a
     // change of document, revision or review members is left to the notice.
@@ -2690,6 +2692,7 @@ async function load({ redrawDocument = true, live = false } = {}) {
   else { paint(host, shownComments()); drawThreads(); markFocus(); }
   applyView();
   if (keep) keep();
+  else polledEvents = 0;
 }
 
 document.querySelectorAll("#modes button").forEach((element) => {
