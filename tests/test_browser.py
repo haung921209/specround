@@ -800,3 +800,103 @@ def test_a_share_page_asks_for_a_name_once_and_remembers_it(store, doc, monkeypa
         assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
     finally:
         served.shutdown()
+
+
+@pytest.mark.parametrize("grant,width", [("owner", 1440), ("share", 800)])
+def test_another_clients_comments_appear_without_reloading(store, doc, monkeypatch, tmp_path, grant, width):
+    """A page that waits for a reload to show someone else's comment, reply or
+    verdict fails this, and so does one that shows it by dropping the reader's
+    draft, cursor or place in the document."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to a Chromium/headless-shell executable")
+    doc.write_text("# Review\n\nTop sentence.\n\n" + "".join(f"Paragraph {i}.\n\n" for i in range(80)), encoding="utf-8")
+    round_id = store.open_round(doc, author="test")
+    first = store.add_comment(round_id, author="test", body="first thread",
+                              anchor=store.anchor_in_round(round_id, "Paragraph 60."))
+    for i in range(14):
+        store.add_comment(round_id, author="test", body=f"filler {i}",
+                          anchor=store.anchor_in_round(round_id, f"Paragraph {61 + i}."))
+    steps = iter([
+        lambda: (store.add_comment(round_id, author="other", body="from another client",
+                                   anchor=store.anchor_in_round(round_id, "Top sentence.")),
+                 store.reply(first, author="other", body="another client's reply"),
+                 store.dispose(first, author="other", verdict="answered", reason="settled elsewhere")),
+        lambda: store.reply(first, author="other", body="second reply while typing"),
+    ])
+    def other_client(handler):
+        handler._body()
+        next(steps)()
+        handler._json({"ok": True})
+    monkeypatch.setitem(webview._POSTS, "/api/test-other", other_client)
+    original = webview.page()
+    probe = r"""
+<script>
+(async () => {
+  const report = document.createElement('pre'); report.id = 'browser-result';
+  document.body.appendChild(report);
+  const check = (ok, message) => { if (!ok) throw Error(message); };
+  const waitFor = async (predicate, reason) => {
+    for (let i = 0; i < 1000; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw Error('timed out: ' + reason);
+  };
+  const drawn = text => [...document.querySelectorAll('.card .body, .card .reply, .card')].some(e => e.textContent.includes(text));
+  const anchorTop = () => [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'Paragraph 40.').getBoundingClientRect().top;
+  try {
+    await waitFor(() => state.data, 'first load');
+    let loads = 0;
+    document.getElementById('refresh').addEventListener('click', () => { loads += 1; });
+    const first = state.data.comments.find(c => c.body === 'first thread').id;
+    const aside = document.querySelector('aside');
+    commentBox(null);
+    const draft = document.querySelector('#composer textarea');
+    draft.value = 'my unsent comment'; draft.dispatchEvent(new Event('input'));
+    draft.focus(); draft.setSelectionRange(3, 9);
+    window.scrollTo(0, 0);
+    [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'Paragraph 40.').scrollIntoView();
+    const top = anchorTop();
+    aside.scrollTop = 120;
+    const asideTop = aside.scrollTop;
+    await api('/api/test-other', {});
+    await waitFor(() => drawn('from another client') && drawn("another client's reply"), 'comment and reply drawn');
+    check(state.data.comments.find(c => c.id === first).verdict === 'answered', 'verdict not refreshed');
+    check(document.querySelector('#composer textarea') === draft && draft.value === 'my unsent comment', 'composer draft lost');
+    check(document.activeElement === draft && draft.selectionStart === 3 && draft.selectionEnd === 9, 'composer cursor lost');
+    check(Math.abs(anchorTop() - top) < 2, 'reading place moved: ' + top + ' -> ' + anchorTop());
+    if (asideTop > 0 && !document.getElementById('layout').classList.contains('inline-comments')) {
+      check(Math.abs(aside.scrollTop - asideTop) < 2, 'thread column scrolled: ' + asideTop + ' -> ' + aside.scrollTop);
+    }
+    draft.value = ''; clearComposer();
+    openReply(first);
+    const typing = document.querySelector('.replybox textarea');
+    typing.value = 'my unsent reply'; typing.dispatchEvent(new Event('input'));
+    typing.focus(); typing.setSelectionRange(4, 4);
+    await api('/api/test-other', {});
+    await waitFor(() => drawn('second reply while typing'), 'second reply drawn');
+    const after = document.querySelector('.replybox textarea');
+    check(after && after.value === 'my unsent reply', 'reply draft lost');
+    check(document.activeElement === after && after.selectionStart === 4, 'reply cursor lost');
+    check(loads === 0, 'the page was reloaded by hand');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>
+"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="owner", port=0, share_scope="comment")
+    served.start()
+    try:
+        url = served.share_url if grant == "share" else served.url
+        result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu", f"--window-size={width},900",
+                                 f"--user-data-dir={tmp_path / 'browser'}",
+                                 "--dump-dom", "--virtual-time-budget=40000", url],
+                                capture_output=True, text=True, timeout=90)
+        assert result.returncode == 0, result.stderr[-2500:]
+        import re
+        outcome = re.search(r'<pre id="browser-result">(.*?)</pre>', result.stdout, re.S)
+        assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
+    finally:
+        served.shutdown()
