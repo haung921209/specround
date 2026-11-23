@@ -847,6 +847,9 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
   const anchorTop = () => [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'Paragraph 40.').getBoundingClientRect().top;
   try {
     await waitFor(() => state.data, 'first load');
+    // Not every engine anchors scrolling (Safari does not); without it, a thread
+    // drawn above the reader moves the page unless the page puts them back.
+    document.documentElement.style.overflowAnchor = document.body.style.overflowAnchor = 'none';
     let loads = 0;
     document.getElementById('refresh').addEventListener('click', () => { loads += 1; });
     const first = state.data.comments.find(c => c.body === 'first thread').id;
@@ -866,8 +869,8 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     check(document.querySelector('#composer textarea') === draft && draft.value === 'my unsent comment', 'composer draft lost');
     check(document.activeElement === draft && draft.selectionStart === 3 && draft.selectionEnd === 9, 'composer cursor lost');
     check(Math.abs(anchorTop() - top) < 2, 'reading place moved: ' + top + ' -> ' + anchorTop());
-    if (asideTop > 0 && !document.getElementById('layout').classList.contains('inline-comments')) {
-      check(Math.abs(aside.scrollTop - asideTop) < 2, 'thread column scrolled: ' + asideTop + ' -> ' + aside.scrollTop);
+    if (!document.getElementById('layout').classList.contains('inline-comments')) {
+      check(asideTop > 0 && Math.abs(aside.scrollTop - asideTop) < 2, 'thread column scrolled: ' + asideTop + ' -> ' + aside.scrollTop);
     }
     draft.value = ''; clearComposer();
     openReply(first);

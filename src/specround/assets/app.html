@@ -2540,7 +2540,11 @@ async function checkReview() {
   checkingReview = true;
   try {
     const review = await api("/api/review");
-    if (doc === state.doc && revision === state.data?.round?.revision) showReviewUpdate(review);
+    if (doc !== state.doc || revision !== state.data?.round?.revision) return;
+    showReviewUpdate(review);
+    // Same revision, more records: someone else commented, replied or disposed.
+    // A new revision is still the reader's call, through the notice above.
+    if (review.revision === revision && review.events !== state.data.counts?.events) await load({ live: true });
   } catch (error) {
     // A stopped/restarting local server must not erase a draft or interrupt reading.
     console.debug("Review update check failed:", error);
@@ -2555,9 +2559,48 @@ async function acceptReviewRevision() {
   await load();
 }
 
-async function load({ redrawDocument = true } = {}) {
-  const data = await api("/api/state");
+// Where the reader is, so a redraw they did not ask for can put them back: the
+// paragraph at the top of the page and the cursor. The columns keep their own
+// scroll: their contents are swapped without a layout in between.
+function keepPlace() {
+  const header = document.querySelector("header").getBoundingClientRect().bottom;
+  const reading = [...$("doc").children].find(e => !e.matches(".inline-thread, #composer")
+    && e.getBoundingClientRect().bottom > header);
+  const readingTop = reading ? reading.getBoundingClientRect().top : 0;
+  const active = document.activeElement;
+  const typing = active && active.matches("textarea, input") ? active : null;
+  const reply = typing && typing.closest(".replybox") ? state.reply.open : null;
+  const [start, end] = typing && typing.selectionStart != null ? [typing.selectionStart, typing.selectionEnd] : [];
+  return () => {
+    // A reply box is rebuilt with its card; the composer is moved, not rebuilt.
+    const area = reply && reply === state.reply.open ? document.querySelector(".card .replybox textarea")
+      : typing?.isConnected ? typing : null;
+    if (area) {
+      area.focus({ preventScroll: true });
+      if (start != null) area.setSelectionRange(start, end);
+    }
+    if (reading?.isConnected) window.scrollBy(0, reading.getBoundingClientRect().top - readingTop);
+  };
+}
+
+async function load({ redrawDocument = true, live = false } = {}) {
+  let data = await api("/api/state");
   const previous = state.data;
+  let keep = null;
+  if (live) {
+    // A poll brings the conversation up to date and nothing else. The text on
+    // screen stays exactly as drawn (unpublished file edits included), and a
+    // change of document, revision or review members is left to the notice.
+    if (!previous || previous.doc !== data.doc || previous.round?.id !== data.round?.id
+        || previous.round?.revision !== data.round?.revision
+        || JSON.stringify(previous.scope?.members) !== JSON.stringify(data.scope?.members)
+        // An answer older than what is drawn: the reader's own send landed while it was in flight.
+        || (data.counts?.events ?? 0) < (previous.counts?.events ?? 0)) return;
+    const text = ["base", "live", "live_digest", "reading", "render", "diff", "format"];
+    data = { ...data, ...Object.fromEntries(text.map(k => [k, previous[k]])) };
+    redrawDocument = false;
+    keep = keepPlace();
+  }
   if (previous && (previous.round?.revision !== data.round?.revision
       || JSON.stringify(previous.scope?.members) !== JSON.stringify(data.scope?.members)) && hasDrafts()) {
     showReviewUpdate({ ...data.review, scope: data.scope });
@@ -2597,7 +2640,8 @@ async function load({ redrawDocument = true } = {}) {
   const goto_diff = Boolean(data.diff && data.diff.available && !data.diff.identical);
   $("roundmeta").classList.toggle("goto", goto_diff);
   $("roundmeta").onclick = goto_diff ? () => setMode("diff") : null;
-  notice(settledNote(data), "info");
+  // A poll leaves a message the reader has not read yet (an error, a hint) alone.
+  if (!live || $("notice").textContent === (settledNote(previous) || "")) notice(settledNote(data), "info");
   if (!$("author").value) $("author").value = data.grant === "share" ? (rememberedName() || "") : data.author;
   $("author").placeholder = data.grant === "share" ? "your name" : "";
   if (data.actor) $("actor").value = data.actor;
@@ -2610,6 +2654,7 @@ async function load({ redrawDocument = true } = {}) {
   if (redrawDocument) draw();
   else { paint(host, shownComments()); drawThreads(); markFocus(); }
   applyView();
+  if (keep) keep();
 }
 
 document.querySelectorAll("#modes button").forEach((element) => {

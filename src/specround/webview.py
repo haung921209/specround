@@ -1320,6 +1320,10 @@ class _Handler(BaseHTTPRequestHandler):
         round_, _ = view.resolve_round(state)
         payload = (view.review or view.store).review_status(view.path, state=state, round_id=round_.id if round_ else None)
         payload["scope"] = view.review.describe(state) if view.review else None
+        # The record count, the same number as the state's ``counts.events``: a
+        # comment, reply or verdict from another page is a record, so a poll that
+        # sees this move knows the threads on screen are behind.
+        payload["events"] = state.count
         self._json(payload)
 
     def _preview(self) -> None:
