@@ -2560,7 +2560,7 @@ let polledEvents = 0;
 let marksStale = false;
 async function checkReview() {
   if (checkingReview || document.hidden || !state.data) return;
-  if (marksStale && !selectedSpan() && !state.frameSpan) { paint($("doc"), shownComments()); markFocus(); }
+  if (marksStale && !docSelection()) { paint($("doc"), shownComments()); markFocus(); }
   const doc = state.doc;
   const revision = state.data.round?.revision;
   checkingReview = true;
@@ -2588,38 +2588,74 @@ async function acceptReviewRevision() {
   await load();
 }
 
+// A focused control is found again after a redraw by what it is: its card (or
+// nearest element with an id), its tag and label, and which of its look-alikes.
+const FOCUSABLE = "button, input, select, textarea, summary, a[href]";
+function focusKey(element) {
+  const card = element.closest(".card[data-comment]");
+  const box = card || element.closest("[id]");
+  if (!box) return null;
+  const like = [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === element.tagName && e.textContent === element.textContent);
+  return { card: card?.dataset.comment, id: card ? null : box.id, tag: element.tagName, text: element.textContent, nth: like.indexOf(element) };
+}
+function focusFind(key) {
+  const box = key.card ? document.querySelector('.card[data-comment="' + key.card + '"]') : document.getElementById(key.id);
+  return box ? [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === key.tag && e.textContent === key.text)[key.nth] : null;
+}
+
+// A selection a repaint of the document would collapse, in any space or mode.
+function docSelection() {
+  const selection = window.getSelection();
+  return Boolean(state.frameSpan) || Boolean(selection && !selection.isCollapsed && selection.rangeCount
+    && selection.getRangeAt(0).intersectsNode($("doc")));
+}
+
 // Where the reader is, so a redraw they did not ask for can put them back: what
-// is at the top of the page, the card at the top of the thread column, and the
-// cursor. Cards are rebuilt, so a card is found again by its comment id.
+// is at the top of the page, the card at the top of the thread column, the
+// inline threads they folded, and the focus and cursor. Cards are rebuilt, so a
+// card is found again by its comment id.
 function keepPlace() {
   const header = document.querySelector("header").getBoundingClientRect().bottom;
   const reading = [...document.querySelectorAll("#composerhome, #inlinefallback .card[data-comment], "
     + "#doc > :not(.inline-thread), #doc .inline-thread .card[data-comment]")]
-    .find(e => e.getBoundingClientRect().bottom > header);
+    .find(e => !e.closest("details:not([open])") && e.getBoundingClientRect().bottom > header);
   const readingId = reading?.dataset.comment;
   const readingTop = reading ? reading.getBoundingClientRect().top : 0;
+  // The source block an inline card hangs off, for when the card itself goes
+  // (resolved elsewhere and hidden).
+  let block = reading?.closest(".inline-thread");
+  while (block && block.matches(".inline-thread, #composer")) block = block.previousElementSibling;
+  const blockTop = block ? block.getBoundingClientRect().top : 0;
+  const shut = [...document.querySelectorAll(".inline-thread:not([open]) .card[data-comment]")].map(e => e.dataset.comment);
   const column = document.querySelector("aside");
   const columnTop = column.getBoundingClientRect().top;
   const card = [...column.querySelectorAll(".card[data-comment]")].find(e => e.getBoundingClientRect().bottom > columnTop);
   const cardId = card?.dataset.comment;
   const cardTop = card ? card.getBoundingClientRect().top : 0;
-  const active = document.activeElement;
-  const typing = active && active.matches("textarea, input, select") ? active : null;
-  const reply = typing && typing.closest(".replybox") ? state.reply.open : null;
-  const [start, end, direction] = typing && typing.selectionStart != null
-    ? [typing.selectionStart, typing.selectionEnd, typing.selectionDirection] : [];
+  const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  const key = active && focusKey(active);
+  const reply = active && active.closest(".replybox") ? state.reply.open : null;
+  const [start, end, direction] = active && active.selectionStart != null
+    ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : [];
   return () => {
-    // A reply box is rebuilt with its card; the composer is moved, not rebuilt.
+    // Folded by the reader, even where a focused comment would open it.
+    shut.forEach((id) => {
+      const group = document.querySelector('.inline-thread .card[data-comment="' + id + '"]')?.closest(".inline-thread");
+      if (group && !group.querySelector(".replybox")) group.open = false;
+    });
+    // A reply box is rebuilt with its card; the composer is moved, not rebuilt;
+    // card buttons and the bars are rebuilt and found again by their key.
     const area = reply && reply === state.reply.open ? document.querySelector(".card .replybox textarea")
-      : typing?.isConnected ? typing : null;
+      : active?.isConnected ? active : key && focusFind(key);
     if (area && document.activeElement !== area) {
       area.focus({ preventScroll: true });
-      if (start != null) area.setSelectionRange(start, end, direction);
+      if (start != null && area.setSelectionRange) area.setSelectionRange(start, end, direction);
     }
     const again = cardId && column.querySelector('.card[data-comment="' + cardId + '"]');
     if (again) column.scrollTop += again.getBoundingClientRect().top - cardTop;
     const read = readingId ? document.querySelector('#doc .card[data-comment="' + readingId + '"], #inlinefallback .card[data-comment="' + readingId + '"]') : reading;
     if (read?.isConnected) window.scrollBy(0, read.getBoundingClientRect().top - readingTop);
+    else if (block?.isConnected) window.scrollBy(0, block.getBoundingClientRect().top - blockTop);
   };
 }
 
@@ -2700,7 +2736,7 @@ async function load({ redrawDocument = true, live = false } = {}) {
   else {
     // Repainting rewrites the text runs and would collapse a selection the reader
     // is about to comment on: the threads update now, the marks once it is gone.
-    if (live && (selectedSpan() || state.frameSpan)) marksStale = true;
+    if (live && docSelection()) marksStale = true;
     else paint(host, shownComments());
     drawThreads(); markFocus();
   }

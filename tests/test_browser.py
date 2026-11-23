@@ -829,6 +829,11 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
                  store.resolve(fillers[0], author="other", actor="human")),
         lambda: (store.reply(fillers[2], author="other", body="a long reply above the reader. " * 40),
                  store.reply(fillers[5], author="other", body="a long reply below the reader's point. " * 40)),
+        lambda: store.reply(fillers[9], author="other", body="step six reply"),
+        lambda: (store.dispose(fillers[10], author="other", verdict="answered", reason="done"),
+                 store.resolve(fillers[10], author="other", actor="human"),
+                 store.add_comment(round_id, author="other", body="growth above the vanished card",
+                                   anchor=store.anchor_in_round(round_id, "Paragraph 66."))),
     ])
     def other_client(handler):
         handler._body()
@@ -939,6 +944,28 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
       await waitFor(() => drawn("a long reply below the reader's point"), 'long reply drawn');
       const now = card5().getBoundingClientRect().top;
       check(Math.abs(now - before) < 2, 'inline card the reader was on moved: ' + before + ' -> ' + now);
+      // A focused thread the reader folded stays folded.
+      const id7 = state.data.comments.find(c => c.body === 'filler 7').id;
+      focus(id7, 'card');
+      check(groupOf('filler 7').open, 'test needs the focused thread open');
+      groupOf('filler 7').open = false;
+      await api('/api/test-other', {});
+      await waitFor(() => drawn('step six reply'), 'step six drawn');
+      check(!groupOf('filler 7').open, 'a thread the reader folded reopened');
+      // The card at the top goes (resolved elsewhere) while an open thread above
+      // it grows: the block the card hung off stays put.
+      check(groupOf('filler 5').open, 'test needs an open thread above');
+      groupOf('filler 10').open = true;
+      const id10 = state.data.comments.find(c => c.body === 'filler 10').id;
+      const card10 = document.querySelector('#doc .card[data-comment="' + id10 + '"]');
+      const head = document.querySelector('header').getBoundingClientRect().bottom;
+      window.scrollBy(0, card10.getBoundingClientRect().top - head - 2);
+      const block = groupOf('filler 10').previousElementSibling;
+      const blockBefore = block.getBoundingClientRect().top;
+      await api('/api/test-other', {});
+      await waitFor(() => state.data.comments.find(c => c.id === id10).resolved, 'resolve arrives');
+      check(Math.abs(block.getBoundingClientRect().top - blockBefore) < 2,
+        'the block under a vanished card moved: ' + blockBefore + ' -> ' + block.getBoundingClientRect().top);
     }
     check(loads === 0, 'the page was reloaded by hand');
     report.textContent = 'PASS';
@@ -953,7 +980,7 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
         url = served.share_url if grant == "share" else served.url
         result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu", f"--window-size={width},900",
                                  f"--user-data-dir={tmp_path / 'browser'}",
-                                 "--dump-dom", "--virtual-time-budget=40000", url],
+                                 "--dump-dom", "--virtual-time-budget=120000", url],
                                 capture_output=True, text=True, timeout=90)
         assert result.returncode == 0, result.stderr[-2500:]
         import re
@@ -974,6 +1001,7 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     round_id = store.open_round(doc, author="test")
     first = store.add_comment(round_id, author="test", body="first thread")
     ReviewStore.for_document(doc.parent / "other.md").open_round(doc.parent / "other.md", author="test")
+    doc.write_text(doc.read_text(encoding="utf-8") + "\nAn unpublished line.\n", encoding="utf-8")
     def other_client(handler):
         handler._body()
         store.reply(first, author="other", body="a reply from elsewhere")
@@ -1039,8 +1067,31 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     check(!marked(), 'test expected the mark to wait for the selection');
     getSelection().removeAllRanges();
     await waitFor(marked, 'mark painted after the selection');
+    // A selection across the base and the live text in diff mode survives too.
+    setMode('diff');
+    const texty = selector => [...document.querySelectorAll(selector)].find(e => e.firstChild?.nodeType === 3 && e.textContent.trim());
+    const base = texty('#doc [data-s]:not([data-space="revision"])');
+    const live = texty('#doc [data-space="revision"]');
+    check(base && live, 'test needs both spaces in diff');
+    const across = document.createRange();
+    across.setStart(base.firstChild, 2); across.setEnd(live.firstChild, live.firstChild.length);
+    getSelection().removeAllRanges(); getSelection().addRange(across);
+    const text = getSelection().toString();
+    check(text && !selectedSpan(), 'test needs a cross-space selection');
+    await api('/api/test-anchored', {});
+    await waitFor(() => state.data.comments.filter(c => c.body === 'anchored elsewhere').length === 2, 'drawn under a diff selection');
+    check(getSelection().toString() === text, 'a diff selection across spaces was lost');
+    getSelection().removeAllRanges();
+    setMode('render');
+    // A focused card button keeps focus when its card is rebuilt.
+    const button = [...document.querySelector('.card[data-comment="' + first + '"]').querySelectorAll('button')].find(b => b.textContent.startsWith('reply'));
+    const label = button.textContent;
+    button.focus();
     await api('/api/test-other', {});
     await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'reply drawn');
+    const now = document.activeElement;
+    check(now !== button && now.tagName === 'BUTTON' && now.textContent === label
+      && now.closest('.card')?.dataset.comment === first, 'the poll dropped focus from a card button');
     // A focused select in the composer (the verdict) keeps focus through a poll redraw.
     disposeBox(state.data.comments.find(c => c.id === first));
     const verdict = document.querySelector('#composer select');
