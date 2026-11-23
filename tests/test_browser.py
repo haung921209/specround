@@ -714,3 +714,75 @@ def test_a_comment_inside_a_folded_block_opens_it(store, doc, monkeypatch, tmp_p
         assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
     finally:
         served.shutdown()
+
+
+def test_a_share_page_asks_for_a_name_once_and_remembers_it(store, doc, monkeypatch, tmp_path):
+    """Prefilling the owner's name on a share page, or forgetting the name, fails this."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to a Chromium/headless-shell executable")
+    store.open_round(doc, author="test")
+    original = webview.page()
+    served = webview.WebView(store=store, path=doc, author="owner", port=0, share_scope="comment")
+    probe = r"""
+<script>
+(async () => {
+  const params = new URLSearchParams(location.search);
+  if (params.has('child')) return;
+  const report = document.createElement('pre'); report.id = 'browser-result';
+  document.body.appendChild(report);
+  const check = (ok, message) => { if (!ok) throw Error(message); };
+  const waitFor = async predicate => {
+    for (let i = 0; i < 500; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw Error('timed out');
+  };
+  const child = async token => {
+    const frame = document.createElement('iframe');
+    frame.src = '/?t=' + token + '&child=1'; document.body.appendChild(frame);
+    await waitFor(() => { try { return frame.contentWindow.eval('state.data'); } catch (_) { return false; } });
+    return frame.contentWindow.document.getElementById('author').value;
+  };
+  try {
+    localStorage.clear();
+    await waitFor(() => state.data);
+    check(document.getElementById('author').value === '', 'share page prefilled a name');
+    let asked = 0;
+    window.prompt = () => { asked += 1; return 'carol'; };
+    commentBox(null);
+    document.querySelector('#composer textarea').value = 'first';
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => state.data.comments.some(c => c.body === 'first'));
+    check(state.data.comments.find(c => c.body === 'first').author === 'carol', 'prompted name not sent');
+    check(document.getElementById('author').value === 'carol', 'name not shown after prompt');
+    commentBox(null);
+    document.querySelector('#composer textarea').value = 'second';
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => state.data.comments.some(c => c.body === 'second'));
+    check(asked === 1, 'asked for a name twice');
+    check(await child('SHARE') === 'carol', 'name not remembered across a reload');
+    const box = document.getElementById('author');
+    box.value = 'dave'; box.dispatchEvent(new Event('change'));
+    check(await child('SHARE') === 'dave', 'changed name not remembered');
+    check(await child('OWNER') === 'owner', 'owner page took the remembered share name');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>
+"""
+    served.start()
+    probe = probe.replace("SHARE", served.share_token).replace("OWNER", served.token)
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    try:
+        result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu",
+                                 f"--user-data-dir={tmp_path / 'browser'}",
+                                 "--dump-dom", "--virtual-time-budget=15000", served.share_url],
+                                capture_output=True, text=True, timeout=35)
+        assert result.returncode == 0, result.stderr
+        import re
+        outcome = re.search(r'<pre id="browser-result">(.*?)</pre>', result.stdout, re.S)
+        assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
+    finally:
+        served.shutdown()

@@ -813,6 +813,29 @@ function visibleComments(comments, showResolved) {
 
 const VIEW_KEY = "specround.view";
 
+// The name a share page speaks under. A share is somebody other than the owner,
+// so the page starts empty, asks once, and remembers the answer in this browser.
+// A stored empty string means "asked and declined": the server then names the
+// comment after the address it came from, and the page does not ask again.
+const NAME_KEY = "specround.author";
+
+function rememberedName() {
+  try { return window.localStorage.getItem(NAME_KEY); } catch (error) { return null; }
+}
+
+function rememberName(name) {
+  try { window.localStorage.setItem(NAME_KEY, name); } catch (error) { return; }
+}
+
+function speaker() {
+  const box = $("author");
+  if (state.data?.grant === "share" && !box.value.trim() && rememberedName() === null) {
+    box.value = (window.prompt("Your name for comments (leave blank to stay a guest)") || "").trim();
+    rememberName(box.value);
+  }
+  return box.value;
+}
+
 // The layout as it has always looked, and the bounds a drag may not leave. The
 // floors are not taste: a bar narrower than the badges it lists, or a thread
 // column narrower than a card, is a column that has been folded without saying
@@ -1999,7 +2022,7 @@ function commentBox(span) {
   const actions = document.createElement("div");
   actions.className = "acts";
   actions.appendChild(button("add comment", async () => {
-    const body = { ...basis, body: area.value, author: $("author").value, whole: !span };
+    const body = { ...basis, body: area.value, author: speaker(), whole: !span };
     if (span) Object.assign(body, { space: span.space, start: span.start, end: span.end, quote: span.quote });
     await act(body, "/api/comment", clearComposer);
   }, true));
@@ -2073,7 +2096,7 @@ async function sendReply(comment, body) {
   // fix, `act` shows it, and the draft is still there to send once the thread is
   // reopened.
   state.reply = replyAfter(state.reply, { kind: "discard", id: comment.id });
-  const sent = await act({ target: comment.id, body, author: $("author").value }, "/api/reply");
+  const sent = await act({ target: comment.id, body, author: speaker() }, "/api/reply");
   if (sent) return;
   state.reply = replyAfter(state.reply, { kind: "open", id: comment.id });
   state.reply = replyAfter(state.reply, { kind: "type", id: comment.id, text: body });
@@ -2572,7 +2595,8 @@ async function load({ redrawDocument = true } = {}) {
   $("roundmeta").classList.toggle("goto", goto_diff);
   $("roundmeta").onclick = goto_diff ? () => setMode("diff") : null;
   notice(settledNote(data), "info");
-  if (!$("author").value) $("author").value = data.author;
+  if (!$("author").value) $("author").value = data.grant === "share" ? (rememberedName() || "") : data.author;
+  $("author").placeholder = data.grant === "share" ? "your name" : "";
   if (data.actor) $("actor").value = data.actor;
   drawFiles();
   // The mode came from whichever document was up before this one and may not
@@ -2643,10 +2667,11 @@ $("float").addEventListener("mousedown", (event) => {
 window.addEventListener("message", frameMessage);
 document.addEventListener("selectionchange", placeFloat);
 $("propose").addEventListener("click", async () => {
-  const body = { ...state.editBasis, text: $("edittext").value, body: $("editwhy").value, author: $("author").value };
+  const body = { ...state.editBasis, text: $("edittext").value, body: $("editwhy").value, author: speaker() };
   if (await act(body, "/api/suggestion")) { stopEditing(); $("editwhy").value = ""; }
 });
 $("editcancel").addEventListener("click", stopEditing);
+$("author").addEventListener("change", () => { if (state.data?.grant === "share") rememberName($("author").value.trim()); });
 
 // Before the first request, so the page is arranged the way it was left before it
 // has anything to put in it — a document that appears at one width and jumps to

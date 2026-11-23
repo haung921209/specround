@@ -2882,3 +2882,41 @@ def test_an_unshared_view_has_no_second_door(view):
 def test_a_share_outside_the_scopes_is_refused(store, doc):
     with pytest.raises(SpecroundError):
         WebView(store=store, path=doc, author="alice", share_scope="write")
+
+
+def test_a_share_is_not_handed_the_owner_name(shared):
+    """A share is someone else, so the page must not start out as the owner."""
+    status, payload = call(shared, "/api/state", token=shared.share_token)
+    assert status == 200
+    assert payload["author"] == ""
+    assert payload["grant"] == "share"
+    status, payload = call(shared, "/api/state")
+    assert payload["author"] == "alice"
+    assert payload["grant"] == "owner"
+
+
+def test_a_nameless_share_comment_is_a_guest_by_address(shared, round_id):
+    status, payload = call(
+        shared, "/api/comment", {"whole": True, "body": "no name"}, token=shared.share_token
+    )
+    assert status == 200
+    assert payload["comment"]["author"] == "guest-127.0.0.1"
+
+
+def test_a_named_share_comment_keeps_its_name(shared, round_id):
+    status, payload = call(
+        shared, "/api/comment", {"whole": True, "body": "named", "author": "bob"}, token=shared.share_token
+    )
+    assert status == 200
+    assert payload["comment"]["author"] == "bob"
+    status, payload = call(
+        shared, "/api/reply", {"target": payload["comment"]["id"], "body": "again"}, token=shared.share_token
+    )
+    assert status == 200
+    assert payload["comment"]["replies"][-1]["author"] == "guest-127.0.0.1"
+
+
+def test_a_nameless_owner_comment_is_still_the_owner(shared, round_id):
+    status, payload = call(shared, "/api/comment", {"whole": True, "body": "mine"})
+    assert status == 200
+    assert payload["comment"]["author"] == "alice"
