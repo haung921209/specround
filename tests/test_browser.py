@@ -814,15 +814,19 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     round_id = store.open_round(doc, author="test")
     first = store.add_comment(round_id, author="test", body="first thread",
                               anchor=store.anchor_in_round(round_id, "Paragraph 60."))
-    for i in range(14):
-        store.add_comment(round_id, author="test", body=f"filler {i}",
-                          anchor=store.anchor_in_round(round_id, f"Paragraph {61 + i}."))
+    fillers = [store.add_comment(round_id, author="test", body=f"filler {i}",
+                                 anchor=store.anchor_in_round(round_id, f"Paragraph {61 + i}."))
+               for i in range(14)]
     steps = iter([
         lambda: (store.add_comment(round_id, author="other", body="from another client",
                                    anchor=store.anchor_in_round(round_id, "Top sentence.")),
                  store.reply(first, author="other", body="another client's reply"),
                  store.dispose(first, author="other", verdict="answered", reason="settled elsewhere")),
         lambda: store.reply(first, author="other", body="second reply while typing"),
+        lambda: store.reply(first, author="other", body="third reply during composition"),
+        lambda: (store.dispose(fillers[0], author="other", verdict="answered", reason="done"),
+                 store.resolve(fillers[0], author="other", actor="human")),
+        lambda: store.reply(fillers[2], author="other", body="a long reply above the reader. " * 40),
     ])
     def other_client(handler):
         handler._body()
@@ -854,6 +858,12 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     document.getElementById('refresh').addEventListener('click', () => { loads += 1; });
     const first = state.data.comments.find(c => c.body === 'first thread').id;
     const aside = document.querySelector('aside');
+    const inline = document.getElementById('layout').classList.contains('inline-comments');
+    const groupOf = body => [...document.querySelectorAll('.inline-thread')].find(g => g.textContent.includes(body));
+    if (inline) groupOf('filler 5').open = true;
+    const actor = document.getElementById('actor');
+    const otherRole = [...actor.options].map(o => o.value).find(v => v !== actor.value);
+    if (otherRole) actor.value = otherRole;
     commentBox(null);
     const draft = document.querySelector('#composer textarea');
     draft.value = 'my unsent comment'; draft.dispatchEvent(new Event('input'));
@@ -869,9 +879,11 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     check(document.querySelector('#composer textarea') === draft && draft.value === 'my unsent comment', 'composer draft lost');
     check(document.activeElement === draft && draft.selectionStart === 3 && draft.selectionEnd === 9, 'composer cursor lost');
     check(Math.abs(anchorTop() - top) < 2, 'reading place moved: ' + top + ' -> ' + anchorTop());
-    if (!document.getElementById('layout').classList.contains('inline-comments')) {
+    if (!inline) {
       check(asideTop > 0 && Math.abs(aside.scrollTop - asideTop) < 2, 'thread column scrolled: ' + asideTop + ' -> ' + aside.scrollTop);
     }
+    if (inline) check(groupOf('filler 5').open, 'an inline thread the reader opened was folded');
+    if (otherRole) check(actor.value === otherRole, 'the poll reset the role the reader chose');
     draft.value = ''; clearComposer();
     openReply(first);
     const typing = document.querySelector('.replybox textarea');
@@ -882,6 +894,37 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     const after = document.querySelector('.replybox textarea');
     check(after && after.value === 'my unsent reply', 'reply draft lost');
     check(document.activeElement === after && after.selectionStart === 4, 'reply cursor lost');
+    // Mid-composition (an IME), the box is not rebuilt; the poll catches up after.
+    after.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+    await api('/api/test-other', {});
+    await new Promise(resolve => setTimeout(resolve, 12000));
+    check(!drawn('third reply during composition') && document.querySelector('.replybox textarea') === after, 'redrawn during composition');
+    after.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true}));
+    await waitFor(() => drawn('third reply during composition'), 'drawn after composition');
+    after.value = ''; after.dispatchEvent(new Event('input'));
+    document.querySelector('.replybox .acts button:last-child').click();
+    // A reply draft on a thread someone else resolves stays on screen.
+    const resolvedId = state.data.comments.find(c => c.body === 'filler 0').id;
+    openReply(resolvedId);
+    const kept = document.querySelector('.replybox textarea');
+    kept.value = 'reply to a thread closing elsewhere'; kept.dispatchEvent(new Event('input')); kept.focus();
+    await api('/api/test-other', {});
+    await waitFor(() => state.data.comments.find(c => c.id === resolvedId).resolved, 'resolve arrives');
+    const still = document.querySelector('.replybox textarea');
+    check(still && still.value === 'reply to a thread closing elsewhere' && document.activeElement === still, 'reply draft hidden with its resolved thread');
+    still.value = ''; still.dispatchEvent(new Event('input'));
+    document.querySelector('.replybox .acts button:last-child').click();
+    if (!inline) {
+      // The card at the top of the thread column stays put when a card above it grows.
+      const cards = [...aside.querySelectorAll('.card[data-comment]')];
+      const target = cards.find(e => e.textContent.includes('filler 6'));
+      aside.scrollTop += target.getBoundingClientRect().top - aside.getBoundingClientRect().top;
+      const before = target.getBoundingClientRect().top;
+      await api('/api/test-other', {});
+      await waitFor(() => drawn('a long reply above the reader'), 'long reply drawn');
+      const now = aside.querySelector('.card[data-comment="' + target.dataset.comment + '"]').getBoundingClientRect().top;
+      check(Math.abs(now - before) < 2, 'thread column card moved: ' + before + ' -> ' + now);
+    }
     check(loads === 0, 'the page was reloaded by hand');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
@@ -897,6 +940,114 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
                                  f"--user-data-dir={tmp_path / 'browser'}",
                                  "--dump-dom", "--virtual-time-budget=40000", url],
                                 capture_output=True, text=True, timeout=90)
+        assert result.returncode == 0, result.stderr[-2500:]
+        import re
+        outcome = re.search(r'<pre id="browser-result">(.*?)</pre>', result.stdout, re.S)
+        assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
+    finally:
+        served.shutdown()
+
+
+def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_path):
+    """A poll answer that drags the page back to the document the reader just
+    left, hides a refused reply's box, or keeps fetching an answer it sets aside
+    fails this."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to a Chromium/headless-shell executable")
+    (doc.parent / "other.md").write_text("# Other\n\nAnother document.\n", encoding="utf-8")
+    round_id = store.open_round(doc, author="test")
+    first = store.add_comment(round_id, author="test", body="first thread")
+    def other_client(handler):
+        handler._body()
+        store.reply(first, author="other", body="a reply from elsewhere")
+        handler._json({"ok": True})
+    monkeypatch.setitem(webview._POSTS, "/api/test-other", other_client)
+    original = webview.page()
+    probe = r"""
+<script>
+(async () => {
+  const report = document.createElement('pre'); report.id = 'browser-result';
+  document.body.appendChild(report);
+  const check = (ok, message) => { if (!ok) throw Error(message); };
+  const waitFor = async (predicate, reason) => {
+    for (let i = 0; i < 1000; i++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw Error('timed out: ' + reason);
+  };
+  try {
+    await waitFor(() => state.data, 'first load');
+    const realApi = api;
+    let states = 0;
+    const held = [];
+    let hold = false, refuse = false;
+    window.api = (path, body, params) => {
+      if (path === '/api/state') states += 1;
+      if (path === '/api/reply' && refuse) return (async () => {
+        await realApi('/api/test-other', {});
+        await load({ live: true });
+        throw Error('refused for the test');
+      })();
+      // Asked now (for the document on screen now), answered when the test says.
+      if (path === '/api/state' && hold) { const answer = realApi(path, body, params); return new Promise(resolve => held.push(() => resolve(answer))); }
+      return realApi(path, body, params);
+    };
+    const first = state.data.comments.find(c => c.body === 'first thread').id;
+    // A focused select in the composer (the verdict) keeps focus through a poll redraw.
+    disposeBox(state.data.comments.find(c => c.id === first));
+    const verdict = document.querySelector('#composer select');
+    verdict.focus();
+    check(document.activeElement === verdict, 'the verdict select took no focus');
+    await api('/api/test-other', {});
+    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'reply drawn');
+    check(document.activeElement === verdict, 'the poll took focus from the verdict select');
+    clearComposer();
+    // A reply refused while a poll redrew the threads keeps its box and text.
+    openReply(first);
+    const box = document.querySelector('.replybox textarea');
+    box.value = 'my reply'; box.dispatchEvent(new Event('input'));
+    refuse = true;
+    await sendReply(state.data.comments.find(c => c.id === first), box.value);
+    refuse = false;
+    const back = document.querySelector('.replybox textarea');
+    check(back && back.value === 'my reply', 'a refused reply lost its box');
+    back.value = ''; back.dispatchEvent(new Event('input'));
+    document.querySelector('.replybox .acts button:last-child').click();
+    // An answer the poll sets aside (here: the review's members changed) is fetched once.
+    await api('/api/test-other', {});
+    state.data.scope = { members: ['changed'] };
+    const before = states;
+    await new Promise(resolve => setTimeout(resolve, 21000));
+    check(states - before === 1, 'a set-aside answer was fetched ' + (states - before) + ' times');
+    state.data.scope = null;
+    // The reader leaves for another document while a poll's answer is in flight.
+    const start = state.doc;
+    hold = true;
+    const poll = load({ live: true });
+    openDocument('other.md');
+    hold = false;
+    held.shift()();
+    await poll;
+    check(state.doc === 'other.md', 'the poll took the reader back to ' + state.doc);
+    held.shift()();
+    await waitFor(() => state.data.doc === 'other.md', 'other document drawn');
+    check(start !== 'other.md', 'test started on the wrong document');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>
+"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="owner", port=0,
+                             workspace=Workspace(doc.parent), doc=doc.name)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu", "--window-size=1440,900",
+                                 f"--user-data-dir={tmp_path / 'browser'}",
+                                 "--dump-dom", "--virtual-time-budget=60000", served.url],
+                                capture_output=True, text=True, timeout=120)
         assert result.returncode == 0, result.stderr[-2500:]
         import re
         outcome = re.search(r'<pre id="browser-result">(.*?)</pre>', result.stdout, re.S)

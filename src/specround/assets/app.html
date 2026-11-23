@@ -1018,7 +1018,12 @@ function shownComments() {
   // themselves: the rule lives in `visibleComments`, and this is the single
   // place the rule meets the control, so the column and the document cannot end
   // up answering to two different readings of the same tick.
-  return visibleComments(state.data.comments, $("showresolved").checked);
+  //
+  // Except a thread the reader is replying to: resolved by someone else while
+  // the box is open, it would take the draft off the screen with it.
+  const shown = new Set(visibleComments(state.data.comments, $("showresolved").checked));
+  return state.data.comments.filter((c) => shown.has(c)
+    || state.reply.open === c.id || (state.reply.drafts[c.id] || "").trim());
 }
 
 // -- painting anchors ------------------------------------------------------
@@ -1737,6 +1742,8 @@ function drawThreads() {
   // inside the handler rather than drawing an empty column.
   if (!data) return;
   $("composerhome").appendChild($("composer"));
+  // Which inline groups the reader opened, before the groups go.
+  const opened = openedThreads();
   document.querySelectorAll(".inline-thread").forEach(e => e.remove());
   $("fallbackthreads").textContent = "";
   const shown = shownComments();
@@ -1755,11 +1762,11 @@ function drawThreads() {
                 : "No comments yet. Select text in any mode, or click a line "
                   + "number in raw or diff, to leave one.")
       + "</p>";
-    arrangeComments();
+    arrangeComments(opened);
     return;
   }
   shown.forEach((comment) => host.appendChild(card(comment)));
-  arrangeComments();
+  arrangeComments(opened);
 }
 
 function inlineComments() {
@@ -1786,10 +1793,13 @@ function sourceBlock(span) {
   return block.parentElement === $("doc") ? block : null;
 }
 
-function arrangeComments() {
+function openedThreads() {
+  return new Set([...document.querySelectorAll(".inline-thread[open] .card")].map(e => e.dataset.comment));
+}
+
+function arrangeComments(opened = openedThreads()) {
   if (!state.data) return;
   const active = document.activeElement;
-  const opened = new Set([...document.querySelectorAll(".inline-thread[open] .card")].map(e => e.dataset.comment));
   const cards = [...document.querySelectorAll(".card[data-comment]")];
   $("composerhome").appendChild($("composer"));
   cards.forEach(e => $("threads").appendChild(e));
@@ -2103,6 +2113,8 @@ async function sendReply(comment, body) {
   if (sent) return;
   state.reply = replyAfter(state.reply, { kind: "open", id: comment.id });
   state.reply = replyAfter(state.reply, { kind: "type", id: comment.id, text: body });
+  // A poll may have redrawn the threads while the request was out, without the box.
+  if (!document.querySelector(".card .replybox textarea")) { drawThreads(); focusReply(); }
 }
 
 function disposeBox(comment, finish = false) {
@@ -2533,8 +2545,16 @@ function showReviewUpdate(review) {
 }
 
 let checkingReview = false;
+// An IME composition is cut short by any redraw of the box it is in, so a poll
+// waits until the reader has finished the character.
+let composing = false;
+document.addEventListener("compositionstart", () => { composing = true; });
+document.addEventListener("compositionend", () => { composing = false; });
+// The record count the threads on screen were last brought up to, by a load or
+// by a poll whose answer was set aside for the notice; once per count either way.
+let polledEvents = 0;
 async function checkReview() {
-  if (checkingReview || document.hidden || !state.data) return;
+  if (checkingReview || document.hidden || !state.data || composing) return;
   const doc = state.doc;
   const revision = state.data.round?.revision;
   checkingReview = true;
@@ -2544,7 +2564,11 @@ async function checkReview() {
     showReviewUpdate(review);
     // Same revision, more records: someone else commented, replied or disposed.
     // A new revision is still the reader's call, through the notice above.
-    if (review.revision === revision && review.events !== state.data.counts?.events) await load({ live: true });
+    const seen = Math.max(state.data.counts?.events ?? 0, polledEvents);
+    if (review.revision === revision && review.events > seen) {
+      await load({ live: true });
+      polledEvents = review.events;
+    }
   } catch (error) {
     // A stopped/restarting local server must not erase a draft or interrupt reading.
     console.debug("Review update check failed:", error);
@@ -2560,34 +2584,44 @@ async function acceptReviewRevision() {
 }
 
 // Where the reader is, so a redraw they did not ask for can put them back: the
-// paragraph at the top of the page and the cursor. The columns keep their own
-// scroll: their contents are swapped without a layout in between.
+// paragraph at the top of the page, the card at the top of the thread column,
+// and the cursor.
 function keepPlace() {
   const header = document.querySelector("header").getBoundingClientRect().bottom;
   const reading = [...$("doc").children].find(e => !e.matches(".inline-thread, #composer")
     && e.getBoundingClientRect().bottom > header);
   const readingTop = reading ? reading.getBoundingClientRect().top : 0;
+  const column = document.querySelector("aside");
+  const columnTop = column.getBoundingClientRect().top;
+  const card = [...column.querySelectorAll(".card[data-comment]")].find(e => e.getBoundingClientRect().bottom > columnTop);
+  const cardId = card?.dataset.comment;
+  const cardTop = card ? card.getBoundingClientRect().top : 0;
   const active = document.activeElement;
-  const typing = active && active.matches("textarea, input") ? active : null;
+  const typing = active && active.matches("textarea, input, select") ? active : null;
   const reply = typing && typing.closest(".replybox") ? state.reply.open : null;
   const [start, end] = typing && typing.selectionStart != null ? [typing.selectionStart, typing.selectionEnd] : [];
   return () => {
     // A reply box is rebuilt with its card; the composer is moved, not rebuilt.
     const area = reply && reply === state.reply.open ? document.querySelector(".card .replybox textarea")
       : typing?.isConnected ? typing : null;
-    if (area) {
+    if (area && document.activeElement !== area) {
       area.focus({ preventScroll: true });
       if (start != null) area.setSelectionRange(start, end);
     }
+    const again = cardId && column.querySelector('.card[data-comment="' + cardId + '"]');
+    if (again) column.scrollTop += again.getBoundingClientRect().top - cardTop;
     if (reading?.isConnected) window.scrollBy(0, reading.getBoundingClientRect().top - readingTop);
   };
 }
 
 async function load({ redrawDocument = true, live = false } = {}) {
+  const asked = state.doc;
   let data = await api("/api/state");
   const previous = state.data;
   let keep = null;
   if (live) {
+    // The reader moved to another document while this was in flight; that load draws.
+    if (state.doc !== asked) return;
     // A poll brings the conversation up to date and nothing else. The text on
     // screen stays exactly as drawn (unpublished file edits included), and a
     // change of document, revision or review members is left to the notice.
@@ -2642,9 +2676,10 @@ async function load({ redrawDocument = true, live = false } = {}) {
   $("roundmeta").onclick = goto_diff ? () => setMode("diff") : null;
   // A poll leaves a message the reader has not read yet (an error, a hint) alone.
   if (!live || $("notice").textContent === (settledNote(previous) || "")) notice(settledNote(data), "info");
-  if (!$("author").value) $("author").value = data.grant === "share" ? (rememberedName() || "") : data.author;
+  // A poll leaves the name and role alone: the reader may be changing them.
+  if (!live && !$("author").value) $("author").value = data.grant === "share" ? (rememberedName() || "") : data.author;
   $("author").placeholder = data.grant === "share" ? "your name" : "";
-  if (data.actor) $("actor").value = data.actor;
+  if (!live && data.actor) $("actor").value = data.actor;
   drawFiles();
   // The mode came from whichever document was up before this one and may not
   // survive the move (H15), so it is settled before anything draws.
