@@ -890,12 +890,13 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     openReply(first);
     const typing = document.querySelector('.replybox textarea');
     typing.value = 'my unsent reply'; typing.dispatchEvent(new Event('input'));
-    typing.focus(); typing.setSelectionRange(4, 4);
+    typing.focus(); typing.setSelectionRange(2, 6, 'backward');
     await api('/api/test-other', {});
     await waitFor(() => drawn('second reply while typing'), 'second reply drawn');
     const after = document.querySelector('.replybox textarea');
     check(after && after.value === 'my unsent reply', 'reply draft lost');
-    check(document.activeElement === after && after.selectionStart === 4, 'reply cursor lost');
+    check(document.activeElement === after && after.selectionStart === 2 && after.selectionEnd === 6
+      && after.selectionDirection === 'backward', 'reply selection lost');
     // Mid-composition (an IME), the box is not rebuilt; the poll catches up after.
     after.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
     await api('/api/test-other', {});
@@ -982,8 +983,14 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
         other = ReviewStore.for_document(doc.parent / "other.md")
         other.add_comment(other.latest_round(doc.parent / "other.md").id, author="other", body="on the other document")
         handler._json({"ok": True})
+    def anchored(handler):
+        handler._body()
+        store.add_comment(round_id, author="other", body="anchored elsewhere",
+                          anchor=store.anchor_in_round(round_id, "30 seconds"))
+        handler._json({"ok": True})
     monkeypatch.setitem(webview._POSTS, "/api/test-other", other_client)
     monkeypatch.setitem(webview._POSTS, "/api/test-other-doc", other_document)
+    monkeypatch.setitem(webview._POSTS, "/api/test-anchored", anchored)
     original = webview.page()
     probe = r"""
 <script>
@@ -1016,18 +1023,24 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
       return realApi(path, body, params);
     };
     const first = state.data.comments.find(c => c.body === 'first thread').id;
-    // A text selection about to become a comment is not repainted away.
+    // A text selection about to become a comment is not repainted away: the
+    // threads update at once, the marks once the selection is gone.
     const holder = document.querySelector('#doc [data-s]');
     const range = document.createRange(); range.selectNodeContents(holder);
     getSelection().removeAllRanges(); getSelection().addRange(range);
     const chosen = selectedSpan();
     check(chosen, 'test could not select text');
-    await api('/api/test-other', {});
-    check(await load({ live: true }) === false, 'a poll repainted under a text selection');
+    await api('/api/test-anchored', {});
+    await waitFor(() => [...document.querySelectorAll('.card')].some(e => e.textContent.includes('anchored elsewhere')), 'thread drawn under a selection');
     const after = selectedSpan();
     check(after && after.start === chosen.start && after.end === chosen.end, 'the selection was lost');
+    const anchoredId = state.data.comments.find(c => c.body === 'anchored elsewhere').id;
+    const marked = () => [...document.querySelectorAll('#doc mark.anch')].some(m => m.dataset.comments.split(' ').includes(anchoredId));
+    check(!marked(), 'test expected the mark to wait for the selection');
     getSelection().removeAllRanges();
-    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'drawn after the selection');
+    await waitFor(marked, 'mark painted after the selection');
+    await api('/api/test-other', {});
+    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'reply drawn');
     // A focused select in the composer (the verdict) keeps focus through a poll redraw.
     disposeBox(state.data.comments.find(c => c.id === first));
     const verdict = document.querySelector('#composer select');
@@ -1101,7 +1114,7 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     try:
         result = subprocess.run([browser, "--no-sandbox", "--headless", "--disable-gpu", "--window-size=1440,900",
                                  f"--user-data-dir={tmp_path / 'browser'}",
-                                 "--dump-dom", "--virtual-time-budget=60000", served.url],
+                                 "--dump-dom", "--virtual-time-budget=120000", served.url],
                                 capture_output=True, text=True, timeout=120)
         assert result.returncode == 0, result.stderr[-2500:]
         import re

@@ -1029,6 +1029,7 @@ function shownComments() {
 // -- painting anchors ------------------------------------------------------
 
 function paint(container, comments) {
+  marksStale = false;
   framePaint(comments);
   // Repainting reuses text runs: generated insertion carets are not source text.
   container.querySelectorAll(".caret").forEach((element) => element.remove());
@@ -2555,8 +2556,11 @@ document.addEventListener("compositionend", () => { composing = false; });
 // Reset by every other load: another document may live in another store, with
 // a count of its own.
 let polledEvents = 0;
+// Marks a poll left unpainted because a selection was up (see `load`).
+let marksStale = false;
 async function checkReview() {
   if (checkingReview || document.hidden || !state.data) return;
+  if (marksStale && !selectedSpan() && !state.frameSpan) { paint($("doc"), shownComments()); markFocus(); }
   const doc = state.doc;
   const revision = state.data.round?.revision;
   checkingReview = true;
@@ -2602,14 +2606,15 @@ function keepPlace() {
   const active = document.activeElement;
   const typing = active && active.matches("textarea, input, select") ? active : null;
   const reply = typing && typing.closest(".replybox") ? state.reply.open : null;
-  const [start, end] = typing && typing.selectionStart != null ? [typing.selectionStart, typing.selectionEnd] : [];
+  const [start, end, direction] = typing && typing.selectionStart != null
+    ? [typing.selectionStart, typing.selectionEnd, typing.selectionDirection] : [];
   return () => {
     // A reply box is rebuilt with its card; the composer is moved, not rebuilt.
     const area = reply && reply === state.reply.open ? document.querySelector(".card .replybox textarea")
       : typing?.isConnected ? typing : null;
     if (area && document.activeElement !== area) {
       area.focus({ preventScroll: true });
-      if (start != null) area.setSelectionRange(start, end);
+      if (start != null) area.setSelectionRange(start, end, direction);
     }
     const again = cardId && column.querySelector('.card[data-comment="' + cardId + '"]');
     if (again) column.scrollTop += again.getBoundingClientRect().top - cardTop;
@@ -2625,10 +2630,8 @@ async function load({ redrawDocument = true, live = false } = {}) {
   let keep = null;
   if (live) {
     // The reader moved to another document while this was in flight (that load
-    // draws), or is in the middle of something a repaint would undo: an IME
-    // composition, or a text selection about to become a comment. The next poll
-    // tries again.
-    if (state.doc !== asked || composing || selectedSpan() || state.frameSpan) return false;
+    // draws), or is composing with an IME (the next poll tries again).
+    if (state.doc !== asked || composing) return false;
     // A poll brings the conversation up to date and nothing else. The text on
     // screen stays exactly as drawn (unpublished file edits included), and a
     // change of document, revision or review members is left to the notice.
@@ -2694,7 +2697,13 @@ async function load({ redrawDocument = true, live = false } = {}) {
   renderControls();
   const host = $("doc");
   if (redrawDocument) draw();
-  else { paint(host, shownComments()); drawThreads(); markFocus(); }
+  else {
+    // Repainting rewrites the text runs and would collapse a selection the reader
+    // is about to comment on: the threads update now, the marks once it is gone.
+    if (live && (selectedSpan() || state.frameSpan)) marksStale = true;
+    else paint(host, shownComments());
+    drawThreads(); markFocus();
+  }
   applyView();
   if (keep) keep();
   else polledEvents = 0;
