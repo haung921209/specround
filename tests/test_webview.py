@@ -2929,3 +2929,35 @@ def test_a_share_comment_with_no_usable_name_is_a_guest(shared, round_id, given)
     )
     assert status == 200
     assert payload["comment"]["author"] == "guest-127.0.0.1"
+
+
+def test_a_nameless_share_suggestion_is_a_guest(shared, round_id, doc_text):
+    proposed = doc_text.replace("30 seconds", "60 seconds")
+    status, payload = call(shared, "/api/suggestion", {"text": proposed}, token=shared.share_token)
+    assert status == 200
+    assert payload["comment"]["author"] == "guest-127.0.0.1"
+
+
+def test_a_share_moving_through_a_tree_stays_a_guest(tmp_path, clock):
+    """Every document a tree share reaches is answered and written as the share."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    for name in ("a.md", "b.md"):
+        (root / name).write_text(f"# {name}\n\nProse.\n", encoding="utf-8")
+    space = Workspace(root=root, clock=clock)
+    space.store_for(root / "b.md").open_round(root / "b.md", author="alice")
+    served = WebView(store=space.store_for(root / "a.md"), path=root / "a.md", author="alice",
+                     port=0, workspace=space, doc="a.md", share_scope="comment")
+    served.start()
+    try:
+        status, payload = call(served, "/api/state", token=served.share_token, params={"doc": "b.md"})
+        assert status == 200
+        assert (payload["author"], payload["grant"]) == ("", "share")
+        status, payload = call(served, "/api/comment", {"whole": True, "body": "on b", "doc": "b.md"},
+                               token=served.share_token)
+        assert status == 200
+        assert payload["comment"]["author"] == "guest-127.0.0.1"
+        status, payload = call(served, "/api/comment", {"whole": True, "body": "owner on b", "doc": "b.md"})
+        assert payload["comment"]["author"] == "alice"
+    finally:
+        served.shutdown()
