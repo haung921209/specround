@@ -2553,9 +2553,14 @@ function showReviewUpdate(review) {
 let checkingReview = false;
 // An IME composition is cut short by any redraw of the box it is in, so a poll
 // answer is set aside until the reader has finished the character (see `load`).
+// Not forever: a Korean IME holds the last syllable open while the reader
+// pauses, so after COMPOSE_WAIT the update lands anyway (the text so far is in
+// the draft; only the open syllable is committed early).
 let composing = false;
+let composeHeldSince = 0;
+const COMPOSE_WAIT = 15000;
 document.addEventListener("compositionstart", () => { composing = true; });
-document.addEventListener("compositionend", () => { composing = false; });
+document.addEventListener("compositionend", () => { composing = false; composeHeldSince = 0; });
 // The record count the threads on screen were last brought up to, by a load or
 // by a poll whose answer was set aside for the notice; once per count either way.
 // Reset by every other load: another document may live in another store, with
@@ -2572,7 +2577,11 @@ async function checkReview() {
   try {
     const review = await api("/api/review");
     if (doc !== state.doc || revision !== state.data?.round?.revision) return;
+    // The notice bar sits above the document: showing or hiding it must not
+    // move what the reader is looking at.
+    const keep = keepPlace();
     showReviewUpdate(review);
+    keep();
     // Same revision, more records: someone else commented, replied or disposed.
     // A new revision is still the reader's call, through the notice above.
     const seen = Math.max(state.data.counts?.events ?? 0, polledEvents);
@@ -2678,7 +2687,15 @@ async function load({ redrawDocument = true, live = false } = {}) {
   if (live) {
     // The reader moved to another document while this was in flight (that load
     // draws), or is composing with an IME (the next poll tries again).
-    if (state.doc !== asked || composing) return false;
+    if (state.doc !== asked) return false;
+    if (composing) {
+      composeHeldSince ||= Date.now();
+      if (Date.now() - composeHeldSince < COMPOSE_WAIT) return false;
+      // The redraw below ends the composition: its box is replaced, and the
+      // compositionend the IME sends lands on a box no longer in the page.
+      composing = false;
+    }
+    composeHeldSince = 0;
     // A poll brings the conversation up to date and nothing else. The text on
     // screen stays exactly as drawn (unpublished file edits included), and a
     // change of document, revision or review members is left to the notice.

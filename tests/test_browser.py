@@ -819,7 +819,9 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
                                  anchor=store.anchor_in_round(round_id, f"Paragraph {61 + i}."))
                for i in range(14)]
     steps = iter([
-        lambda: (store.add_comment(round_id, author="other", body="from another client",
+        # The file also changes on disk, so the review notice bar appears in the same poll.
+        lambda: (doc.write_text(doc.read_text(encoding="utf-8") + "\nAn unpublished line.\n", encoding="utf-8"),
+                 store.add_comment(round_id, author="other", body="from another client",
                                    anchor=store.anchor_in_round(round_id, "Top sentence.")),
                  store.reply(first, author="other", body="another client's reply"),
                  store.dispose(first, author="other", verdict="answered", reason="settled elsewhere")),
@@ -885,6 +887,7 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     check(state.data.comments.find(c => c.id === first).verdict === 'answered', 'verdict not refreshed');
     check(document.querySelector('#composer textarea') === draft && draft.value === 'my unsent comment', 'composer draft lost');
     check(document.activeElement === draft && draft.selectionStart === 3 && draft.selectionEnd === 9, 'composer cursor lost');
+    check(!document.getElementById('reviewnotice').hidden, 'test needs the notice bar to appear in this poll');
     check(Math.abs(anchorTop() - top) < 2, 'reading place moved: ' + top + ' -> ' + anchorTop());
     if (!inline) {
       check(asideTop > 0 && Math.abs(aside.scrollTop - asideTop) < 2, 'thread column scrolled: ' + asideTop + ' -> ' + aside.scrollTop);
@@ -910,9 +913,12 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     await api('/api/test-other', {});
     await new Promise(resolve => setTimeout(resolve, 12000));
     check(!drawn('third reply during composition') && document.querySelector('.replybox textarea') === after, 'redrawn during composition');
+    // A composition left open (a paused Korean syllable) does not hold updates forever.
+    await waitFor(() => drawn('third reply during composition'), 'drawn after the composition wait');
+    check(document.querySelector('.replybox textarea')?.value === 'my unsent reply', 'reply draft lost after the composition wait');
     after.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true}));
-    await waitFor(() => drawn('third reply during composition'), 'drawn after composition');
-    after.value = ''; after.dispatchEvent(new Event('input'));
+    const open = document.querySelector('.replybox textarea');
+    open.value = ''; open.dispatchEvent(new Event('input'));
     document.querySelector('.replybox .acts button:last-child').click();
     // A reply draft on a thread someone else resolves stays on screen.
     const resolvedId = state.data.comments.find(c => c.body === 'filler 0').id;
