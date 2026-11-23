@@ -2584,13 +2584,15 @@ async function acceptReviewRevision() {
   await load();
 }
 
-// Where the reader is, so a redraw they did not ask for can put them back: the
-// paragraph at the top of the page, the card at the top of the thread column,
-// and the cursor.
+// Where the reader is, so a redraw they did not ask for can put them back: what
+// is at the top of the page, the card at the top of the thread column, and the
+// cursor. Cards are rebuilt, so a card is found again by its comment id.
 function keepPlace() {
   const header = document.querySelector("header").getBoundingClientRect().bottom;
-  const reading = [...$("doc").children].find(e => !e.matches(".inline-thread, #composer")
-    && e.getBoundingClientRect().bottom > header);
+  const reading = [...document.querySelectorAll("#composerhome, #inlinefallback .card[data-comment], "
+    + "#doc > :not(.inline-thread), #doc .inline-thread .card[data-comment]")]
+    .find(e => e.getBoundingClientRect().bottom > header);
+  const readingId = reading?.dataset.comment;
   const readingTop = reading ? reading.getBoundingClientRect().top : 0;
   const column = document.querySelector("aside");
   const columnTop = column.getBoundingClientRect().top;
@@ -2611,7 +2613,8 @@ function keepPlace() {
     }
     const again = cardId && column.querySelector('.card[data-comment="' + cardId + '"]');
     if (again) column.scrollTop += again.getBoundingClientRect().top - cardTop;
-    if (reading?.isConnected) window.scrollBy(0, reading.getBoundingClientRect().top - readingTop);
+    const read = readingId ? document.querySelector('#doc .card[data-comment="' + readingId + '"], #inlinefallback .card[data-comment="' + readingId + '"]') : reading;
+    if (read?.isConnected) window.scrollBy(0, read.getBoundingClientRect().top - readingTop);
   };
 }
 
@@ -2622,8 +2625,10 @@ async function load({ redrawDocument = true, live = false } = {}) {
   let keep = null;
   if (live) {
     // The reader moved to another document while this was in flight (that load
-    // draws), or started an IME composition (the next poll tries again).
-    if (state.doc !== asked || composing) return false;
+    // draws), or is in the middle of something a repaint would undo: an IME
+    // composition, or a text selection about to become a comment. The next poll
+    // tries again.
+    if (state.doc !== asked || composing || selectedSpan() || state.frameSpan) return false;
     // A poll brings the conversation up to date and nothing else. The text on
     // screen stays exactly as drawn (unpublished file edits included), and a
     // change of document, revision or review members is left to the notice.

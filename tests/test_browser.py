@@ -827,7 +827,8 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
         lambda: store.reply(first, author="other", body="third reply during composition"),
         lambda: (store.dispose(fillers[0], author="other", verdict="answered", reason="done"),
                  store.resolve(fillers[0], author="other", actor="human")),
-        lambda: store.reply(fillers[2], author="other", body="a long reply above the reader. " * 40),
+        lambda: (store.reply(fillers[2], author="other", body="a long reply above the reader. " * 40),
+                 store.reply(fillers[5], author="other", body="a long reply below the reader's point. " * 40)),
     ])
     def other_client(handler):
         handler._body()
@@ -925,6 +926,18 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
       await waitFor(() => drawn('a long reply above the reader'), 'long reply drawn');
       const now = aside.querySelector('.card[data-comment="' + target.dataset.comment + '"]').getBoundingClientRect().top;
       check(Math.abs(now - before) < 2, 'thread column card moved: ' + before + ' -> ' + now);
+    } else {
+      // Reading a card inside an inline thread: it stays put when that card grows below the reader's point.
+      const id5 = state.data.comments.find(c => c.body === 'filler 5').id;
+      const card5 = () => document.querySelector('#doc .card[data-comment="' + id5 + '"]');
+      check(groupOf('filler 5').open, 'test needs the filler 5 thread open');
+      const header = document.querySelector('header').getBoundingClientRect().bottom;
+      window.scrollBy(0, card5().getBoundingClientRect().top - header - 2);
+      const before = card5().getBoundingClientRect().top;
+      await api('/api/test-other', {});
+      await waitFor(() => drawn("a long reply below the reader's point"), 'long reply drawn');
+      const now = card5().getBoundingClientRect().top;
+      check(Math.abs(now - before) < 2, 'inline card the reader was on moved: ' + before + ' -> ' + now);
     }
     check(loads === 0, 'the page was reloaded by hand');
     report.textContent = 'PASS';
@@ -1003,13 +1016,25 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
       return realApi(path, body, params);
     };
     const first = state.data.comments.find(c => c.body === 'first thread').id;
+    // A text selection about to become a comment is not repainted away.
+    const holder = document.querySelector('#doc [data-s]');
+    const range = document.createRange(); range.selectNodeContents(holder);
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+    const chosen = selectedSpan();
+    check(chosen, 'test could not select text');
+    await api('/api/test-other', {});
+    check(await load({ live: true }) === false, 'a poll repainted under a text selection');
+    const after = selectedSpan();
+    check(after && after.start === chosen.start && after.end === chosen.end, 'the selection was lost');
+    getSelection().removeAllRanges();
+    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'drawn after the selection');
     // A focused select in the composer (the verdict) keeps focus through a poll redraw.
     disposeBox(state.data.comments.find(c => c.id === first));
     const verdict = document.querySelector('#composer select');
     verdict.focus();
     check(document.activeElement === verdict, 'the verdict select took no focus');
     await api('/api/test-other', {});
-    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 1, 'reply drawn');
+    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 2, 'reply drawn');
     check(document.activeElement === verdict, 'the poll took focus from the verdict select');
     clearComposer();
     // A reply refused while a poll redrew the threads keeps its box and text.
