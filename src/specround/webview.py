@@ -1202,6 +1202,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.query = query
         token = (query.get("t") or [None])[0] or self.headers.get("X-Specround-Token")
         grant = self.view.grant(token, self.headers.get("Origin"))
+        self.grant = grant
         if not grant:
             # Deliberately the same answer for a wrong token and a wrong origin:
             # this is not an account, and telling a caller which half it failed
@@ -1304,7 +1305,14 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, page(), "text/html; charset=utf-8")
 
     def _state(self) -> None:
-        self._json(self.view.select(self.named_doc).state_payload())
+        payload = self.view.select(self.named_doc).state_payload()
+        payload["grant"] = self.grant
+        if self.grant == "share":
+            # The launcher's name is the owner's. A page opened through a share
+            # is somebody else, and prefilling the owner's name made every room
+            # comment look like the owner's own.
+            payload["author"] = ""
+        self._json(payload)
 
     def _review(self) -> None:
         view = self.view.select(self.named_doc)
@@ -1367,6 +1375,11 @@ class _Handler(BaseHTTPRequestHandler):
         if named is not None and not isinstance(named, str):
             raise _usage("'doc' names a document in this workspace and must be a string")
         selected = self.view.select(named or self.named_doc)
+        given = body.get("author")
+        if self.grant == "share" and not (isinstance(given, str) and given.strip()):
+            # A nameless share write is a guest, told apart by where it came
+            # from — never the owner, whose name is the view's fallback.
+            body["author"] = f"guest-{self.client_address[0]}"
         if selected.review and body.get("review_id", selected.review.id) != selected.review.id:
             raise _usage("request review ID does not match this view")
         with writing_via(VIA_VIEW):
