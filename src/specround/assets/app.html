@@ -2092,7 +2092,7 @@ function replyEditor(comment) {
     state.reply = replyAfter(state.reply, { kind: "discard", id: comment.id });
     // A thread kept on screen only for this draft (resolved elsewhere) leaves
     // both surfaces now, its mark as well as its card.
-    const hidden = !visibleComments([comment], $("showresolved").checked).length;
+    const hidden = !shownComments().some((c) => c.id === comment.id);
     if (hidden) paint($("doc"), shownComments());
     drawThreads();
     if (hidden) markFocus();
