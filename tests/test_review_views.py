@@ -63,3 +63,14 @@ def test_selected_member_cannot_be_replaced_with_an_outside_symlink(scoped_views
     status, payload = call(a, "/api/state")
     assert status == 400
     assert "PRIVATE" not in str(payload)
+
+
+def test_review_poll_counts_records_in_a_named_review(scoped_views):
+    """The poll's record count must move when a named review gains a comment,
+    and match the count the page state carries, or an open page never redraws."""
+    _, (a, _) = scoped_views
+    before = call(a, "/api/review")[1]["events"]
+    assert before == state(a)["counts"]["events"]
+    assert call(a, "/api/comment", {"whole": True, "body": "counted"})[0] == 200
+    after = call(a, "/api/review")[1]["events"]
+    assert after > before and after == state(a)["counts"]["events"]

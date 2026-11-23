@@ -925,6 +925,8 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
     check(still && still.value === 'reply to a thread closing elsewhere' && document.activeElement === still, 'reply draft hidden with its resolved thread');
     still.value = ''; still.dispatchEvent(new Event('input'));
     document.querySelector('.replybox .acts button:last-child').click();
+    check(![...document.querySelectorAll('#doc mark.anch')].some(m => m.dataset.comments.split(' ').includes(resolvedId)),
+      'a resolved thread left its mark after the reply was cancelled');
     if (!inline) {
       // The card at the top of the thread column stays put when a card above it grows.
       const cards = [...aside.querySelectorAll('.card[data-comment]')];
@@ -1003,6 +1005,7 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     (doc.parent / "other.md").write_text("# Other\n\nAnother document.\n", encoding="utf-8")
     round_id = store.open_round(doc, author="test")
     first = store.add_comment(round_id, author="test", body="first thread")
+    second = store.add_comment(round_id, author="test", body="second thread")
     ReviewStore.for_document(doc.parent / "other.md").open_round(doc.parent / "other.md", author="test")
     doc.write_text(doc.read_text(encoding="utf-8") + "\nAn unpublished line.\n", encoding="utf-8")
     def other_client(handler):
@@ -1022,6 +1025,11 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     monkeypatch.setitem(webview._POSTS, "/api/test-other", other_client)
     monkeypatch.setitem(webview._POSTS, "/api/test-other-doc", other_document)
     monkeypatch.setitem(webview._POSTS, "/api/test-anchored", anchored)
+    def settle(handler):
+        handler._body()
+        store.dispose(second, author="other", verdict="answered", reason="settled elsewhere")
+        handler._json({"ok": True})
+    monkeypatch.setitem(webview._POSTS, "/api/test-settle", settle)
     original = webview.page()
     probe = r"""
 <script>
@@ -1055,6 +1063,7 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
       return realApi(path, body, params);
     };
     const first = state.data.comments.find(c => c.body === 'first thread').id;
+    const replies = () => state.data.comments.find(c => c.id === first).replies.length;
     // A text selection about to become a comment is not repainted away: the
     // threads update at once, the marks once the selection is gone.
     const holder = document.querySelector('#doc [data-s]');
@@ -1096,16 +1105,34 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     const now = document.activeElement;
     check(now !== button && now.tagName === 'BUTTON' && now.textContent === label
       && now.closest('.card')?.dataset.comment === first, 'the poll dropped focus from a card button');
+    // A focused button whose label the update changes ("dispose" -> "supersede") keeps focus by position.
+    const settling = state.data.comments.find(c => c.body === 'second thread').id;
+    const dispose = [...document.querySelector('.card[data-comment="' + settling + '"]').querySelectorAll('button')].find(b => b.textContent === 'dispose');
+    dispose.focus();
+    await api('/api/test-settle', {});
+    await waitFor(() => state.data.comments.find(c => c.id === settling).settled, 'verdict drawn');
+    check(document.activeElement.textContent === 'supersede'
+      && document.activeElement.closest('.card')?.dataset.comment === settling, 'focus lost when a button was relabelled');
+    // A focused button in an open reply box stays on that button.
+    openReply(first);
+    const cancel = [...document.querySelectorAll('.replybox button')].find(b => b.textContent === 'cancel');
+    cancel.focus();
+    const repliesBefore = replies();
+    await api('/api/test-other', {});
+    await waitFor(() => replies() === repliesBefore + 1, 'drawn with a reply button focused');
+    check(document.activeElement.tagName === 'BUTTON' && document.activeElement.textContent === 'cancel'
+      && document.activeElement.closest('.replybox'), 'focus moved off a reply box button');
+    document.activeElement.click();
     // A focused select in the composer (the verdict) keeps focus through a poll redraw.
     disposeBox(state.data.comments.find(c => c.id === first));
     const verdict = document.querySelector('#composer select');
     verdict.focus();
     check(document.activeElement === verdict, 'the verdict select took no focus');
+    const r0 = replies();
     await api('/api/test-other', {});
-    await waitFor(() => state.data.comments.find(c => c.id === first).replies.length === 2, 'reply drawn');
+    await waitFor(() => replies() === r0 + 1, 'reply drawn');
     check(document.activeElement === verdict, 'the poll took focus from the verdict select');
     clearComposer();
-    const replies = () => state.data.comments.find(c => c.id === first).replies.length;
     // A disposition box keeps its verdict, reason and checkbox through a poll.
     disposeBox(state.data.comments.find(c => c.id === first));
     const choice = document.querySelector('#composer select');

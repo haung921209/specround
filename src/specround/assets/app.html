@@ -2090,7 +2090,12 @@ function replyEditor(comment) {
   actions.appendChild(button("reply", () => sendReply(comment, area.value), true));
   actions.appendChild(button("cancel", () => {
     state.reply = replyAfter(state.reply, { kind: "discard", id: comment.id });
+    // A thread kept on screen only for this draft (resolved elsewhere) leaves
+    // both surfaces now, its mark as well as its card.
+    const hidden = !visibleComments([comment], $("showresolved").checked).length;
+    if (hidden) paint($("doc"), shownComments());
     drawThreads();
+    if (hidden) markFocus();
   }));
   box.appendChild(actions);
   // The card is a click target for focusing the thread; typing in it is not
@@ -2595,12 +2600,18 @@ function focusKey(element) {
   const card = element.closest(".card[data-comment]");
   const box = card || element.closest("[id]");
   if (!box) return null;
-  const like = [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === element.tagName && e.textContent === element.textContent);
-  return { card: card?.dataset.comment, id: card ? null : box.id, tag: element.tagName, text: element.textContent, nth: like.indexOf(element) };
+  const same = [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === element.tagName);
+  const like = same.filter(e => e.textContent === element.textContent);
+  return { card: card?.dataset.comment, id: card ? null : box.id, tag: element.tagName, text: element.textContent,
+           nth: like.indexOf(element), pos: same.indexOf(element) };
 }
 function focusFind(key) {
   const box = key.card ? document.querySelector('.card[data-comment="' + key.card + '"]') : document.getElementById(key.id);
-  return box ? [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === key.tag && e.textContent === key.text)[key.nth] : null;
+  if (!box) return null;
+  const same = [...box.querySelectorAll(FOCUSABLE)].filter(e => e.tagName === key.tag);
+  // By label first; a label the update changed (a settled thread's "dispose"
+  // becoming "supersede") falls back to the same position.
+  return same.filter(e => e.textContent === key.text)[key.nth] || same[key.pos] || null;
 }
 
 // A selection a repaint of the document would collapse, in any space or mode.
@@ -2634,7 +2645,7 @@ function keepPlace() {
   const cardTop = card ? card.getBoundingClientRect().top : 0;
   const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
   const key = active && focusKey(active);
-  const reply = active && active.closest(".replybox") ? state.reply.open : null;
+  const reply = active && active.matches(".replybox textarea") ? state.reply.open : null;
   const [start, end, direction] = active && active.selectionStart != null
     ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : [];
   return () => {
