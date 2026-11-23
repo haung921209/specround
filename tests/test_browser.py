@@ -946,6 +946,20 @@ def test_another_clients_comments_appear_without_reloading(store, doc, monkeypat
       await waitFor(() => drawn('a long reply above the reader'), 'long reply drawn');
       const now = aside.querySelector('.card[data-comment="' + target.dataset.comment + '"]').getBoundingClientRect().top;
       check(Math.abs(now - before) < 2, 'thread column card moved: ' + before + ' -> ' + now);
+      await api('/api/test-other', {});
+      await waitFor(() => drawn('step six reply'), 'step six drawn');
+      // The top card goes (resolved elsewhere) while a card above it is added:
+      // the next card keeps its place.
+      const id10 = state.data.comments.find(c => c.body === 'filler 10').id;
+      const card10 = aside.querySelector('.card[data-comment="' + id10 + '"]');
+      aside.scrollTop += card10.getBoundingClientRect().top - aside.getBoundingClientRect().top + 1;
+      const next = card10.nextElementSibling;
+      const nextId = next.dataset.comment;
+      const nextBefore = next.getBoundingClientRect().top;
+      await api('/api/test-other', {});
+      await waitFor(() => state.data.comments.find(c => c.id === id10).resolved, 'resolve arrives');
+      const nextNow = aside.querySelector('.card[data-comment="' + nextId + '"]').getBoundingClientRect().top;
+      check(Math.abs(nextNow - nextBefore) < 2, 'the card after a vanished top card moved: ' + nextBefore + ' -> ' + nextNow);
     } else {
       // Reading a card inside an inline thread: it stays put when that card grows below the reader's point.
       const id5 = state.data.comments.find(c => c.body === 'filler 5').id;

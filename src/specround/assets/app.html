@@ -2651,9 +2651,11 @@ function keepPlace() {
   const shut = [...document.querySelectorAll(".inline-thread:not([open]) .card[data-comment]")].map(e => e.dataset.comment);
   const column = document.querySelector("aside");
   const columnTop = column.getBoundingClientRect().top;
-  const card = [...column.querySelectorAll(".card[data-comment]")].find(e => e.getBoundingClientRect().bottom > columnTop);
-  const cardId = card?.dataset.comment;
-  const cardTop = card ? card.getBoundingClientRect().top : 0;
+  // The top card and the ones after it, so a top card hidden by someone else's
+  // resolve hands the place to the next one still there.
+  const cards = [...column.querySelectorAll(".card[data-comment]")];
+  const first = cards.findIndex(e => e.getBoundingClientRect().bottom > columnTop);
+  const columnCards = first < 0 ? [] : cards.slice(first).map(e => [e.dataset.comment, e.getBoundingClientRect().top]);
   const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
   const key = active && focusKey(active);
   const reply = active && active.matches(".replybox textarea") ? state.reply.open : null;
@@ -2673,8 +2675,10 @@ function keepPlace() {
       area.focus({ preventScroll: true });
       if (start != null && area.setSelectionRange) area.setSelectionRange(start, end, direction);
     }
-    const again = cardId && column.querySelector('.card[data-comment="' + cardId + '"]');
-    if (again) column.scrollTop += again.getBoundingClientRect().top - cardTop;
+    for (const [id, top] of columnCards) {
+      const again = column.querySelector('.card[data-comment="' + id + '"]');
+      if (again) { column.scrollTop += again.getBoundingClientRect().top - top; break; }
+    }
     const read = readingId ? document.querySelector('#doc .card[data-comment="' + readingId + '"], #inlinefallback .card[data-comment="' + readingId + '"]') : reading;
     if (read?.isConnected) window.scrollBy(0, read.getBoundingClientRect().top - readingTop);
     else if (block?.isConnected) window.scrollBy(0, block.getBoundingClientRect().top - blockTop);
