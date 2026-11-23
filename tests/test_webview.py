@@ -2920,3 +2920,12 @@ def test_a_nameless_owner_comment_is_still_the_owner(shared, round_id):
     status, payload = call(shared, "/api/comment", {"whole": True, "body": "mine"})
     assert status == 200
     assert payload["comment"]["author"] == "alice"
+
+
+@pytest.mark.parametrize("given", [None, False, 0, "   "])
+def test_a_share_comment_with_no_usable_name_is_a_guest(shared, round_id, given):
+    status, payload = call(
+        shared, "/api/comment", {"whole": True, "body": "odd name", "author": given}, token=shared.share_token
+    )
+    assert status == 200
+    assert payload["comment"]["author"] == "guest-127.0.0.1"

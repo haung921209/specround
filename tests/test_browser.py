@@ -767,6 +767,20 @@ def test_a_share_page_asks_for_a_name_once_and_remembers_it(store, doc, monkeypa
     box.value = 'dave'; box.dispatchEvent(new Event('change'));
     check(await child('SHARE') === 'dave', 'changed name not remembered');
     check(await child('OWNER') === 'owner', 'owner page took the remembered share name');
+    // Storage that refuses (a private window) must not turn a declined name
+    // into a question on every comment.
+    Storage.prototype.getItem = () => { throw Error('blocked'); };
+    Storage.prototype.setItem = () => { throw Error('blocked'); };
+    box.value = '';
+    window.prompt = () => { asked += 1; return ''; };
+    for (const text of ['blocked one', 'blocked two']) {
+      commentBox(null);
+      document.querySelector('#composer textarea').value = text;
+      document.querySelector('#composer .primary').click();
+      await waitFor(() => state.data.comments.some(c => c.body === text));
+      check(state.data.comments.find(c => c.body === text).author === 'guest-127.0.0.1', 'declined name not a guest');
+    }
+    check(asked === 1, 'blocked storage asked again: ' + asked);
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();

@@ -1375,7 +1375,8 @@ class _Handler(BaseHTTPRequestHandler):
         if named is not None and not isinstance(named, str):
             raise _usage("'doc' names a document in this workspace and must be a string")
         selected = self.view.select(named or self.named_doc)
-        if self.grant == "share" and not str(body.get("author", "")).strip():
+        given = body.get("author")
+        if self.grant == "share" and not (isinstance(given, str) and given.strip()):
             # A nameless share write is a guest, told apart by where it came
             # from — never the owner, whose name is the view's fallback.
             body["author"] = f"guest-{self.client_address[0]}"

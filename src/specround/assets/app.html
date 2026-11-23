@@ -818,6 +818,8 @@ const VIEW_KEY = "specround.view";
 // A stored empty string means "asked and declined": the server then names the
 // comment after the address it came from, and the page does not ask again.
 const NAME_KEY = "specround.author";
+// Asked in this page already — what holds the answer when storage refuses it.
+let askedName = false;
 
 function rememberedName() {
   try { return window.localStorage.getItem(NAME_KEY); } catch (error) { return null; }
@@ -829,7 +831,8 @@ function rememberName(name) {
 
 function speaker() {
   const box = $("author");
-  if (state.data?.grant === "share" && !box.value.trim() && rememberedName() === null) {
+  if (state.data?.grant === "share" && !box.value.trim() && !askedName && rememberedName() === null) {
+    askedName = true;
     box.value = (window.prompt("Your name for comments (leave blank to stay a guest)") || "").trim();
     rememberName(box.value);
   }
