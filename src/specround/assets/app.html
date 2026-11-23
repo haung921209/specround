@@ -2570,7 +2570,11 @@ let polledEvents = 0;
 let marksStale = false;
 async function checkReview() {
   if (checkingReview || document.hidden || !state.data) return;
-  if (marksStale && !docSelection()) { paint($("doc"), shownComments()); markFocus(); }
+  if (marksStale && !docSelection()) {
+    const keep = keepPlace();
+    paint($("doc"), shownComments()); markFocus();
+    keep();
+  }
   const doc = state.doc;
   const revision = state.data.round?.revision;
   checkingReview = true;
@@ -2638,6 +2642,7 @@ function docSelection() {
 // card is found again by its comment id.
 function keepPlace() {
   const header = document.querySelector("header").getBoundingClientRect().bottom;
+  const atTop = window.scrollY === 0;
   const reading = [...document.querySelectorAll("#composerhome, #inlinefallback .card[data-comment], "
     + "#doc > :not(.inline-thread), #doc .inline-thread .card[data-comment]")]
     .find(e => !e.closest("details:not([open])") && e.getBoundingClientRect().bottom > header);
@@ -2680,6 +2685,9 @@ function keepPlace() {
       if (again) { column.scrollTop += again.getBoundingClientRect().top - top; break; }
     }
     const read = readingId ? document.querySelector('#doc .card[data-comment="' + readingId + '"], #inlinefallback .card[data-comment="' + readingId + '"]') : reading;
+    // A reader at the very top stays there: what appears above (the notice bar)
+    // is meant to be seen.
+    if (atTop) return;
     if (read?.isConnected) window.scrollBy(0, read.getBoundingClientRect().top - readingTop);
     else if (block?.isConnected) window.scrollBy(0, block.getBoundingClientRect().top - blockTop);
   };

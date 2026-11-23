@@ -1135,6 +1135,12 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
     const now = document.activeElement;
     check(now !== button && now.tagName === 'BUTTON' && now.textContent === label
       && now.closest('.card')?.dataset.comment === first, 'the poll dropped focus from a card button');
+    // At the very top of the page, a notice bar that appears stays in view.
+    document.documentElement.style.overflowAnchor = document.body.style.overflowAnchor = 'none';
+    document.getElementById('reviewnotice').hidden = true;
+    window.scrollTo(0, 0);
+    await checkReview();
+    check(!document.getElementById('reviewnotice').hidden && window.scrollY === 0, 'the page scrolled away from a notice at the top: ' + window.scrollY);
     // A focused button whose label the update changes ("dispose" -> "supersede") keeps focus by position.
     const settling = state.data.comments.find(c => c.body === 'second thread').id;
     const dispose = [...document.querySelector('.card[data-comment="' + settling + '"]').querySelectorAll('button')].find(b => b.textContent === 'dispose');
