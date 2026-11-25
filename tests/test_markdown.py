@@ -798,11 +798,40 @@ def test_a_hex_colour_of_another_length_stays_text(value):
     assert exactness(text)
 
 
-def test_unfinished_span_fragments_do_not_make_pairing_cubic():
-    """Each ``<span `` with no ``>`` used to scan to the paragraph's end once per open colour span."""
+@pytest.mark.parametrize("fragment", ["<span ", "["])
+def test_unfinished_fragments_do_not_make_pairing_cubic(fragment):
+    """A fragment that never completes must not cost a scan to the paragraph's end per open colour span."""
     import time
 
-    text = '<span style="color:red">' * 500 + "<span " * 2000 + "\n"
+    text = '<span style="color:red">' * 500 + fragment * 2000 + "\n"
     began = time.perf_counter()
     render(text)
     assert time.perf_counter() - began < 1.5
+
+
+@pytest.mark.parametrize("link", ["[x](</span>)", "![x](</span>)", "[x](a</span>b)"])
+def test_a_closer_in_a_link_target_is_part_of_the_link(link):
+    """A target is a literal address; the closer the author meant is the one after it."""
+    text = f'<span style="color:red">{link} tail</span> after\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert html.endswith(f'tail</span></span><span class="t" data-s="{text.index(" after")}"> after</span></p>')
+    assert exactness(text)
+
+
+def test_a_closer_in_a_link_label_still_closes():
+    """A label is content: a closer there closes, and the link is cut where the colour ends."""
+    text = '<span style="color:red">[a</span>](https://example.com/x)\n'
+    html = render(text)
+    assert html.startswith('<p><span style="color: red"><span class="t" data-s="24">[a</span></span>')
+    assert exactness(text)
+
+
+def test_an_unterminated_opener_with_long_padding_is_linear():
+    """Two adjacent optional-space runs in the opener pattern used to backtrack quadratically."""
+    import time
+
+    text = '<span style="color:red' + " " * 32000 + "\n"
+    began = time.perf_counter()
+    render(text)
+    assert time.perf_counter() - began < 0.5

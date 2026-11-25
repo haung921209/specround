@@ -82,7 +82,7 @@ _DETAILS_CLOSE = re.compile(r"^ {0,3}</details[ \t]*>[ \t]*$", re.IGNORECASE | r
 #: match and stays text.
 _COLOR_SPAN = re.compile(
     r"""<span[ \t]+style[ \t]*=[ \t]*(["'])[ \t]*color[ \t]*:[ \t]*"""
-    r"""([a-z]{1,30}|\#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([0-9.%, \t]{1,40}\))[ \t]*;?[ \t]*\1[ \t]*>""",
+    r"""([a-z]{1,30}|\#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([0-9.%, \t]{1,40}\))[ \t]*(?:;[ \t]*)?\1[ \t]*>""",
     re.IGNORECASE | re.ASCII,
 )
 #: Any span opener, allowed or not, and the bare closer — counted so a colour
@@ -350,6 +350,7 @@ class _Renderer:
         self.references: dict[str, str] = {}
         self.definitions: set[int] = set()
         self.heading_ids: set[str] = set()
+        self.pairing_references: dict[tuple[str, int, int], tuple[int, int, str] | None] = {}
 
     # -- text ------------------------------------------------------------
 
@@ -824,15 +825,22 @@ class _Renderer:
         if opener is None:
             return 0
         # Pair by the same rules the inline scan reads the inside with: an
-        # escaped ``<`` and a tag inside a code span are text, not tags.
+        # escaped ``<``, a tag inside a code span and a tag in a link's target
+        # are text, not tags. A link's label is content, so it is scanned.
         depth = 1
         index = opener.end()
+        targets: dict[int, int] = {}  # a label's ``]`` -> just past its target
         while index < high:
             char = text[index]
-            if char == "\\" and index + 1 < high and text[index + 1] in _PUNCT:
+            if index in targets:
+                index = targets.pop(index)
+            elif char == "\\" and index + 1 < high and text[index + 1] in _PUNCT:
                 index += 2
             elif char == "`":
                 index += self._code_length(text, index, high)
+            elif char == "[" and (link := self._pairing_reference(text, index, high)):
+                targets[link[0]] = link[1] + 1
+                index += 1
             elif char == "<" and (tag := _SPAN_TAG.match(text, index, high)):
                 depth += -1 if tag.group(1) else 1
                 if depth == 0:
@@ -847,6 +855,13 @@ class _Renderer:
         self._inline(chunk, opener.end(), tag.start())
         self.out.append("</span>")
         return tag.end() - at
+
+    def _pairing_reference(self, text: str, at: int, high: int) -> tuple[int, int, str] | None:
+        """:meth:`_reference`, remembered, so each open colour span does not rescan every ``[``."""
+        key = (text, at, high)
+        if key not in self.pairing_references:
+            self.pairing_references[key] = self._reference(text, at, high)
+        return self.pairing_references[key]
 
     def _emphasis(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         text = chunk.text
