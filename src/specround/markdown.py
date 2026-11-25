@@ -22,12 +22,14 @@ Markers markdown consumes — ``**``, a heading's ``#``, a table's pipes — are
 runs and are not selectable. There is nothing in the document a reviewer means
 by them, and inventing an anchor for them would put comments on syntax.
 
-Raw HTML is escaped, with one exception: a bare ``<details>`` block and its
-``<summary>`` line. A long spec folds its per-engine asides that way, and
-escaping the tags left the reader looking at markup. The tags themselves are
-markers in the sense above; the summary's text and everything inside the block
-are runs like any other. Only the bare tags (``open`` allowed) count — an
-attribute is where script would go, and a tag anywhere else stays text.
+Raw HTML is escaped, with two exceptions. A bare ``<details>`` block and its
+``<summary>`` line: a long spec folds its per-engine asides that way, and
+escaping the tags left the reader looking at markup. Only the bare tags
+(``open`` allowed) count — an attribute is where script would go, and a tag
+anywhere else stays text. And an inline ``<span style="color: …">``, which is
+how markdown editors store coloured text; only that one attribute with that one
+property and a plain colour value counts. In both, the tags are markers in the
+sense above and the text inside them is runs like any other.
 
 Scope is prose: the blocks these spec documents are written in. This is not a
 CommonMark implementation and does not try to be. An unsupported construct
@@ -73,6 +75,19 @@ _DETAILS_OPEN = re.compile(
 )
 _SUMMARY = re.compile(r"^ {0,3}<summary>(.*?)</summary>[ \t]*$", re.IGNORECASE | re.ASCII)
 _DETAILS_CLOSE = re.compile(r"^ {0,3}</details[ \t]*>[ \t]*$", re.IGNORECASE | re.ASCII)
+#: The one inline tag the renderer draws: a span whose only attribute is a
+#: ``style`` whose only property is ``color``, with a value that is a name, a
+#: hex code or ``rgb()``. Editors that store markdown write coloured text this
+#: way; anything else — another property, ``url(``, an event handler — does not
+#: match and stays text.
+_COLOR_SPAN = re.compile(
+    r"""<span[ \t]+style[ \t]*=[ \t]*(["'])[ \t]*color[ \t]*:[ \t]*"""
+    r"""([a-z]{1,30}|\#[0-9a-f]{3,8}|rgba?\([0-9.%, \t]{1,40}\))[ \t]*;?[ \t]*\1[ \t]*>""",
+    re.IGNORECASE | re.ASCII,
+)
+#: Any span tag, allowed or not — counted so a colour span pairs with its own
+#: closer rather than with the closer of a span nested inside it.
+_SPAN_TAG = re.compile(r"<(/?)span(?=[\s>])[^>]*>", re.IGNORECASE)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -674,7 +689,7 @@ class _Renderer:
             elif char == "[":
                 consumed = self._link(chunk, at, high, pending)
             elif char == "<":
-                consumed = self._autolink(chunk, at, high, pending)
+                consumed = self._autolink(chunk, at, high, pending) or self._color(chunk, at, high, pending)
             elif char in "*_~":
                 consumed = self._emphasis(chunk, at, high, pending)
             if consumed:
@@ -788,6 +803,24 @@ class _Renderer:
         self.text(chunk, match.start(1), match.end(1))
         self.out.append("</a>")
         return match.end() - at
+
+    def _color(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
+        """``<span style="color: …">text</span>`` — the tags are markers, the text is runs."""
+        opener = _COLOR_SPAN.match(chunk.text, at, high)
+        if opener is None:
+            return 0
+        depth = 1
+        for tag in _SPAN_TAG.finditer(chunk.text, opener.end(), high):
+            depth += -1 if tag.group(1) else 1
+            if depth == 0:
+                break
+        else:
+            return 0  # never closed: the tag stays text
+        self.text(chunk, pending, at)
+        self.out.append(f'<span style="color: {_attr(opener.group(2))}">')
+        self._inline(chunk, opener.end(), tag.start())
+        self.out.append("</span>")
+        return tag.end() - at
 
     def _emphasis(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         text = chunk.text

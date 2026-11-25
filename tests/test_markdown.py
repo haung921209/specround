@@ -7,6 +7,7 @@ the raw text would (G6), so it is checked over whole real documents rather than
 over the constructs someone remembered to list.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -659,4 +660,91 @@ def test_a_closer_may_carry_the_same_whitespace_an_opener_may():
     text = "<details >\nb\n</details >\n"
     html = render(text)
     assert "<details>" in html and html.endswith("</details>")
+    assert exactness(text)
+
+
+# -- inline colour --------------------------------------------------------
+
+STATUS = 'Release notes (**<span style="color: red;">due 2030-01-31</span>**)\n'
+
+
+def _markup(html: str) -> str:
+    """``html`` without the renderer's own run spans, so what is left is tags."""
+    return re.sub(r'<span class="t" data-s="\d+">', "", html)
+
+
+def test_a_coloured_span_renders_as_an_element():
+    """Editors that store markdown write colour as inline HTML; the page draws it."""
+    html = render(STATUS)
+    assert "&lt;span" not in html
+    assert '<strong><span style="color: red">' in html
+    assert "</span></strong>" in html
+
+
+def test_text_inside_a_coloured_span_is_a_run_at_its_own_offset():
+    """A comment on the coloured words lands on those words, not on the tag."""
+    found = exactness(STATUS)
+    inner = next(run for run in found if run.text == "due 2030-01-31")
+    assert inner.start == STATUS.index("due 2030-01-31")
+    assert "<span" not in "".join(run.text for run in found)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["red", "#c00", "#CC0000", "rgb(204, 0, 0)", "rgba(204,0,0,0.5)"],
+)
+def test_colour_values_an_editor_writes_are_drawn(value):
+    text = f'<span style="color:{value}">x</span>\n'
+    assert f'<span style="color: {value}">' in render(text)
+    assert [run.text for run in exactness(text)] == ["x"]
+
+
+def test_tag_and_property_names_are_not_case_sensitive():
+    text = "<SPAN STYLE='COLOR: Red'>x</SPAN>\n"
+    assert '<span style="color: Red">' in render(text)
+    assert [run.text for run in exactness(text)] == ["x"]
+
+
+def test_coloured_spans_nest_and_pair_with_their_own_closer():
+    text = '<span style="color: red">a <span style="color: blue">b</span> c</span> d\n'
+    html = render(text)
+    assert html.count('<span style="color:') == 2
+    assert html.index("c</span></span>") < html.index("d</span>")
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<span onclick="steal()">a</span>',
+        '<span style="color: red" onmouseover="steal()">a</span>',
+        '<span style="background: red">a</span>',
+        '<span style="color: red; background: url(https://example.com/x)">a</span>',
+        '<span style="color: url(https://example.com/x)">a</span>',
+        '<span style="color: expression(steal())">a</span>',
+        '<span style="color: red" style="background: blue">a</span>',
+        '<span style="color: red">never closed',
+        "<script>steal()</script>",
+        "<img src=x onerror=steal()>",
+        '<a href="javascript:steal()">a</a>',
+        "<b>bold</b> <u>under</u> <i>it</i><br>",
+        r'\<span style="color: red">escaped</span>',
+        '`<span style="color: red">code</span>`',
+    ],
+)
+def test_anything_outside_the_allowlist_stays_text(text):
+    """The page holds a share token; a tag the allowlist does not name is prose."""
+    html = render(text + "\n")
+    markup = _markup(html)
+    for tag in ("<span", "<script", "<img", "<a ", "<b>", "<u>", "<i>", "<br"):
+        assert tag not in markup, f"{text!r} produced {tag}"
+    assert exactness(text + "\n")
+
+
+def test_a_disallowed_span_inside_a_coloured_one_does_not_steal_its_closer():
+    text = '<span style="color: red">a <span onclick="x()">b</span> c</span>\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert "&lt;span onclick" in html
+    assert html.endswith("c</span></span></p>")
     assert exactness(text)
