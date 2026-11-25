@@ -819,11 +819,18 @@ def test_a_closer_in_a_link_target_is_part_of_the_link(link):
     assert exactness(text)
 
 
-def test_a_closer_in_a_link_label_still_closes():
-    """A label is content: a closer there closes, and the link is cut where the colour ends."""
-    text = '<span style="color:red">[a</span>](https://example.com/x)\n'
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<span style="color:red">[a</span>](https://example.com/x)\n',
+        '<span style="color:red">*a</span>*\n',
+        '<span style="color:red">![a</span>](javascript:x) tail\n',
+    ],
+)
+def test_a_closer_inside_another_construct_does_not_reach_outside_it(text):
+    """Tags nest: a closer in a link label or an emphasis cannot end a colour opened outside it."""
     html = render(text)
-    assert html.startswith('<p><span style="color: red"><span class="t" data-s="24">[a</span></span>')
+    assert '<span style="color' not in html and "&lt;/span&gt;" in html
     assert exactness(text)
 
 
@@ -835,3 +842,37 @@ def test_an_unterminated_opener_with_long_padding_is_linear():
     began = time.perf_counter()
     render(text)
     assert time.perf_counter() - began < 0.5
+
+
+@pytest.mark.parametrize("image", ["![<span>](x)", "![a</span>](x)", "![a](</span>)"])
+def test_an_image_is_skipped_whole_when_pairing(image):
+    """An image's label is an ``alt`` attribute, so a tag in it is not one."""
+    text = f'<span style="color:red">{image} tail</span> after\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1 and "<img " in html
+    assert html.endswith(f'tail</span></span><span class="t" data-s="{text.index(" after")}"> after</span></p>')
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "inside,closes_at_first",
+    [
+        ("[a \\](</span>) b](x) tail", False),  # the target the link scan finds holds the first closer
+        ("a <span `>` b</span> c", True),  # a backtick ends what could have been an opener
+        ("*[a*](</span>) tail", True),  # emphasis takes the [ first, so no link owns the closer
+    ],
+)
+def test_pairing_is_the_inline_scan(inside, closes_at_first):
+    """Whatever the inline scan reads as code, escape, emphasis or link is not a tag to pair."""
+    text = f'<span style="color:red">{inside}</span> after\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert ("&lt;/span&gt; after" in html) is closes_at_first
+    assert exactness(text)
+
+
+def test_deep_nesting_renders_without_recursion():
+    text = '<span style="color:red">' * 3000 + "x" + "</span>" * 3000 + "\n"
+    html = render(text)
+    assert html.count('<span style="color: red">') == 3000
+    assert [run.text for run in exactness(text)] == ["x"]

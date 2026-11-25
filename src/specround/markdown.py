@@ -85,12 +85,11 @@ _COLOR_SPAN = re.compile(
     r"""([a-z]{1,30}|\#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([0-9.%, \t]{1,40}\))[ \t]*(?:;[ \t]*)?\1[ \t]*>""",
     re.IGNORECASE | re.ASCII,
 )
-#: Any span opener, allowed or not, and the bare closer — counted so a colour
-#: span pairs with its own closer rather than with that of a span nested in it.
-#: A closer with anything else in it is not one, and stays text. An opener's
-#: attributes stop at the next ``<``, so a ``<span `` that never reaches ``>``
-#: costs the scan a few characters rather than the rest of the paragraph.
-_SPAN_TAG = re.compile(r"<span(?=[\s>])[^<>]*>|(</span[ \t]*>)", re.IGNORECASE | re.ASCII)
+#: Any span opener, allowed or not, and the bare closer. An opener this renderer
+#: does not draw is still counted, so the closer that belongs to it does not end
+#: a colour span around it. Its attributes stop at the next ``<`` or backtick —
+#: past either, the inline scan is already reading something else.
+_SPAN_TAG = re.compile(r"<span(?=[\s>])[^<>`]*>|(</span[ \t]*>)", re.IGNORECASE | re.ASCII)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -350,7 +349,6 @@ class _Renderer:
         self.references: dict[str, str] = {}
         self.definitions: set[int] = set()
         self.heading_ids: set[str] = set()
-        self.pairing_references: dict[tuple[str, int, int], tuple[int, int, str] | None] = {}
 
     # -- text ------------------------------------------------------------
 
@@ -677,6 +675,7 @@ class _Renderer:
 
     def _inline(self, chunk: Chunk, low: int, high: int) -> None:
         text = chunk.text
+        frames: list[tuple[int, int, int] | None] = []
         pending = low
         at = low
         while at < high:
@@ -693,7 +692,7 @@ class _Renderer:
             elif char == "[":
                 consumed = self._link(chunk, at, high, pending)
             elif char == "<":
-                consumed = self._autolink(chunk, at, high, pending) or self._color(chunk, at, high, pending)
+                consumed = self._autolink(chunk, at, high, pending) or self._span(chunk, at, high, pending, frames)
             elif char in "*_~":
                 consumed = self._emphasis(chunk, at, high, pending)
             if consumed:
@@ -702,10 +701,10 @@ class _Renderer:
             else:
                 at += 1
         self.text(chunk, pending, high)
+        self._unclosed(chunk, frames)
 
-    @staticmethod
-    def _code_span(text: str, at: int, high: int) -> tuple[int, int]:
-        """``(ticks, close)`` for the backtick run at ``at``; ``close`` is ``-1`` if unmatched."""
+    def _code(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
+        text = chunk.text
         ticks = 0
         while at + ticks < high and text[at + ticks] == "`":
             ticks += 1
@@ -713,15 +712,6 @@ class _Renderer:
         close = text.find(fence, at + ticks, high)
         while close != -1 and close + ticks < high and text[close + ticks] == "`":
             close = text.find(fence, close + ticks + 1, high)
-        return ticks, close
-
-    def _code_length(self, text: str, at: int, high: int) -> int:
-        """How far :meth:`_inline` steps at a backtick: the whole span, or one character."""
-        ticks, close = self._code_span(text, at, high)
-        return 1 if close == -1 else close + ticks - at
-
-    def _code(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
-        ticks, close = self._code_span(chunk.text, at, high)
         if close == -1:
             return 0
         self.text(chunk, pending, at)
@@ -818,50 +808,44 @@ class _Renderer:
         self.out.append("</a>")
         return match.end() - at
 
-    def _color(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
-        """``<span style="color: …">text</span>`` — the tags are markers, the text is runs."""
+    def _span(self, chunk: Chunk, at: int, high: int, pending: int, frames: list[tuple[int, int, int] | None]) -> int:
+        """A span tag met by :meth:`_inline` — ``<span style="color: …">`` opens, ``</span>`` closes.
+
+        Pairing is the inline scan itself rather than a search ahead of it, so a
+        tag the scan reads as code, an escape, a link target or an image label is
+        never a tag here either. ``frames`` is the scan's stack: a colour opener
+        is a placeholder in ``out``; any other span opener is ``None``, so its
+        closer stays text rather than ending a colour span around it. The tags
+        are markers and the text between them is runs.
+        """
         text = chunk.text
         opener = _COLOR_SPAN.match(text, at, high)
-        if opener is None:
+        if opener is not None:
+            self.text(chunk, pending, at)
+            frames.append((len(self.out), at, opener.end()))
+            self.out.append(f'<span style="color: {_attr(opener.group(2))}">')
+            return opener.end() - at
+        tag = _SPAN_TAG.match(text, at, high)
+        if tag is None:
             return 0
-        # Pair by the same rules the inline scan reads the inside with: an
-        # escaped ``<``, a tag inside a code span and a tag in a link's target
-        # are text, not tags. A link's label is content, so it is scanned.
-        depth = 1
-        index = opener.end()
-        targets: dict[int, int] = {}  # a label's ``]`` -> just past its target
-        while index < high:
-            char = text[index]
-            if index in targets:
-                index = targets.pop(index)
-            elif char == "\\" and index + 1 < high and text[index + 1] in _PUNCT:
-                index += 2
-            elif char == "`":
-                index += self._code_length(text, index, high)
-            elif char == "[" and (link := self._pairing_reference(text, index, high)):
-                targets[link[0]] = link[1] + 1
-                index += 1
-            elif char == "<" and (tag := _SPAN_TAG.match(text, index, high)):
-                depth += -1 if tag.group(1) else 1
-                if depth == 0:
-                    break
-                index = tag.end()
-            else:
-                index += 1
-        else:
-            return 0  # never closed: the tag stays text
+        if not tag.group(1):
+            frames.append(None)
+            return 0
+        if not frames or frames.pop() is None:
+            return 0
         self.text(chunk, pending, at)
-        self.out.append(f'<span style="color: {_attr(opener.group(2))}">')
-        self._inline(chunk, opener.end(), tag.start())
         self.out.append("</span>")
         return tag.end() - at
 
-    def _pairing_reference(self, text: str, at: int, high: int) -> tuple[int, int, str] | None:
-        """:meth:`_reference`, remembered, so each open colour span does not rescan every ``[``."""
-        key = (text, at, high)
-        if key not in self.pairing_references:
-            self.pairing_references[key] = self._reference(text, at, high)
-        return self.pairing_references[key]
+    def _unclosed(self, chunk: Chunk, frames: list[tuple[int, int, int] | None]) -> None:
+        """Put each colour opener nothing closed back as the text it was."""
+        for frame in frames:
+            if frame is None:
+                continue
+            index, start, end = frame
+            saved, self.out = self.out, []
+            self.text(chunk, start, end)
+            saved[index], self.out = "".join(self.out), saved
 
     def _emphasis(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         text = chunk.text
