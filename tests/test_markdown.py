@@ -789,3 +789,20 @@ def test_pairing_steps_through_code_and_escapes_as_the_inline_scan_does(inside):
     html = render(text)
     assert html.count('<span style="color: red">') == 1 and "&lt;/span" not in html
     assert exactness(text)
+
+
+@pytest.mark.parametrize("value", ["#12345", "#1234567", "#123456789"])
+def test_a_hex_colour_of_another_length_stays_text(value):
+    text = f'<span style="color: {value}">x</span>\n'
+    assert '<span style="color' not in render(text)
+    assert exactness(text)
+
+
+def test_unfinished_span_fragments_do_not_make_pairing_cubic():
+    """Each ``<span `` with no ``>`` used to scan to the paragraph's end once per open colour span."""
+    import time
+
+    text = '<span style="color:red">' * 500 + "<span " * 2000 + "\n"
+    began = time.perf_counter()
+    render(text)
+    assert time.perf_counter() - began < 1.5

@@ -82,13 +82,15 @@ _DETAILS_CLOSE = re.compile(r"^ {0,3}</details[ \t]*>[ \t]*$", re.IGNORECASE | r
 #: match and stays text.
 _COLOR_SPAN = re.compile(
     r"""<span[ \t]+style[ \t]*=[ \t]*(["'])[ \t]*color[ \t]*:[ \t]*"""
-    r"""([a-z]{1,30}|\#[0-9a-f]{3,8}|rgba?\([0-9.%, \t]{1,40}\))[ \t]*;?[ \t]*\1[ \t]*>""",
+    r"""([a-z]{1,30}|\#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([0-9.%, \t]{1,40}\))[ \t]*;?[ \t]*\1[ \t]*>""",
     re.IGNORECASE | re.ASCII,
 )
 #: Any span opener, allowed or not, and the bare closer — counted so a colour
 #: span pairs with its own closer rather than with that of a span nested in it.
-#: A closer with anything else in it is not one, and stays text.
-_SPAN_TAG = re.compile(r"<span(?=[\s>])[^>]*>|(</span[ \t]*>)", re.IGNORECASE | re.ASCII)
+#: A closer with anything else in it is not one, and stays text. An opener's
+#: attributes stop at the next ``<``, so a ``<span `` that never reaches ``>``
+#: costs the scan a few characters rather than the rest of the paragraph.
+_SPAN_TAG = re.compile(r"<span(?=[\s>])[^<>]*>|(</span[ \t]*>)", re.IGNORECASE | re.ASCII)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
