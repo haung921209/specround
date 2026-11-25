@@ -1321,6 +1321,10 @@ def test_coloured_text_is_drawn_in_colour_and_takes_a_comment(store, doc, monkey
     document.querySelector('#composer textarea').value = 'on the date';
     document.querySelector('#composer .primary').click();
     await waitFor(() => state.data.comments.length === 1);
+    await waitFor(() => document.querySelector('#doc mark.anch'));
+    const mark = document.querySelector('#doc mark.anch');
+    check(mark.textContent === 'due 2030-01-31', 'highlight: ' + mark.textContent);
+    check(getComputedStyle(mark.closest('span[style]')).color === 'rgb(255, 0, 0)', 'highlight left the colour');
     report.textContent = 'PASS';
   } catch (error) { report.textContent = 'FAIL: ' + error.message; }
 })();
