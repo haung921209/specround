@@ -85,9 +85,10 @@ _COLOR_SPAN = re.compile(
     r"""([a-z]{1,30}|\#[0-9a-f]{3,8}|rgba?\([0-9.%, \t]{1,40}\))[ \t]*;?[ \t]*\1[ \t]*>""",
     re.IGNORECASE | re.ASCII,
 )
-#: Any span tag, allowed or not — counted so a colour span pairs with its own
-#: closer rather than with the closer of a span nested inside it.
-_SPAN_TAG = re.compile(r"<(/?)span(?=[\s>])[^>]*>", re.IGNORECASE)
+#: Any span opener, allowed or not, and the bare closer — counted so a colour
+#: span pairs with its own closer rather than with that of a span nested in it.
+#: A closer with anything else in it is not one, and stays text.
+_SPAN_TAG = re.compile(r"<span(?=[\s>])[^>]*>|(</span[ \t]*>)", re.IGNORECASE | re.ASCII)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -699,8 +700,9 @@ class _Renderer:
                 at += 1
         self.text(chunk, pending, high)
 
-    def _code(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
-        text = chunk.text
+    @staticmethod
+    def _code_span(text: str, at: int, high: int) -> tuple[int, int]:
+        """``(ticks, close)`` for the backtick run at ``at``; ``close`` is ``-1`` if unmatched."""
         ticks = 0
         while at + ticks < high and text[at + ticks] == "`":
             ticks += 1
@@ -708,6 +710,15 @@ class _Renderer:
         close = text.find(fence, at + ticks, high)
         while close != -1 and close + ticks < high and text[close + ticks] == "`":
             close = text.find(fence, close + ticks + 1, high)
+        return ticks, close
+
+    def _code_length(self, text: str, at: int, high: int) -> int:
+        """How far :meth:`_inline` steps at a backtick: the whole span, or one character."""
+        ticks, close = self._code_span(text, at, high)
+        return 1 if close == -1 else close + ticks - at
+
+    def _code(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
+        ticks, close = self._code_span(chunk.text, at, high)
         if close == -1:
             return 0
         self.text(chunk, pending, at)
@@ -806,14 +817,27 @@ class _Renderer:
 
     def _color(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         """``<span style="color: …">text</span>`` — the tags are markers, the text is runs."""
-        opener = _COLOR_SPAN.match(chunk.text, at, high)
+        text = chunk.text
+        opener = _COLOR_SPAN.match(text, at, high)
         if opener is None:
             return 0
+        # Pair by the same rules the inline scan reads the inside with: an
+        # escaped ``<`` and a tag inside a code span are text, not tags.
         depth = 1
-        for tag in _SPAN_TAG.finditer(chunk.text, opener.end(), high):
-            depth += -1 if tag.group(1) else 1
-            if depth == 0:
-                break
+        index = opener.end()
+        while index < high:
+            char = text[index]
+            if char == "\\" and index + 1 < high and text[index + 1] in _PUNCT:
+                index += 2
+            elif char == "`":
+                index += self._code_length(text, index, high)
+            elif char == "<" and (tag := _SPAN_TAG.match(text, index, high)):
+                depth += -1 if tag.group(1) else 1
+                if depth == 0:
+                    break
+                index = tag.end()
+            else:
+                index += 1
         else:
             return 0  # never closed: the tag stays text
         self.text(chunk, pending, at)

@@ -748,3 +748,44 @@ def test_a_disallowed_span_inside_a_coloured_one_does_not_steal_its_closer():
     assert "&lt;span onclick" in html
     assert html.endswith("c</span></span></p>")
     assert exactness(text)
+
+
+def test_a_closer_inside_code_does_not_close_a_coloured_span():
+    """Pairing sees code spans the way the inline scan does: a closer there is a specimen."""
+    text = '<span style="color: red">a `</span>` b</span> c\n'
+    html = render(text)
+    assert "<code>" in html and "&lt;/span&gt;</span></code>" in html
+    assert html.endswith(f'b</span></span><span class="t" data-s="{text.index(" c")}"> c</span></p>')
+    assert exactness(text)
+
+
+def test_an_escaped_opener_inside_a_coloured_span_does_not_count():
+    text = '<span style="color: red">a \\<span>b</span> c\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert html.endswith(f'b</span></span><span class="t" data-s="{text.index(" c")}"> c</span></p>')
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "closer",
+    ['</span onclick="steal()">', "</span hidden words>", "</span\n<script>x</script>>", "</\u017fpan>"],
+)
+def test_only_a_bare_closer_closes(closer):
+    """Anything but ``</span>`` is not the closer the allowlist names; it stays text, words and all."""
+    text = f'<span style="color:red">x{closer} rest\n'
+    html = render(text)
+    assert '<span style="color' not in html
+    assert "".join(run.text for run in exactness(text)) == text.rstrip("\n")
+
+
+@pytest.mark.parametrize(
+    "inside",
+    ["``a` ", "\\\\", "`` x`", "a `b` c", "use `<span>` tags"],
+)
+def test_pairing_steps_through_code_and_escapes_as_the_inline_scan_does(inside):
+    """An unmatched backtick run and an escaped backslash leave the closer a closer."""
+    text = f'<span style="color: red">{inside}</span>\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1 and "&lt;/span" not in html
+    assert exactness(text)
