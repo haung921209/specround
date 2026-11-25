@@ -22,12 +22,14 @@ Markers markdown consumes — ``**``, a heading's ``#``, a table's pipes — are
 runs and are not selectable. There is nothing in the document a reviewer means
 by them, and inventing an anchor for them would put comments on syntax.
 
-Raw HTML is escaped, with one exception: a bare ``<details>`` block and its
-``<summary>`` line. A long spec folds its per-engine asides that way, and
-escaping the tags left the reader looking at markup. The tags themselves are
-markers in the sense above; the summary's text and everything inside the block
-are runs like any other. Only the bare tags (``open`` allowed) count — an
-attribute is where script would go, and a tag anywhere else stays text.
+Raw HTML is escaped, with two exceptions. A bare ``<details>`` block and its
+``<summary>`` line: a long spec folds its per-engine asides that way, and
+escaping the tags left the reader looking at markup. Only the bare tags
+(``open`` allowed) count — an attribute is where script would go, and a tag
+anywhere else stays text. And an inline ``<span style="color: …">``, which is
+how markdown editors store coloured text; only that one attribute with that one
+property and a plain colour value counts. In both, the tags are markers in the
+sense above and the text inside them is runs like any other.
 
 Scope is prose: the blocks these spec documents are written in. This is not a
 CommonMark implementation and does not try to be. An unsupported construct
@@ -73,6 +75,21 @@ _DETAILS_OPEN = re.compile(
 )
 _SUMMARY = re.compile(r"^ {0,3}<summary>(.*?)</summary>[ \t]*$", re.IGNORECASE | re.ASCII)
 _DETAILS_CLOSE = re.compile(r"^ {0,3}</details[ \t]*>[ \t]*$", re.IGNORECASE | re.ASCII)
+#: The one inline tag the renderer draws: a span whose only attribute is a
+#: ``style`` whose only property is ``color``, with a value that is a name, a
+#: hex code or ``rgb()``. Editors that store markdown write coloured text this
+#: way; anything else — another property, ``url(``, an event handler — does not
+#: match and stays text.
+_COLOR_SPAN = re.compile(
+    r"""<span[ \t]+style[ \t]*=[ \t]*(["'])[ \t]*color[ \t]*:[ \t]*"""
+    r"""([a-z]{1,30}|\#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([0-9.%, \t]{1,40}\))[ \t]*(?:;[ \t]*)?\1[ \t]*>""",
+    re.IGNORECASE | re.ASCII,
+)
+#: Any span opener, allowed or not, and the bare closer. An opener this renderer
+#: does not draw is still counted, so the closer that belongs to it does not end
+#: a colour span around it. Its attributes stop at the next ``<`` or backtick —
+#: past either, the inline scan is already reading something else.
+_SPAN_TAG = re.compile(r"<span(?=[\s>])[^<>`]*>|(</span[ \t]*>)", re.IGNORECASE | re.ASCII)
 #: Schemes a link in a reviewed document may carry into the page. A document is
 #: input here, and the page it renders into holds the view's token — a
 #: ``javascript:`` href in a spec somebody was sent would be a click away from
@@ -658,6 +675,7 @@ class _Renderer:
 
     def _inline(self, chunk: Chunk, low: int, high: int) -> None:
         text = chunk.text
+        frames: list[tuple[int, int, int] | None] = []
         pending = low
         at = low
         while at < high:
@@ -674,7 +692,7 @@ class _Renderer:
             elif char == "[":
                 consumed = self._link(chunk, at, high, pending)
             elif char == "<":
-                consumed = self._autolink(chunk, at, high, pending)
+                consumed = self._autolink(chunk, at, high, pending) or self._span(chunk, at, high, pending, frames)
             elif char in "*_~":
                 consumed = self._emphasis(chunk, at, high, pending)
             if consumed:
@@ -683,6 +701,7 @@ class _Renderer:
             else:
                 at += 1
         self.text(chunk, pending, high)
+        self._unclosed(chunk, frames)
 
     def _code(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         text = chunk.text
@@ -788,6 +807,45 @@ class _Renderer:
         self.text(chunk, match.start(1), match.end(1))
         self.out.append("</a>")
         return match.end() - at
+
+    def _span(self, chunk: Chunk, at: int, high: int, pending: int, frames: list[tuple[int, int, int] | None]) -> int:
+        """A span tag met by :meth:`_inline` — ``<span style="color: …">`` opens, ``</span>`` closes.
+
+        Pairing is the inline scan itself rather than a search ahead of it, so a
+        tag the scan reads as code, an escape, a link target or an image label is
+        never a tag here either. ``frames`` is the scan's stack: a colour opener
+        is a placeholder in ``out``; any other span opener is ``None``, so its
+        closer stays text rather than ending a colour span around it. The tags
+        are markers and the text between them is runs.
+        """
+        text = chunk.text
+        opener = _COLOR_SPAN.match(text, at, high)
+        if opener is not None:
+            self.text(chunk, pending, at)
+            frames.append((len(self.out), at, opener.end()))
+            self.out.append(f'<span style="color: {_attr(opener.group(2))}">')
+            return opener.end() - at
+        tag = _SPAN_TAG.match(text, at, high)
+        if tag is None:
+            return 0
+        if not tag.group(1):
+            frames.append(None)
+            return 0
+        if not frames or frames.pop() is None:
+            return 0
+        self.text(chunk, pending, at)
+        self.out.append("</span>")
+        return tag.end() - at
+
+    def _unclosed(self, chunk: Chunk, frames: list[tuple[int, int, int] | None]) -> None:
+        """Put each colour opener nothing closed back as the text it was."""
+        for frame in frames:
+            if frame is None:
+                continue
+            index, start, end = frame
+            saved, self.out = self.out, []
+            self.text(chunk, start, end)
+            saved[index], self.out = "".join(self.out), saved
 
     def _emphasis(self, chunk: Chunk, at: int, high: int, pending: int) -> int:
         text = chunk.text

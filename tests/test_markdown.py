@@ -7,6 +7,7 @@ the raw text would (G6), so it is checked over whole real documents rather than
 over the constructs someone remembered to list.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -660,3 +661,218 @@ def test_a_closer_may_carry_the_same_whitespace_an_opener_may():
     html = render(text)
     assert "<details>" in html and html.endswith("</details>")
     assert exactness(text)
+
+
+# -- inline colour --------------------------------------------------------
+
+STATUS = 'Release notes (**<span style="color: red;">due 2030-01-31</span>**)\n'
+
+
+def _markup(html: str) -> str:
+    """``html`` without the renderer's own run spans, so what is left is tags."""
+    return re.sub(r'<span class="t" data-s="\d+">', "", html)
+
+
+def test_a_coloured_span_renders_as_an_element():
+    """Editors that store markdown write colour as inline HTML; the page draws it."""
+    html = render(STATUS)
+    assert "&lt;span" not in html
+    assert '<strong><span style="color: red">' in html
+    assert "</span></strong>" in html
+
+
+def test_text_inside_a_coloured_span_is_a_run_at_its_own_offset():
+    """A comment on the coloured words lands on those words, not on the tag."""
+    found = exactness(STATUS)
+    inner = next(run for run in found if run.text == "due 2030-01-31")
+    assert inner.start == STATUS.index("due 2030-01-31")
+    assert "<span" not in "".join(run.text for run in found)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["red", "#c00", "#CC0000", "rgb(204, 0, 0)", "rgba(204,0,0,0.5)"],
+)
+def test_colour_values_an_editor_writes_are_drawn(value):
+    text = f'<span style="color:{value}">x</span>\n'
+    assert f'<span style="color: {value}">' in render(text)
+    assert [run.text for run in exactness(text)] == ["x"]
+
+
+def test_tag_and_property_names_are_not_case_sensitive():
+    text = "<SPAN STYLE='COLOR: Red'>x</SPAN>\n"
+    assert '<span style="color: Red">' in render(text)
+    assert [run.text for run in exactness(text)] == ["x"]
+
+
+def test_coloured_spans_nest_and_pair_with_their_own_closer():
+    text = '<span style="color: red">a <span style="color: blue">b</span> c</span> d\n'
+    html = render(text)
+    assert html.count('<span style="color:') == 2
+    assert html.index("c</span></span>") < html.index("d</span>")
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<span onclick="steal()">a</span>',
+        '<span style="color: red" onmouseover="steal()">a</span>',
+        '<span style="background: red">a</span>',
+        '<span style="color: red; background: url(https://example.com/x)">a</span>',
+        '<span style="color: url(https://example.com/x)">a</span>',
+        '<span style="color: expression(steal())">a</span>',
+        '<span style="color: red" style="background: blue">a</span>',
+        '<span style="color: red">never closed',
+        "<script>steal()</script>",
+        "<img src=x onerror=steal()>",
+        '<a href="javascript:steal()">a</a>',
+        "<b>bold</b> <u>under</u> <i>it</i><br>",
+        r'\<span style="color: red">escaped</span>',
+        '`<span style="color: red">code</span>`',
+    ],
+)
+def test_anything_outside_the_allowlist_stays_text(text):
+    """The page holds a share token; a tag the allowlist does not name is prose."""
+    html = render(text + "\n")
+    markup = _markup(html)
+    for tag in ("<span", "<script", "<img", "<a ", "<b>", "<u>", "<i>", "<br"):
+        assert tag not in markup, f"{text!r} produced {tag}"
+    assert exactness(text + "\n")
+
+
+def test_a_disallowed_span_inside_a_coloured_one_does_not_steal_its_closer():
+    text = '<span style="color: red">a <span onclick="x()">b</span> c</span>\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert "&lt;span onclick" in html
+    assert html.endswith("c</span></span></p>")
+    assert exactness(text)
+
+
+def test_a_closer_inside_code_does_not_close_a_coloured_span():
+    """Pairing sees code spans the way the inline scan does: a closer there is a specimen."""
+    text = '<span style="color: red">a `</span>` b</span> c\n'
+    html = render(text)
+    assert "<code>" in html and "&lt;/span&gt;</span></code>" in html
+    assert html.endswith(f'b</span></span><span class="t" data-s="{text.index(" c")}"> c</span></p>')
+    assert exactness(text)
+
+
+def test_an_escaped_opener_inside_a_coloured_span_does_not_count():
+    text = '<span style="color: red">a \\<span>b</span> c\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert html.endswith(f'b</span></span><span class="t" data-s="{text.index(" c")}"> c</span></p>')
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "closer",
+    ['</span onclick="steal()">', "</span hidden words>", "</span\n<script>x</script>>", "</\u017fpan>"],
+)
+def test_only_a_bare_closer_closes(closer):
+    """Anything but ``</span>`` is not the closer the allowlist names; it stays text, words and all."""
+    text = f'<span style="color:red">x{closer} rest\n'
+    html = render(text)
+    assert '<span style="color' not in html
+    assert "".join(run.text for run in exactness(text)) == text.rstrip("\n")
+
+
+@pytest.mark.parametrize(
+    "inside",
+    ["``a` ", "\\\\", "`` x`", "a `b` c", "use `<span>` tags"],
+)
+def test_pairing_steps_through_code_and_escapes_as_the_inline_scan_does(inside):
+    """An unmatched backtick run and an escaped backslash leave the closer a closer."""
+    text = f'<span style="color: red">{inside}</span>\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1 and "&lt;/span" not in html
+    assert exactness(text)
+
+
+@pytest.mark.parametrize("value", ["#12345", "#1234567", "#123456789"])
+def test_a_hex_colour_of_another_length_stays_text(value):
+    text = f'<span style="color: {value}">x</span>\n'
+    assert '<span style="color' not in render(text)
+    assert exactness(text)
+
+
+@pytest.mark.parametrize("fragment", ["<span ", "["])
+def test_unfinished_fragments_do_not_make_pairing_cubic(fragment):
+    """A fragment that never completes must not cost a scan to the paragraph's end per open colour span."""
+    import time
+
+    text = '<span style="color:red">' * 500 + fragment * 2000 + "\n"
+    began = time.perf_counter()
+    render(text)
+    assert time.perf_counter() - began < 1.5
+
+
+@pytest.mark.parametrize("link", ["[x](</span>)", "![x](</span>)", "[x](a</span>b)"])
+def test_a_closer_in_a_link_target_is_part_of_the_link(link):
+    """A target is a literal address; the closer the author meant is the one after it."""
+    text = f'<span style="color:red">{link} tail</span> after\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert html.endswith(f'tail</span></span><span class="t" data-s="{text.index(" after")}"> after</span></p>')
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<span style="color:red">[a</span>](https://example.com/x)\n',
+        '<span style="color:red">*a</span>*\n',
+        '<span style="color:red">![a</span>](javascript:x) tail\n',
+    ],
+)
+def test_a_closer_inside_another_construct_does_not_reach_outside_it(text):
+    """Tags nest: a closer in a link label or an emphasis cannot end a colour opened outside it."""
+    html = render(text)
+    assert '<span style="color' not in html and "&lt;/span&gt;" in html
+    assert exactness(text)
+
+
+def test_an_unterminated_opener_with_long_padding_is_linear():
+    """Two adjacent optional-space runs in the opener pattern used to backtrack quadratically."""
+    import time
+
+    text = '<span style="color:red' + " " * 32000 + "\n"
+    began = time.perf_counter()
+    render(text)
+    assert time.perf_counter() - began < 0.5
+
+
+@pytest.mark.parametrize("image", ["![<span>](x)", "![a</span>](x)", "![a](</span>)"])
+def test_an_image_is_skipped_whole_when_pairing(image):
+    """An image's label is an ``alt`` attribute, so a tag in it is not one."""
+    text = f'<span style="color:red">{image} tail</span> after\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1 and "<img " in html
+    assert html.endswith(f'tail</span></span><span class="t" data-s="{text.index(" after")}"> after</span></p>')
+    assert exactness(text)
+
+
+@pytest.mark.parametrize(
+    "inside,closes_at_first",
+    [
+        ("[a \\](</span>) b](x) tail", False),  # the target the link scan finds holds the first closer
+        ("a <span `>` b</span> c", True),  # a backtick ends what could have been an opener
+        ("*[a*](</span>) tail", True),  # emphasis takes the [ first, so no link owns the closer
+    ],
+)
+def test_pairing_is_the_inline_scan(inside, closes_at_first):
+    """Whatever the inline scan reads as code, escape, emphasis or link is not a tag to pair."""
+    text = f'<span style="color:red">{inside}</span> after\n'
+    html = render(text)
+    assert html.count('<span style="color: red">') == 1
+    assert ("&lt;/span&gt; after" in html) is closes_at_first
+    assert exactness(text)
+
+
+def test_deep_nesting_renders_without_recursion():
+    text = '<span style="color:red">' * 3000 + "x" + "</span>" * 3000 + "\n"
+    html = render(text)
+    assert html.count('<span style="color: red">') == 3000
+    assert [run.text for run in exactness(text)] == ["x"]

@@ -1285,3 +1285,61 @@ def test_a_poll_yields_to_the_readers_own_moves(store, doc, monkeypatch, tmp_pat
         assert outcome and outcome.group(1) == "PASS", outcome.group(1) if outcome else result.stdout[-3000:]
     finally:
         served.shutdown()
+
+
+def test_coloured_text_is_drawn_in_colour_and_takes_a_comment(store, doc, monkeypatch, tmp_path):
+    """A colour span is markup around runs: the words show red and still anchor."""
+    browser = os.environ.get("SPECROUND_TEST_BROWSER") or shutil.which("chromium")
+    if not browser:
+        pytest.skip("set SPECROUND_TEST_BROWSER to Chromium")
+    text = '# Notes\n\nRelease (**<span style="color: red;">due 2030-01-31</span>**)\n\n<span onclick="x()">plain</span>\n'
+    doc.write_text(text, encoding="utf-8")
+    store.open_round(doc, author="test")
+    original = webview.page()
+    probe = r"""<script>
+(async () => {
+  const report = document.createElement('pre');
+  report.id = 'browser-result'; document.body.appendChild(report);
+  const check = (ok, reason) => { if (!ok) throw Error(reason); };
+  const waitFor = async (test) => {
+    for (let i = 0; i < 500; i++) { if (test()) return; await new Promise(r => setTimeout(r, 20)); }
+    throw Error('timed out');
+  };
+  try {
+    await waitFor(() => state.data);
+    setMode('render');
+    const holder = [...document.querySelectorAll('#doc [data-s]')].find(e => e.textContent === 'due 2030-01-31');
+    check(holder, 'coloured run missing');
+    check(getComputedStyle(holder).color === 'rgb(255, 0, 0)', 'not red: ' + getComputedStyle(holder).color);
+    check(!document.querySelector('#doc span[onclick]'), 'disallowed span drawn');
+    check($('doc').textContent.includes('<span onclick="x()">plain</span>'), 'disallowed span not shown as text');
+    const range = document.createRange(); range.selectNodeContents(holder);
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+    const span = selectedSpan();
+    check(span && span.quote === 'due 2030-01-31', 'selection: ' + JSON.stringify(span));
+    commentBox(span);
+    document.querySelector('#composer textarea').value = 'on the date';
+    document.querySelector('#composer .primary').click();
+    await waitFor(() => state.data.comments.length === 1);
+    await waitFor(() => document.querySelector('#doc mark.anch'));
+    const mark = document.querySelector('#doc mark.anch');
+    check(mark.textContent === 'due 2030-01-31', 'highlight: ' + mark.textContent);
+    check(getComputedStyle(mark.closest('span[style]')).color === 'rgb(255, 0, 0)', 'highlight left the colour');
+    report.textContent = 'PASS';
+  } catch (error) { report.textContent = 'FAIL: ' + error.message; }
+})();
+</script>"""
+    monkeypatch.setattr(webview, "page", lambda: original.replace(b"</body>", probe.encode() + b"</body>"))
+    served = webview.WebView(store=store, path=doc, author="test", port=0)
+    served.start()
+    try:
+        result = subprocess.run([browser, "--headless", "--no-first-run", "--disable-background-networking",
+                                 f"--user-data-dir={tmp_path / 'profile'}", "--dump-dom", "--virtual-time-budget=15000", served.url],
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr[-2500:]
+        assert '<pre id="browser-result">PASS</pre>' in result.stdout, result.stdout[-2000:] + result.stderr[-2000:]
+        [comment] = store.fold().comments.values()
+        assert comment.anchor.exact == "due 2030-01-31"
+        assert comment.anchor.start == text.index("due 2030-01-31")
+    finally:
+        served.shutdown()
